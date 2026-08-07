@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>stroj</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚖️</text></svg>">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/problems">stroj</a>
+  <nav id="nav">
+    <a href="#/problems" data-route="problems">Problems</a>
+    <a href="#/contests" data-route="contests">Contests</a>
+    <a href="#/submissions" data-route="submissions">Submissions</a>
+    <a href="#/admin" data-route="admin" class="admin-only">Admin</a>
+  </nav>
+  <div class="spacer"></div>
+  <div id="account"></div>
+</header>
+
+<main id="view" aria-live="polite"><div class="loading">Loading…</div></main>
+
+<footer class="footer">
+  <span id="footer-info"></span>
+</footer>
+
+<div id="toasts" class="toasts" aria-live="assertive"></div>
+
+<dialog id="auth-dialog">
+  <form method="dialog" id="auth-form">
+    <h2 id="auth-title">Sign in</h2>
+    <label>Username <input name="username" autocomplete="username" required minlength="3" maxlength="32"></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required minlength="8"></label>
+    <p class="error" id="auth-error" hidden></p>
+    <div class="row">
+      <button value="cancel" class="ghost" type="submit" formnovalidate>Cancel</button>
+      <button value="ok" class="primary" id="auth-submit">Sign in</button>
+    </div>
+    <p class="muted small" id="auth-switch"></p>
+  </form>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

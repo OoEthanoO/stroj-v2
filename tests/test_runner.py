@@ -1,0 +1,178 @@
+"""End-to-end judging: source in, verdict out, for every installed language."""
+
+from __future__ import annotations
+
+import pytest
+
+from stroj.judge import languages, runner
+from stroj.judge.runner import ProblemSpec
+
+PROBLEM = ProblemSpec(time_limit_ms=2000, memory_limit_mb=256)
+AB_TESTS = [("2 3\n", "5\n"), ("-1 1\n", "0\n"), ("1000000000 1000000000\n", "2000000000\n")]
+
+SOLUTIONS = {
+    "python3": "a, b = map(int, input().split())\nprint(a + b)",
+    "cpp": "#include <iostream>\nint main(){long long a,b;std::cin>>a>>b;std::cout<<a+b<<std::endl;}",
+    "java": ("import java.util.*;\npublic class Main{public static void main(String[] x){"
+             "Scanner s=new Scanner(System.in);System.out.println(s.nextLong()+s.nextLong());}}"),
+}
+WRONG = {
+    "python3": "a, b = map(int, input().split())\nprint(a - b)",
+    "cpp": "#include <iostream>\nint main(){long long a,b;std::cin>>a>>b;std::cout<<a-b<<std::endl;}",
+    "java": ("import java.util.*;\npublic class Main{public static void main(String[] x){"
+             "Scanner s=new Scanner(System.in);System.out.println(s.nextLong()-s.nextLong());}}"),
+}
+BROKEN = {
+    "python3": "def f(:\n    pass",
+    "cpp": "int main() { this is not valid c++ }",
+    "java": "public class Main { public static void main(String[] a) { int x = ; } }",
+}
+
+INSTALLED = [name for name in languages.LANGUAGES if languages.is_available(name)]
+every_language = pytest.mark.parametrize("language", INSTALLED)
+
+
+@every_language
+def test_correct_solution_is_accepted(language, make_tests):
+    outcome = runner.judge(SOLUTIONS[language], language, PROBLEM, make_tests(AB_TESTS))
+    assert outcome.verdict == runner.AC, outcome.message
+    assert outcome.score == outcome.max_score == 3
+    assert len(outcome.tests) == 3
+    assert all(t.verdict == runner.AC for t in outcome.tests)
+
+
+@every_language
+def test_wrong_solution_is_rejected(language, make_tests):
+    outcome = runner.judge(WRONG[language], language, PROBLEM, make_tests(AB_TESTS))
+    assert outcome.verdict == runner.WA
+    assert outcome.score == 0
+    # Non-partial problems stop at the first failure.
+    assert len(outcome.tests) == 1
+
+
+@every_language
+def test_syntax_error_is_a_compile_error(language, make_tests):
+    outcome = runner.judge(BROKEN[language], language, PROBLEM, make_tests(AB_TESTS))
+    assert outcome.verdict == runner.CE
+    assert outcome.message.strip()
+    assert outcome.max_score == 3
+
+
+@every_language
+def test_infinite_loop_times_out(language, make_tests):
+    loops = {
+        "python3": "\nwhile True: pass",
+        "cpp": "int main(){volatile long long x=0;for(;;)x++;}",
+        "java": "public class Main{public static void main(String[] a){long x=0;while(true)x++;}}",
+    }
+    fast = ProblemSpec(time_limit_ms=300, memory_limit_mb=256)
+    outcome = runner.judge(loops[language], language, fast, make_tests(AB_TESTS))
+    assert outcome.verdict == runner.TLE
+
+
+@every_language
+def test_memory_hog_is_rejected(language, make_tests):
+    hogs = {
+        "python3": "x = bytearray(700 * 1024 * 1024)\nprint(len(x))",
+        "cpp": ("#include <vector>\n#include <cstdio>\nint main(){std::vector<char> v;"
+                "for(int i=0;i<40;i++){v.resize(v.size()+(1<<26),1);printf(\"%zu\\n\",v.size());}}"),
+        "java": ("public class Main{public static void main(String[] a){"
+                 "java.util.List<byte[]> keep=new java.util.ArrayList<>();"
+                 "for(int i=0;i<200;i++){keep.add(new byte[16*1024*1024]);}"
+                 "System.out.println(keep.size());}}"),
+    }
+    tight = ProblemSpec(time_limit_ms=4000, memory_limit_mb=128)
+    outcome = runner.judge(hogs[language], language, tight, make_tests(AB_TESTS))
+    assert outcome.verdict in (runner.MLE, runner.RE), outcome.message
+    assert outcome.verdict == runner.MLE, f"expected MLE, got {outcome.message}"
+
+
+def test_runtime_error_is_reported(make_tests):
+    outcome = runner.judge("raise SystemExit(9)", "python3", PROBLEM, make_tests(AB_TESTS))
+    assert outcome.verdict == runner.RE
+
+
+def test_partial_scoring_runs_every_test(make_tests):
+    """A partial problem keeps going after a failure and banks the points."""
+    tests = make_tests(AB_TESTS, points=[3, 5, 7])
+    source = "a, b = map(int, input().split())\nprint(a + b if a > 0 else 999)"
+    partial = ProblemSpec(time_limit_ms=2000, memory_limit_mb=256, partial=True)
+    outcome = runner.judge(source, "python3", partial, tests)
+    assert outcome.verdict == runner.WA        # overall verdict is the first failure
+    assert len(outcome.tests) == 3             # …but every test still ran
+    assert outcome.max_score == 15
+    assert outcome.score == 10                 # tests 1 and 3 pass (a > 0)
+    assert [t.verdict for t in outcome.tests] == [runner.AC, runner.WA, runner.AC]
+
+
+def test_non_partial_stops_early(make_tests):
+    tests = make_tests(AB_TESTS, points=[3, 5, 7])
+    source = "a, b = map(int, input().split())\nprint(a + b if a > 0 else 999)"
+    outcome = runner.judge(source, "python3", PROBLEM, tests)
+    assert len(outcome.tests) == 2
+    assert outcome.score == 3
+
+
+def test_float_checker_is_used(make_tests):
+    spec = ProblemSpec(checker="float", float_eps=1e-6)
+    tests = make_tests([("2\n", "12.566370614\n")])
+    outcome = runner.judge(
+        "import math\nr=float(input())\nprint(math.pi*r*r)", "python3", spec, tests)
+    assert outcome.verdict == runner.AC
+
+
+def test_timing_and_memory_are_recorded(make_tests):
+    outcome = runner.judge(SOLUTIONS["python3"], "python3", PROBLEM, make_tests(AB_TESTS))
+    assert outcome.time_ms > 0
+    assert outcome.memory_kb > 0
+
+
+def test_a_problem_with_no_tests_is_an_internal_error():
+    outcome = runner.judge(SOLUTIONS["python3"], "python3", PROBLEM, [])
+    assert outcome.verdict == runner.IE
+
+
+def test_unknown_language(make_tests):
+    outcome = runner.judge("print(1)", "brainfuck", PROBLEM, make_tests(AB_TESTS))
+    assert outcome.verdict == runner.IE
+
+
+def test_the_work_directory_is_cleaned_up(make_tests, isolated_data):
+    from stroj import config
+
+    runner.judge(SOLUTIONS["python3"], "python3", PROBLEM, make_tests(AB_TESTS))
+    assert list(config.WORK_DIR.glob("box-*")) == []
+
+
+class TestSourcePolicy:
+    def test_empty_source_is_rejected(self):
+        assert "empty" in runner.validate_source("python3", "   \n ").lower()
+
+    def test_oversized_source_is_rejected(self):
+        from stroj import config
+
+        assert runner.validate_source("python3", "#" * (config.MAX_SOURCE_BYTES + 1))
+
+    @pytest.mark.parametrize(
+        "include",
+        ['#include "/etc/passwd"', "#include </etc/passwd>", '#include "../../secret"'],
+    )
+    def test_path_traversing_includes_are_rejected(self, include):
+        assert runner.validate_source("cpp", include + "\nint main(){}")
+
+    def test_normal_includes_are_fine(self):
+        assert runner.validate_source("cpp", "#include <vector>\nint main(){}") is None
+        assert runner.validate_source("cpp", "#include <bits/stdc++.h>\nint main(){}") is None
+
+    def test_java_requires_a_main_class(self):
+        assert runner.validate_source("java", "public class Solution {}")
+        assert runner.validate_source("java", "public class Main { }") is None
+
+
+@pytest.mark.skipif("cpp" not in INSTALLED, reason="needs a C++ compiler")
+def test_bits_stdcpp_shim_is_usable(make_tests):
+    """Competitive submissions open with this include; libc++ has no such header."""
+    source = ("#include <bits/stdc++.h>\nusing namespace std;\n"
+              "int main(){long long a,b;cin>>a>>b;cout<<a+b<<endl;}")
+    outcome = runner.judge(source, "cpp", PROBLEM, make_tests(AB_TESTS))
+    assert outcome.verdict == runner.AC, outcome.message

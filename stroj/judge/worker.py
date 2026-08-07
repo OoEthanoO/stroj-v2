@@ -1,0 +1,197 @@
+"""The judge queue.
+
+Submissions land in the database as ``PENDING``. A small pool of threads claims
+them one at a time and writes verdicts back. Judging is subprocess-bound, so
+threads are the right shape here — the GIL is released while we wait on the
+child.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+
+from .. import config, db
+from . import runner
+from .runner import JUDGING, PENDING, IE, JudgeOutcome, ProblemSpec, TestSpec
+
+log = logging.getLogger("stroj.judge")
+
+#: Set whenever a submission is enqueued, so workers react immediately instead
+#: of waiting out their poll interval.
+_wakeup = threading.Event()
+_workers: list["JudgeWorker"] = []
+_stop = threading.Event()
+
+
+def notify() -> None:
+    """Tell the pool there is new work."""
+    _wakeup.set()
+
+
+def claim_next() -> int | None:
+    """Atomically move the oldest pending submission to JUDGING."""
+    with db.transaction() as conn:
+        row = conn.execute(
+            "SELECT id FROM submissions WHERE verdict = ? ORDER BY id LIMIT 1",
+            (PENDING,),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute(
+            "UPDATE submissions SET verdict = ? WHERE id = ?", (JUDGING, row["id"])
+        )
+        return row["id"]
+
+
+def load_tests(problem_id: int) -> list[TestSpec]:
+    rows = db.query(
+        "SELECT idx, input_path, answer_path, points FROM testcases"
+        " WHERE problem_id = ? ORDER BY idx",
+        (problem_id,),
+    )
+    return [
+        TestSpec(
+            idx=r["idx"],
+            input_path=r["input_path"],
+            answer_path=r["answer_path"],
+            # Problems that never set per-test points score one point per test.
+            points=r["points"] if r["points"] > 0 else 1,
+        )
+        for r in rows
+    ]
+
+
+def store_outcome(submission_id: int, outcome: JudgeOutcome) -> None:
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE submissions SET verdict = ?, score = ?, max_score = ?,"
+            " time_ms = ?, memory_kb = ?, message = ?, judged_at = ? WHERE id = ?",
+            (
+                outcome.verdict,
+                outcome.score,
+                outcome.max_score,
+                outcome.time_ms,
+                outcome.memory_kb,
+                outcome.message[: config.MESSAGE_CLIP_BYTES],
+                db.utcnow(),
+                submission_id,
+            ),
+        )
+        conn.execute(
+            "DELETE FROM submission_tests WHERE submission_id = ?", (submission_id,)
+        )
+        conn.executemany(
+            "INSERT INTO submission_tests"
+            " (submission_id, idx, verdict, time_ms, memory_kb, points, message)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    submission_id,
+                    t.idx,
+                    t.verdict,
+                    t.time_ms,
+                    t.memory_kb,
+                    t.points,
+                    t.message[:512],
+                )
+                for t in outcome.tests
+            ],
+        )
+
+
+def judge_submission(submission_id: int) -> JudgeOutcome:
+    """Judge one already-claimed submission and persist the result."""
+    sub = db.one("SELECT * FROM submissions WHERE id = ?", (submission_id,))
+    if sub is None:
+        return JudgeOutcome(IE, message="submission vanished")
+
+    problem = db.one("SELECT * FROM problems WHERE id = ?", (sub["problem_id"],))
+    if problem is None:
+        outcome = JudgeOutcome(IE, message="problem no longer exists")
+    else:
+        outcome = runner.judge(
+            sub["source"],
+            sub["language"],
+            ProblemSpec.from_row(problem),
+            load_tests(problem["id"]),
+        )
+    store_outcome(submission_id, outcome)
+    return outcome
+
+
+def drain() -> int:
+    """Judge every pending submission on the calling thread. Returns the count."""
+    judged = 0
+    while True:
+        submission_id = claim_next()
+        if submission_id is None:
+            return judged
+        judge_submission(submission_id)
+        judged += 1
+
+
+def requeue_stuck() -> int:
+    """Return submissions abandoned by a crashed worker to the queue."""
+    cursor = db.execute(
+        "UPDATE submissions SET verdict = ? WHERE verdict = ?", (PENDING, JUDGING)
+    )
+    return cursor.rowcount
+
+
+class JudgeWorker(threading.Thread):
+    def __init__(self, index: int, poll_interval: float = 1.0) -> None:
+        super().__init__(name=f"judge-{index}", daemon=True)
+        self.poll_interval = poll_interval
+
+    def run(self) -> None:  # pragma: no cover - exercised by the live server
+        while not _stop.is_set():
+            try:
+                submission_id = claim_next()
+            except Exception:
+                log.exception("failed to claim a submission")
+                submission_id = None
+
+            if submission_id is None:
+                _wakeup.wait(self.poll_interval)
+                _wakeup.clear()
+                continue
+
+            try:
+                outcome = judge_submission(submission_id)
+                log.info(
+                    "submission %s -> %s (%s ms, %s KiB)",
+                    submission_id,
+                    outcome.verdict,
+                    outcome.time_ms,
+                    outcome.memory_kb,
+                )
+            except Exception:
+                log.exception("judging submission %s failed", submission_id)
+                try:
+                    store_outcome(
+                        submission_id, JudgeOutcome(IE, message="judge crashed")
+                    )
+                except Exception:
+                    log.exception("could not record the failure either")
+        db.close()
+
+
+def start_pool(count: int | None = None) -> None:
+    if _workers:
+        return
+    _stop.clear()
+    requeue_stuck()
+    for i in range(count if count is not None else config.JUDGE_WORKERS):
+        worker = JudgeWorker(i + 1)
+        worker.start()
+        _workers.append(worker)
+    log.info("started %d judge worker(s)", len(_workers))
+
+
+def stop_pool(timeout: float = 5.0) -> None:
+    _stop.set()
+    _wakeup.set()
+    for worker in _workers:
+        worker.join(timeout=timeout)
+    _workers.clear()
