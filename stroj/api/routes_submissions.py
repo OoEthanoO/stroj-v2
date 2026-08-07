@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from .. import config, contest as contest_mod, db
 from ..judge import languages, worker
 from ..judge.runner import JUDGING, PENDING, VERDICT_NAMES, validate_source
+from ..judge.sandbox import sandbox_available
 from .deps import (
     current_user,
     get_problem,
@@ -182,9 +183,13 @@ def get_submission(submission_id: int, request: Request):
 
 @router.get("/config")
 def judge_config():
+    # Report whether the sandbox is *actually* in force, not merely requested:
+    # sandbox-exec is macOS-only, so on any other platform a truthy
+    # STROJ_SANDBOX still means submissions run with rlimits alone.
     return {
         "max_source_bytes": config.MAX_SOURCE_BYTES,
-        "sandbox": config.USE_SANDBOX,
+        "sandbox": config.USE_SANDBOX and sandbox_available(),
+        "sandbox_requested": config.USE_SANDBOX,
         "workers": config.JUDGE_WORKERS,
         "verdicts": VERDICT_NAMES,
     }

@@ -19,6 +19,7 @@ from .api import (
     routes_submissions,
 )
 from .judge import worker
+from .judge.sandbox import sandbox_available
 
 log = logging.getLogger("stroj")
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -39,6 +40,13 @@ async def lifespan(app: FastAPI):
             "— change it or set STROJ_ADMIN_PASSWORD",
             username,
             password,
+        )
+
+    if config.USE_SANDBOX and not sandbox_available():
+        log.warning(
+            "STROJ_SANDBOX is on but sandbox-exec is unavailable on this platform: "
+            "submissions will run with rlimits and RSS monitoring only, with NO "
+            "network or filesystem isolation. Do not expose this to untrusted users."
         )
 
     if config.START_WORKERS:
