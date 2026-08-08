@@ -8,9 +8,27 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from .. import auth, config
+from ..ratelimit import RateLimiter, client_key
 from .deps import current_user, user_public
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# Keyed by account, not by address: the forwarded header is client-supplied and
+# an attacker can rotate it freely, but they cannot rotate whose password they
+# are guessing.
+_login_by_account = RateLimiter(config.LOGIN_ATTEMPTS, config.LOGIN_WINDOW_S)
+_login_by_client = RateLimiter(config.LOGIN_ATTEMPTS * 3, config.LOGIN_WINDOW_S)
+_register_by_client = RateLimiter(config.REGISTER_LIMIT, config.REGISTER_WINDOW_S)
+
+
+def _enforce(limiter: RateLimiter, key: str, what: str) -> None:
+    wait = limiter.check(key)
+    if wait > 0:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many {what}. Try again in {int(wait) + 1}s.",
+            headers={"Retry-After": str(int(wait) + 1)},
+        )
 
 
 class Credentials(BaseModel):
@@ -35,7 +53,10 @@ def _set_session_cookie(response: Response, token: str) -> None:
 
 
 @router.post("/register")
-def register(body: Registration, response: Response):
+def register(body: Registration, request: Request, response: Response):
+    _enforce(_register_by_client, client_key(request), "accounts created")
+    _register_by_client.hit(client_key(request))
+
     mode = config.registration_mode()
     if mode == "closed":
         raise HTTPException(
@@ -63,11 +84,21 @@ def register(body: Registration, response: Response):
 
 
 @router.post("/login")
-def login(body: Credentials, response: Response):
+def login(body: Credentials, request: Request, response: Response):
+    account = body.username.strip().lower()
+    client = client_key(request)
+    _enforce(_login_by_account, account, "failed sign-in attempts for that account")
+    _enforce(_login_by_client, client, "failed sign-in attempts")
+
     try:
         user = auth.authenticate(body.username, body.password)
     except auth.AuthError as exc:
+        # Only failures count, so a busy legitimate user is never locked out.
+        _login_by_account.hit(account)
+        _login_by_client.hit(client)
         raise HTTPException(status_code=401, detail=str(exc)) from None
+
+    _login_by_account.reset(account)
     _set_session_cookie(response, auth.create_session(user["id"]))
     return {"user": user_public(user)}
 

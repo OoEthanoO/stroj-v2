@@ -30,13 +30,27 @@ host**. What you get per submission:
 | CPU / wall / output limits | yes | yes |
 | Memory ceiling (RSS sampling + kill) | yes | yes |
 | Process-group kill on timeout | yes | yes |
-| Network denied | yes (`sandbox-exec`) | yes (`unshare --net`, probed at startup) |
-| Writes confined to the submission's box | yes (`sandbox-exec`) | **no** |
+| Network denied | yes (`sandbox-exec`) | yes (host egress rule + no DNS) |
+| Runs as a separate account from the judge | n/a | yes (`stroj-runner`) |
+| Cannot reach the database or answer files | n/a | yes (`/data` is `root:root 0700`) |
+| Cannot modify the judge or its compilers | yes | yes (`--read-only` rootfs) |
+| Writes confined to the submission's box | yes (`sandbox-exec`) | partial |
 
-On Linux there is no filesystem confinement — a submission can write anywhere
-the judge process can. **The container is the boundary**, which is why the judge
-must run in a disposable container with a volume mounted only at `/data`, never
-directly on a host you care about.
+**Privilege separation is the load-bearing control on Linux.** The judge keeps
+root *inside* the container for one reason: only root can change uid, so only
+root can put each submission on a different account. It then drops to
+`stroj-runner` before `exec`, for compilation as well as execution — the
+compiler is fed attacker-controlled source and is untrusted too.
+
+Get this wrong and submissions run as the judge itself, which means they can
+read the user table (password hashes), rewrite the database, and read every
+problem's answers. `python -m stroj doctor` prints `privilege sep` first for
+exactly that reason, and the API reports it as `privilege_separation`. If it
+says NONE, the judge is not fit to be public.
+
+"Partial" on the last row means a submission can still write inside `/data`'s
+world-traversable work directory — its own box. It cannot reach `/data` itself,
+another submission's box, or anything outside the volume.
 
 `python -m stroj doctor` and the footer of the web UI both report the isolation
 actually in force. If it says `none`, submissions have no confinement at all.

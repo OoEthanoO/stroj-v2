@@ -65,6 +65,13 @@ def parse_zip(data: bytes) -> list[dict]:
             f"These inputs have no matching answer file: {', '.join(missing[:5])}"
         )
 
+    def ordering(stem: str) -> tuple:
+        # Samples first, then everything else naturally ordered. Judging stops
+        # at the first failure on a non-partial problem, and only samples show
+        # diagnostics — so samples running last would mean solvers almost never
+        # see the feedback that exists for them.
+        return (0 if "sample" in stem.lower() else 1, _natural_key(stem))
+
     return [
         {
             "input": inputs[stem],
@@ -72,7 +79,7 @@ def parse_zip(data: bytes) -> list[dict]:
             "is_sample": "sample" in stem.lower(),
             "points": 0,
         }
-        for stem in sorted(inputs, key=_natural_key)
+        for stem in sorted(inputs, key=ordering)
     ]
 
 

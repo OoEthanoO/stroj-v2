@@ -886,11 +886,16 @@ async function viewAdmin() {
           <label>Statement (Markdown)
             <textarea id="p-statement" class="code" style="min-height:230px"></textarea>
           </label>
+          <label>Test data — zip of <code>1.in</code> / <code>1.out</code> pairs (optional)
+            <input type="file" id="p-tests" accept=".zip">
+          </label>
+          <p class="small" id="p-tests-status" style="margin-top:-6px"></p>
         </div>
       </div>
       <div class="row end"><button class="primary" id="create-problem">Create problem</button></div>
-      <p class="muted small">After creating it, upload a zip of <code>1.in</code> / <code>1.out</code> pairs below.
-        Files whose name contains <code>sample</code> become visible samples.</p>
+      <p class="muted small">The archive is checked as soon as you pick it, before anything is created.
+        Files whose name contains <code>sample</code> become visible samples; the rest stay hidden.
+        You can also add or replace test data later from the table below.</p>
     </details>
 
     <h2>Problems</h2>
@@ -943,12 +948,47 @@ async function viewAdmin() {
     try { await fn(...args); } catch (err) { toast(err.message, 'bad'); }
   };
 
+  // Validated archive, held in the browser until the problem exists to attach
+  // it to. Null means either nothing chosen or the last check failed.
+  let pendingTests = null;
+
+  $('#p-tests').onchange = async () => {
+    const input = $('#p-tests');
+    const status = $('#p-tests-status');
+    pendingTests = null;
+    if (!input.files.length) { status.textContent = ''; return; }
+
+    status.className = 'small muted';
+    status.textContent = 'Checking archive…';
+    const form = new FormData();
+    form.append('archive', input.files[0]);
+    try {
+      const found = await api('/api/admin/testdata/inspect', { method: 'POST', form });
+      pendingTests = input.files[0];
+      status.className = 'small';
+      status.style.color = 'var(--ok)';
+      status.textContent =
+        `✓ ${found.tests} test${found.tests === 1 ? '' : 's'}, ` +
+        `${found.samples} sample${found.samples === 1 ? '' : 's'} — first input starts "` +
+        `${found.preview.input.trim().slice(0, 40)}"`;
+    } catch (err) {
+      status.className = 'small error';
+      status.style.color = '';
+      status.textContent = err.message;
+    }
+  };
+
   $('#create-problem').onclick = guard(async () => {
+    const slug = $('#p-slug').value.trim();
+    if ($('#p-tests').files.length && !pendingTests) {
+      throw new Error('That test archive was rejected — fix it or clear the field.');
+    }
+
     await api('/api/admin/problems', {
       method: 'POST',
       body: {
-        slug: $('#p-slug').value.trim(),
-        title: $('#p-title').value.trim() || $('#p-slug').value.trim(),
+        slug,
+        title: $('#p-title').value.trim() || slug,
         statement: $('#p-statement').value,
         time_limit_ms: Number($('#p-tl').value),
         memory_limit_mb: Number($('#p-ml').value),
@@ -958,7 +998,25 @@ async function viewAdmin() {
         visible: $('#p-visible').checked,
       },
     });
-    toast('Problem created.', 'good');
+
+    if (pendingTests) {
+      const form = new FormData();
+      form.append('archive', pendingTests);
+      try {
+        const result = await api(
+          `/api/admin/problems/${encodeURIComponent(slug)}/tests/upload`,
+          { method: 'POST', form });
+        toast(`Created with ${result.tests} test case(s).`, 'good');
+      } catch (err) {
+        // The archive passed inspection, so this is unexpected — but never
+        // leave a testless problem behind because the second call failed.
+        await api(`/api/admin/problems/${encodeURIComponent(slug)}`, { method: 'DELETE' })
+          .catch(() => {});
+        throw new Error(`Test data failed to attach, problem not created: ${err.message}`);
+      }
+    } else {
+      toast('Problem created — it needs test data before it can be judged.', 'good');
+    }
     route();
   });
 

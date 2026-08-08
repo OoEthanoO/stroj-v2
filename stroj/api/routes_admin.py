@@ -189,6 +189,35 @@ async def upload_tests(
     return {"tests": count}
 
 
+@router.post("/testdata/inspect")
+async def inspect_testdata(archive: UploadFile = File(...)):
+    """Parse a test-data archive without touching the database.
+
+    Authoring order is naturally test-data-first: you have the tests before you
+    have a slug. Validating up front means a malformed zip is rejected while
+    nothing exists yet, instead of leaving behind a problem with no tests.
+    """
+    data = await archive.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Archive is too large.")
+    try:
+        tests = testdata.parse_zip(data)
+    except testdata.TestDataError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    first = tests[0]
+    return {
+        "tests": len(tests),
+        "samples": sum(1 for t in tests if t["is_sample"]),
+        "bytes": sum(len(t["input"]) + len(t["output"]) for t in tests),
+        # Enough of the first case to eyeball that the pairing is right.
+        "preview": {
+            "input": first["input"][:400],
+            "output": first["output"][:400],
+        },
+    }
+
+
 @router.post("/contests")
 def create_contest(body: ContestBody):
     _check_slug(body.slug)

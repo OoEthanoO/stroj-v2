@@ -6,9 +6,10 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .. import config, contest as contest_mod, db
+from ..ratelimit import RateLimiter
 from ..judge import languages, worker
 from ..judge.runner import JUDGING, PENDING, VERDICT_NAMES, validate_source
-from ..judge.sandbox import isolation_mode, sandbox_available
+from ..judge.sandbox import isolation_mode, privilege_drop_target, sandbox_available
 from .deps import (
     current_user,
     get_problem,
@@ -21,6 +22,10 @@ router = APIRouter(prefix="/api", tags=["submissions"])
 
 #: Refuse a new submission while this many of the user's are still in flight.
 MAX_IN_FLIGHT = 5
+
+# The in-flight cap alone does not stop a fast loop of tiny submissions that
+# each judge in milliseconds; this bounds sustained volume per account.
+_submit_limiter = RateLimiter(config.SUBMIT_LIMIT, config.SUBMIT_WINDOW_S)
 
 _JOINED = """
 SELECT s.*, u.username AS username,
@@ -43,6 +48,15 @@ class SubmitBody(BaseModel):
 @router.post("/submissions")
 def submit(body: SubmitBody, request: Request):
     user = require_user(request)
+
+    wait = _submit_limiter.check(str(user["id"]))
+    if wait > 0:
+        raise HTTPException(
+            status_code=429,
+            detail=f"You are submitting too quickly. Try again in {int(wait) + 1}s.",
+            headers={"Retry-After": str(int(wait) + 1)},
+        )
+
     problem = get_problem(body.problem, user)
 
     if body.language not in languages.LANGUAGES:
@@ -104,6 +118,7 @@ def submit(body: SubmitBody, request: Request):
             db.utcnow(),
         ),
     )
+    _submit_limiter.hit(str(user["id"]))
     worker.notify()
     return {"id": submission_id, "verdict": PENDING}
 
@@ -192,6 +207,9 @@ def judge_config():
         "sandbox": active,
         "isolation": isolation_mode() if config.USE_SANDBOX else "none",
         "sandbox_requested": config.USE_SANDBOX,
+        # Whether submissions run under an account separate from the judge's.
+        # Without it they share the judge's access to the database.
+        "privilege_separation": privilege_drop_target() is not None,
         "workers": config.JUDGE_WORKERS,
         "registration": config.registration_mode(),
         "verdicts": VERDICT_NAMES,

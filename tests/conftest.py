@@ -12,6 +12,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 @pytest.fixture(autouse=True)
+def fresh_rate_limits():
+    """Limiter state is process-global, so it would otherwise leak between
+    cases and start rejecting unrelated tests part-way through the run."""
+    from stroj import ratelimit
+
+    ratelimit.reset_all()
+    yield
+    ratelimit.reset_all()
+
+
+@pytest.fixture(autouse=True)
 def isolated_data(tmp_path, monkeypatch):
     """Point stroj at a throwaway data directory for the duration of a test."""
     from stroj import config, db

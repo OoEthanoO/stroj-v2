@@ -399,7 +399,8 @@ class TestAdminAuthoring:
 
         tests = admin_client.get("/api/admin/problems/zipped/tests").json()["tests"]
         # Natural ordering: 2 before 10, and the "sample" file is flagged.
-        assert [t["is_sample"] for t in tests] == [False, False, True]
+        # Samples lead, then the hidden cases in natural order (2 before 10).
+        assert [t["is_sample"] for t in tests] == [True, False, False]
         detail = admin_client.get("/api/problems/zipped").json()
         assert detail["samples"][0]["input"] == "1 1\n"
 
@@ -565,3 +566,92 @@ class TestEditingProblems:
         assert admin_client.patch(
             "/api/admin/problems/ghost", json={"statement": "x"}
         ).status_code == 404
+
+
+class TestInspectTestData:
+    """Authoring is test-data-first: validate the archive before the problem
+    exists, so a bad zip never strands a problem with no tests."""
+
+    def _zip(self, entries):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            for name, content in entries:
+                archive.writestr(name, content)
+        return buffer.getvalue()
+
+    def test_reports_counts_and_a_preview(self, admin_client):
+        data = self._zip([
+            ("sample1.in", "2 3\n"), ("sample1.out", "5\n"),
+            ("2.in", "4 5\n"), ("2.out", "9\n"),
+            ("10.in", "6 7\n"), ("10.out", "13\n"),
+        ])
+        response = admin_client.post(
+            "/api/admin/testdata/inspect",
+            files={"archive": ("t.zip", data, "application/zip")},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["tests"] == 3
+        assert body["samples"] == 1
+        assert body["preview"]["input"] == "2 3\n"
+        assert body["preview"]["output"] == "5\n"
+
+    def test_creates_nothing(self, admin_client):
+        """The whole point: inspection must not touch the database."""
+        before = admin_client.get("/api/problems").json()["problems"]
+        data = self._zip([("1.in", "x\n"), ("1.out", "y\n")])
+        admin_client.post(
+            "/api/admin/testdata/inspect",
+            files={"archive": ("t.zip", data, "application/zip")},
+        )
+        assert admin_client.get("/api/problems").json()["problems"] == before
+
+    def test_unpaired_input_is_rejected(self, admin_client):
+        data = self._zip([("1.in", "x\n")])
+        response = admin_client.post(
+            "/api/admin/testdata/inspect",
+            files={"archive": ("t.zip", data, "application/zip")},
+        )
+        assert response.status_code == 400
+        assert "answer file" in response.json()["detail"]
+
+    def test_garbage_is_rejected(self, admin_client):
+        response = admin_client.post(
+            "/api/admin/testdata/inspect",
+            files={"archive": ("t.zip", b"not a zip", "application/zip")},
+        )
+        assert response.status_code == 400
+
+    def test_requires_admin(self, client):
+        register(client, "outsider")
+        data = self._zip([("1.in", "x\n"), ("1.out", "y\n")])
+        response = client.post(
+            "/api/admin/testdata/inspect",
+            files={"archive": ("t.zip", data, "application/zip")},
+        )
+        assert response.status_code == 403
+
+
+def test_samples_are_ordered_first(admin_client):
+    """Numeric stems sort before the word 'sample', so without an explicit
+    rule the samples would land at the end of the run."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, content in [
+            ("3.in", "c\n"), ("3.out", "C\n"),
+            ("sample2.in", "b\n"), ("sample2.out", "B\n"),
+            ("1.in", "a\n"), ("1.out", "A\n"),
+            ("sample1.in", "s\n"), ("sample1.out", "S\n"),
+        ]:
+            archive.writestr(name, content)
+
+    admin_client.post("/api/admin/problems", json={"slug": "ordered", "title": "Ordered"})
+    admin_client.post(
+        "/api/admin/problems/ordered/tests/upload",
+        files={"archive": ("t.zip", buffer.getvalue(), "application/zip")},
+    ).raise_for_status()
+
+    tests = admin_client.get("/api/admin/problems/ordered/tests").json()["tests"]
+    assert [t["is_sample"] for t in tests] == [True, True, False, False]
+    samples = admin_client.get("/api/problems/ordered").json()["samples"]
+    assert [s["input"] for s in samples] == ["s\n", "b\n"]

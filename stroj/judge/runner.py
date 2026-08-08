@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .. import config
 from . import checkers, languages
-from .sandbox import RunStatus, run, toolchain_temp_dir
+from .sandbox import RunStatus, privilege_drop_target, run, toolchain_temp_dir
 
 # Verdicts. PENDING/JUDGING are queue states; the rest are terminal.
 PENDING = "PENDING"
@@ -145,8 +145,25 @@ def _looks_like_oom(text: str) -> bool:
     return any(marker in text for marker in _OOM_MARKERS)
 
 
+def _hand_box_to_runner(box: Path, run_as: tuple[int, int] | None) -> None:
+    """Give the submission's scratch directory to the account it will run as.
+
+    Everything else the judge owns — the database, other submissions' boxes,
+    the problems' answer files — stays unreachable to it.
+    """
+    if run_as is None:
+        return
+    uid, gid = run_as
+    os.chown(box, uid, gid)
+    for child in box.rglob("*"):
+        os.chown(child, uid, gid)
+
+
 def _compile(
-    lang: languages.Language, box: Path, use_sandbox: bool
+    lang: languages.Language,
+    box: Path,
+    use_sandbox: bool,
+    run_as: tuple[int, int] | None = None,
 ) -> tuple[bool, str]:
     argv = lang.compile_argv()
     if argv is None:
@@ -167,6 +184,9 @@ def _compile(
         output_limit_bytes=config.OUTPUT_LIMIT_BYTES,
         use_sandbox=use_sandbox,
         extra_write_dirs=(toolchain_temp,) if toolchain_temp else (),
+        # The compiler is fed attacker-controlled source, so it is untrusted
+        # too and runs under the same reduced account.
+        run_as=run_as,
     )
     if result.status is RunStatus.OK:
         return True, ""
@@ -187,6 +207,7 @@ def _run_one_test(
     test: TestSpec,
     box: Path,
     use_sandbox: bool,
+    run_as: tuple[int, int] | None = None,
 ) -> TestOutcome:
     time_limit_ms = lang.effective_time_limit_ms(problem.time_limit_ms)
     memory_limit_mb = lang.effective_memory_limit_mb(problem.memory_limit_mb)
@@ -211,6 +232,7 @@ def _run_one_test(
         address_space_rlimit=lang.limit_address_space,
         output_limit_bytes=config.OUTPUT_LIMIT_BYTES,
         use_sandbox=use_sandbox,
+        run_as=run_as,
     )
 
     memory_kb = result.memory_kb
@@ -288,18 +310,24 @@ def judge(
     base = work_dir or config.WORK_DIR
     base.mkdir(parents=True, exist_ok=True)
 
+    run_as = privilege_drop_target()
     box = Path(tempfile.mkdtemp(prefix="box-", dir=base))
     try:
         os.chmod(box, 0o755)
         (box / lang.source_file).write_text(source, encoding="utf-8")
+        _hand_box_to_runner(box, run_as)
 
-        ok, diagnostics = _compile(lang, box, use_sandbox)
+        ok, diagnostics = _compile(lang, box, use_sandbox, run_as)
         if not ok:
             return JudgeOutcome(CE, max_score=max_score, message=diagnostics)
+        # The compiler just created new files (the binary, __pycache__, class
+        # files) owned by the runner already — but re-assert, since a language
+        # with no compile step never went through that path.
+        _hand_box_to_runner(box, run_as)
 
         outcome = JudgeOutcome(AC, max_score=max_score)
         for test in tests:
-            test_result = _run_one_test(lang, problem, test, box, use_sandbox)
+            test_result = _run_one_test(lang, problem, test, box, use_sandbox, run_as)
             outcome.tests.append(test_result)
             outcome.score += test_result.points
             outcome.time_ms = max(outcome.time_ms, test_result.time_ms)

@@ -49,6 +49,15 @@ COMPILE_MEMORY_MB = _int("STROJ_COMPILE_MEMORY_MB", 2048)
 REGISTRATION = os.environ.get("STROJ_REGISTRATION", "open").strip().lower()
 INVITE_CODE = os.environ.get("STROJ_INVITE_CODE", "").strip()
 
+# Rate limits. A judge on a public URL is an unauthenticated login endpoint and
+# an account-creation endpoint facing the whole internet.
+LOGIN_ATTEMPTS = _int("STROJ_LOGIN_ATTEMPTS", 10)
+LOGIN_WINDOW_S = _int("STROJ_LOGIN_WINDOW", 300)
+REGISTER_LIMIT = _int("STROJ_REGISTER_LIMIT", 5)
+REGISTER_WINDOW_S = _int("STROJ_REGISTER_WINDOW", 3600)
+SUBMIT_LIMIT = _int("STROJ_SUBMIT_LIMIT", 40)
+SUBMIT_WINDOW_S = _int("STROJ_SUBMIT_WINDOW", 300)
+
 SESSION_TTL_DAYS = _int("STROJ_SESSION_TTL_DAYS", 14)
 # Mark session cookies `Secure`. Turn this on for any HTTPS deployment; it is
 # off by default so local http://127.0.0.1 development still works.
@@ -71,3 +80,33 @@ def registration_mode() -> str:
 def ensure_dirs() -> None:
     for d in (DATA_DIR, PROBLEM_DIR, WORK_DIR):
         d.mkdir(parents=True, exist_ok=True)
+
+
+def protect_data_dir() -> None:
+    """Make the data directory unreadable to anyone but the judge.
+
+    Submissions run as a separate unprivileged account; this is what stops them
+    walking into the database or another problem's answer files. Only meaningful
+    when running as root — otherwise there is no separate account to exclude.
+    """
+    if os.geteuid() != 0:
+        return
+    for path in (DATA_DIR, PROBLEM_DIR):
+        try:
+            os.chown(path, 0, 0)
+            os.chmod(path, 0o700)
+        except OSError:
+            pass
+    if DB_PATH.exists():
+        try:
+            os.chown(DB_PATH, 0, 0)
+            os.chmod(DB_PATH, 0o600)
+        except OSError:
+            pass
+    # The work directory holds per-submission boxes, which get handed to the
+    # runner individually, so it must be traversable by it.
+    try:
+        os.chown(WORK_DIR, 0, 0)
+        os.chmod(WORK_DIR, 0o711)
+    except OSError:
+        pass

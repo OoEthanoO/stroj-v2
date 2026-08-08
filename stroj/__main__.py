@@ -138,6 +138,15 @@ def cmd_backup(args: argparse.Namespace) -> int:
 def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"data directory : {config.DATA_DIR}")
     print(f"judge workers  : {config.JUDGE_WORKERS}")
+    target = sandbox.privilege_drop_target()
+    if target is None:
+        print("privilege sep  : NONE — submissions run as the judge itself")
+        print("  ! They can read and write everything the judge can, including")
+        print("    the database. Run the container as root with a")
+        print(f"    {sandbox.RUNNER_USER!r} account so privileges can be dropped.")
+    else:
+        print(f"privilege sep  : submissions run as uid {target[0]} ({sandbox.RUNNER_USER})")
+
     mode = sandbox.isolation_mode() if config.USE_SANDBOX else "off (STROJ_SANDBOX=0)"
     print(f"isolation      : {mode}")
     if mode == "none":

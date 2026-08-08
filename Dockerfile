@@ -22,12 +22,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Submissions execute with this process's privileges, so it must not be root.
-# /data is created and chowned here: when a *fresh* named volume is first
-# mounted over it, Docker seeds the volume with this ownership.
-RUN useradd --create-home --uid 10001 judge \
+# Two accounts, and the judge deliberately keeps root *inside the container*.
+#
+# Only root can change uid, so a judge running unprivileged cannot put
+# submissions on a different account — and they then inherit its read/write
+# access to /data, including the database and every problem's answers. Root in
+# an unprivileged container, with submissions dropped to `stroj-runner` before
+# exec, is the materially safer arrangement.
+RUN useradd --no-create-home --uid 10002 --shell /usr/sbin/nologin stroj-runner \
     && mkdir -p /data \
-    && chown judge:judge /data
+    && chown root:root /data \
+    && chmod 700 /data
 
 WORKDIR /app
 
@@ -38,9 +43,9 @@ RUN python3 -m venv /opt/venv \
 
 COPY stroj/ ./stroj/
 
-# /app stays root-owned and read-only to the judge; everything it writes goes
-# to /data.
-USER judge
+# /app is root-owned and only readable by the runner, so a submission cannot
+# rewrite the judge's own code or the toolchain.
+RUN chmod -R go-w /app /opt/venv
 
 # STROJ_PYTHON is deliberately the *system* interpreter, not the venv one on
 # PATH: submissions must not be able to import the judge's own dependencies.

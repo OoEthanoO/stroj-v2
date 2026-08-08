@@ -16,6 +16,7 @@ from __future__ import annotations
 import ctypes
 import math
 import os
+import pwd
 import resource
 import shutil
 import signal
@@ -114,6 +115,31 @@ def unshare_net_prefix() -> tuple[str, ...] | None:
         if probe.returncode == 0:
             return (unshare, *args)
     return None
+
+
+#: Account submissions are dropped to. It must not be the account the judge
+#: itself runs as, or a submission inherits the judge's access to the database.
+RUNNER_USER = os.environ.get("STROJ_RUNNER_USER", "stroj-runner")
+
+
+@lru_cache(maxsize=1)
+def privilege_drop_target() -> tuple[int, int] | None:
+    """``(uid, gid)`` to run submissions as, or None if we cannot separate.
+
+    Only root can change uid, so a judge running unprivileged has no way to put
+    submissions on a different account — and they then share its read/write
+    access to ``/data``, including the database. The caller must treat None as
+    a serious degradation, not a detail.
+    """
+    if os.geteuid() != 0:
+        return None
+    try:
+        entry = pwd.getpwnam(RUNNER_USER)
+    except KeyError:
+        return None
+    if entry.pw_uid == 0:
+        return None
+    return (entry.pw_uid, entry.pw_gid)
 
 
 def isolation_mode() -> str:
@@ -281,6 +307,7 @@ def run(
     use_sandbox: bool = False,
     extra_write_dirs: tuple[str, ...] = (),
     env: dict[str, str] | None = None,
+    run_as: tuple[int, int] | None = None,
 ) -> RunResult:
     """Execute ``argv`` in ``cwd`` under the given limits and report how it went.
 
@@ -353,6 +380,16 @@ def run(
                 memory_limit_bytes if address_space_rlimit else None,
                 output_limit_bytes,
             )
+            # Drop privileges last, and only after the standard descriptors are
+            # already open: the test input lives under a directory the runner
+            # account deliberately cannot reach, and an inherited fd sidesteps
+            # that. Supplementary groups first, then gid, then uid — reversing
+            # the last two would leave the process unable to change group.
+            if run_as is not None:
+                target_uid, target_gid = run_as
+                os.setgroups([])
+                os.setgid(target_gid)
+                os.setuid(target_uid)
             os.execve(exe, argv, child_env)
         except BaseException:
             os._exit(127)

@@ -19,7 +19,8 @@ from .api import (
     routes_submissions,
 )
 from .judge import worker
-from .judge.sandbox import isolation_mode
+from .judge import sandbox as sandbox_module
+from .judge.sandbox import isolation_mode, privilege_drop_target
 
 log = logging.getLogger("stroj")
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -31,7 +32,17 @@ async def lifespan(app: FastAPI):
         level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s"
     )
     config.ensure_dirs()
+    config.protect_data_dir()
     db.init_db()
+
+    if privilege_drop_target() is None:
+        log.warning(
+            "submissions will run as the judge's own account: they can read and "
+            "write everything the judge can, including the database. Run the "
+            "container as root with a %r account present so privileges can be "
+            "dropped per submission.",
+            sandbox_module.RUNNER_USER,
+        )
 
     username, password = auth.ensure_admin()
     if password:

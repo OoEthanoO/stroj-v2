@@ -119,6 +119,20 @@ docker run -d --name "$CONTAINER" \
     --restart unless-stopped \
     --memory "${MEM_LIMIT_MB}m" \
     --pids-limit 512 \
+    `# Everything outside /data is immutable, so a submission cannot rewrite
+     # the judge's own code or the compilers it will be judged by. /tmp is a
+     # small tmpfs for the toolchains' scratch files (not noexec: some
+     # compilers do execute out of their temporary directory).` \
+    --read-only \
+    --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+    `# The judge keeps root *inside* the container purely to drop each
+     # submission to stroj-runner. SETUID/SETGID do the dropping, CHOWN hands
+     # over the box, DAC_OVERRIDE and KILL let it then clean up and time out
+     # processes it no longer owns. Everything else goes.` \
+    --cap-drop ALL \
+    --cap-add SETUID --cap-add SETGID --cap-add CHOWN \
+    --cap-add DAC_OVERRIDE --cap-add KILL \
+    --security-opt no-new-privileges \
     "$IMAGE" >/dev/null
 
 # Bound to 127.0.0.1 above, so the container is only reachable through Caddy,
