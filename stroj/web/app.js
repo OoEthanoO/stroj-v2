@@ -170,8 +170,10 @@ function every(ms, fn) { timers.push(setInterval(fn, ms)); }
 function renderAccount() {
   const box = $('#account');
   if (state.user) {
+    // Same renderer as everywhere else, so the header links to the profile and
+    // marks admins identically rather than having its own private styling.
     box.innerHTML = `
-      <span class="muted">${esc(state.user.username)}${state.user.is_admin ? ' <span class="pill">admin</span>' : ''}</span>
+      ${userLink(state.user.username, state.user.role)}
       <button class="small ghost" id="logout">Sign out</button>`;
     $('#logout').onclick = async () => {
       await api('/api/auth/logout', { method: 'POST' });
