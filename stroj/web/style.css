@@ -42,6 +42,11 @@
 
 * { box-sizing: border-box; }
 
+/* The `hidden` attribute is enforced only by the UA stylesheet, which *any*
+   author rule outranks — `label { display: block }` below was silently
+   un-hiding hidden labels. Restore it with a rule nothing else can beat. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   font-family: var(--sans);
