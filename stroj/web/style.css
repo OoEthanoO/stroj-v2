@@ -381,3 +381,13 @@ details.admin-section > summary {
   display: inline-block; height: 6px; border-radius: 3px;
   background: var(--accent); vertical-align: middle; min-width: 2px;
 }
+
+/* A subtask boundary inside a submission's test list. */
+tr.subtask-head td {
+  background: var(--surface-2);
+  font-weight: 600;
+  font-size: 13px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  padding-bottom: 10px;
+}

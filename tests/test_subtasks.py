@@ -191,3 +191,72 @@ class TestPartialCreditReachesTheLeaderboard:
         assert scoring.user_score(setup["user"]) == pytest.approx(250)
         db.execute("UPDATE problems SET points = 1000 WHERE slug = 'hard'")
         assert scoring.user_score(setup["user"]) == pytest.approx(500)
+
+
+class TestSubmissionGrouping:
+    """A submission that passed one subtask and failed another is unreadable as
+    a flat list, so the detail view groups it."""
+
+    def _problem_with_subtasks(self, admin_client):
+        admin_client.post("/api/admin/problems", json={
+            "slug": "tiered", "title": "Tiered", "partial": True, "points": 300})
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zf:
+            zf.writestr("sample1.in", "1\n"); zf.writestr("sample1.out", "1\n")
+            for i in (1, 2):
+                zf.writestr(f"subtask1-40/{i}.in", "1\n")
+                zf.writestr(f"subtask1-40/{i}.out", "1\n")
+            zf.writestr("subtask2-60/1.in", "2\n")
+            zf.writestr("subtask2-60/1.out", "2\n")
+        admin_client.post(
+            "/api/admin/problems/tiered/tests/upload",
+            files={"archive": ("t.zip", buffer.getvalue(), "application/zip")},
+        ).raise_for_status()
+
+    def test_each_test_reports_its_subtask(self, admin_client):
+        from stroj.judge import worker
+
+        self._problem_with_subtasks(admin_client)
+        # Echoes the input, so it passes on "1" and fails on "2".
+        response = admin_client.post("/api/submissions", json={
+            "problem": "tiered", "language": "python3", "source": "print(1)"})
+        worker.drain()
+
+        body = admin_client.get(f"/api/submissions/{response.json()['id']}").json()
+        by_subtask = {}
+        for test in body["tests"]:
+            by_subtask.setdefault(test["subtask"], []).append(test["verdict"])
+        assert by_subtask[0] == ["AC"]          # the sample
+        assert by_subtask[1] == ["AC", "AC"]    # subtask 1 fully passed
+        assert by_subtask[2] == ["WA"]          # subtask 2 failed
+        assert body["earned_percent"] == 40
+
+    def test_the_detail_carries_the_subtask_weights(self, admin_client):
+        self._problem_with_subtasks(admin_client)
+        response = admin_client.post("/api/submissions", json={
+            "problem": "tiered", "language": "python3", "source": "print(1)"})
+        body = admin_client.get(f"/api/submissions/{response.json()['id']}").json()
+        assert body["subtasks"] == [
+            {"idx": 1, "percent": 40, "tests": 2},
+            {"idx": 2, "percent": 60, "tests": 1},
+        ]
+
+    def test_samples_are_reported_as_samples(self, admin_client):
+        from stroj.judge import worker
+
+        self._problem_with_subtasks(admin_client)
+        response = admin_client.post("/api/submissions", json={
+            "problem": "tiered", "language": "python3", "source": "print(1)"})
+        worker.drain()
+        body = admin_client.get(f"/api/submissions/{response.json()['id']}").json()
+        assert [t["is_sample"] for t in body["tests"]] == [True, False, False, False]
+
+    def test_a_problem_without_subtasks_reports_none(self, admin_client):
+        from tests.test_api import make_problem
+
+        make_problem(admin_client)
+        response = admin_client.post("/api/submissions", json={
+            "problem": "a-plus-b", "language": "python3", "source": "print(1)"})
+        body = admin_client.get(f"/api/submissions/{response.json()['id']}").json()
+        assert body["subtasks"] == []
+        assert all(t["subtask"] == 0 for t in body["tests"])

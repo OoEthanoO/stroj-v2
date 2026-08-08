@@ -191,9 +191,14 @@ def get_submission(submission_id: int, request: Request):
             "SELECT COUNT(*) AS n FROM testcases WHERE problem_id = ?",
             (row["problem_id"],),
         )["n"]
+        # Which group each test belongs to lives on the problem, not on the
+        # result, so join rather than duplicating it per submission.
         tests = db.query(
-            "SELECT * FROM submission_tests WHERE submission_id = ? ORDER BY idx",
-            (submission_id,),
+            "SELECT st.*, tc.subtask, tc.is_sample FROM submission_tests st"
+            "  LEFT JOIN testcases tc"
+            "    ON tc.problem_id = ? AND tc.idx = st.idx"
+            " WHERE st.submission_id = ? ORDER BY st.idx",
+            (row["problem_id"], submission_id),
         )
         data["tests"] = [
             {
@@ -204,8 +209,24 @@ def get_submission(submission_id: int, request: Request):
                 "memory_kb": t["memory_kb"],
                 "points": t["points"],
                 "message": t["message"],
+                # NULL when the test data was replaced after this run, so the
+                # row no longer matches a live test case.
+                "subtask": t["subtask"] or 0,
+                "is_sample": bool(t["is_sample"]),
             }
             for t in tests
+        ]
+        data["subtasks"] = [
+            {"idx": s["idx"], "percent": s["percent"],
+             "tests": s["n"]}
+            for s in db.query(
+                "SELECT ps.idx, ps.percent,"
+                "       (SELECT COUNT(*) FROM testcases tc"
+                "         WHERE tc.problem_id = ps.problem_id AND tc.subtask = ps.idx)"
+                "       AS n"
+                "  FROM problem_subtasks ps WHERE ps.problem_id = ? ORDER BY ps.idx",
+                (row["problem_id"],),
+            )
         ]
     return data
 

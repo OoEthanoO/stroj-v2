@@ -526,7 +526,7 @@ async function viewSubmission(id) {
            <td colspan="4" class="muted small">…</td></tr>`
       : '';
 
-    const tests = (s.tests || []).map((t) => `
+    const testRow = (t) => `
       <tr>
         <td class="num">${t.idx}</td>
         <td>${verdictBadge(t.verdict, t.verdict_name)}</td>
@@ -534,7 +534,44 @@ async function viewSubmission(id) {
         <td class="num muted">${memory(t.memory_kb)}</td>
         <td class="num muted">${t.points}</td>
         <td class="wide muted small mono">${esc(t.message)}</td>
-      </tr>`).join('');
+      </tr>`;
+
+    // With subtasks the run is only readable when it is grouped: a submission
+    // that failed one group and passed another looks like noise as a flat list.
+    const groups = s.subtasks || [];
+    let tests;
+    if (groups.length) {
+      const rows = [];
+      const of = (n) => (s.tests || []).filter((t) => (t.subtask || 0) === n);
+
+      const samples = of(0);
+      if (samples.length) {
+        rows.push(`<tr class="subtask-head"><td colspan="6">Samples
+          <span class="muted small">— not scored</span></td></tr>`);
+        rows.push(...samples.map(testRow));
+      }
+
+      for (const group of groups) {
+        const mine = of(group.idx);
+        const failed = mine.some((t) => t.verdict !== 'AC');
+        // Only claim a subtask once every one of its tests has actually run —
+        // mid-judge, three passes out of five is not yet an earned subtask.
+        const complete = mine.length === group.tests;
+        const status = failed
+          ? `<span class="badge v-WA">0%</span>`
+          : complete
+            ? `<span class="badge v-AC">${group.percent}%</span>`
+            : `<span class="muted small">${mine.length}/${group.tests} run</span>`;
+        rows.push(`<tr class="subtask-head"><td colspan="5">Subtask ${group.idx}
+            <span class="muted small">— worth ${group.percent}%</span></td>
+          <td class="num">${status}</td></tr>`);
+        rows.push(...(mine.length ? mine.map(testRow)
+          : [`<tr><td colspan="6" class="muted small">not reached</td></tr>`]));
+      }
+      tests = rows.join('');
+    } else {
+      tests = (s.tests || []).map(testRow).join('');
+    }
 
     setView(`
       <div class="page-head">
