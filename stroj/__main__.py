@@ -100,13 +100,14 @@ def cmd_rejudge(args: argparse.Namespace) -> int:
 def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"data directory : {config.DATA_DIR}")
     print(f"judge workers  : {config.JUDGE_WORKERS}")
-    available = sandbox.sandbox_available()
-    wanted = config.USE_SANDBOX
-    state = "on" if (wanted and available) else ("unavailable" if wanted else "off")
-    print(f"sandbox-exec   : {state}")
-    if wanted and not available:
-        print("  ! sandbox-exec was requested but is not usable on this platform;")
-        print("    submissions will run with rlimits only.")
+    mode = sandbox.isolation_mode() if config.USE_SANDBOX else "off (STROJ_SANDBOX=0)"
+    print(f"isolation      : {mode}")
+    if mode == "none":
+        print("  ! No isolation is usable here. Submissions run with rlimits and")
+        print("    RSS monitoring only — no network or filesystem confinement.")
+    elif mode == "unshare-net":
+        print("  ! Network namespaces only; there is no filesystem confinement.")
+        print("    Run the judge inside a disposable container.")
     print("languages:")
     ok = True
     for lang_id, lang in languages.LANGUAGES.items():

@@ -44,6 +44,9 @@ COMPILE_TIME_LIMIT_S = _int("STROJ_COMPILE_TIME", 20)
 COMPILE_MEMORY_MB = _int("STROJ_COMPILE_MEMORY_MB", 2048)
 
 SESSION_TTL_DAYS = _int("STROJ_SESSION_TTL_DAYS", 14)
+# Mark session cookies `Secure`. Turn this on for any HTTPS deployment; it is
+# off by default so local http://127.0.0.1 development still works.
+SECURE_COOKIES = _flag("STROJ_SECURE_COOKIES", False)
 # Default penalty (minutes) per rejected attempt before an accepted one, ICPC style.
 DEFAULT_ICPC_PENALTY_MINUTES = 20
 

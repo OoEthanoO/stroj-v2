@@ -20,11 +20,13 @@ import resource
 import shutil
 import signal
 import struct
+import subprocess
 import sys
 import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
 
 # getrusage reports ru_maxrss in bytes on the BSDs (macOS) and kilobytes on Linux.
 RSS_UNIT_BYTES = 1 if sys.platform == "darwin" else 1024
@@ -78,8 +80,55 @@ class RunResult:
         return self.max_rss_bytes // 1024
 
 
-def sandbox_available() -> bool:
+def sandbox_exec_available() -> bool:
+    """macOS: full isolation — no network, no writes outside the box."""
     return sys.platform == "darwin" and os.path.exists(SANDBOX_EXEC)
+
+
+@lru_cache(maxsize=1)
+def unshare_net_prefix() -> tuple[str, ...] | None:
+    """Linux: an argv prefix that puts the child in an empty network namespace.
+
+    There is no `sandbox-exec` outside macOS, so network isolation on Linux
+    comes from `unshare`. Whether it works depends on the kernel and on the
+    container's capabilities, so rather than guess we actually run it once and
+    keep the first form that succeeds. Returns None when neither works, and the
+    caller degrades to rlimits alone.
+    """
+    if sys.platform != "linux":
+        return None
+    unshare = shutil.which("unshare")
+    if unshare is None:
+        return None
+    candidates = (
+        ("--net",),                            # needs CAP_SYS_ADMIN
+        ("--user", "--map-root-user", "--net"),  # unprivileged user namespace
+    )
+    for args in candidates:
+        try:
+            probe = subprocess.run(
+                [unshare, *args, "true"], capture_output=True, timeout=15
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if probe.returncode == 0:
+            return (unshare, *args)
+    return None
+
+
+def isolation_mode() -> str:
+    """Which isolation is actually in force here: the honest answer, not the
+    configured one."""
+    if sandbox_exec_available():
+        return "sandbox-exec"
+    if unshare_net_prefix() is not None:
+        return "unshare-net"
+    return "none"
+
+
+def sandbox_available() -> bool:
+    """True when *some* isolation beyond rlimits is available."""
+    return isolation_mode() != "none"
 
 
 def toolchain_temp_dir() -> str | None:
@@ -256,9 +305,16 @@ def run(
     )
 
     argv = list(argv)
-    if use_sandbox and sandbox_available():
-        profile = build_profile([cwd, *extra_write_dirs])
-        argv = [SANDBOX_EXEC, "-p", profile, *argv]
+    if use_sandbox:
+        if sandbox_exec_available():
+            profile = build_profile([cwd, *extra_write_dirs])
+            argv = [SANDBOX_EXEC, "-p", profile, *argv]
+        else:
+            # Linux: no filesystem confinement here — that is the container's
+            # job — but the network can still be taken away.
+            prefix = unshare_net_prefix()
+            if prefix is not None:
+                argv = [*prefix, *argv]
 
     exe = _resolve(argv[0], child_env.get("PATH"))
     if exe is None:

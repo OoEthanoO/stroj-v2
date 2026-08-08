@@ -22,6 +22,7 @@ def _set_session_cookie(response: Response, token: str) -> None:
         token,
         max_age=config.SESSION_TTL_DAYS * 86400,
         httponly=True,
+        secure=config.SECURE_COOKIES,
         samesite="lax",
         path="/",
     )

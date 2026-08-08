@@ -1,0 +1,16 @@
+.venv/
+data/
+tests/
+.git/
+.github/
+.pytest_cache/
+__pycache__/
+*.pyc
+.DS_Store
+public/
+node_modules/
+README.md
+DEPLOY.md
+vercel.json
+run.sh
+.claude/

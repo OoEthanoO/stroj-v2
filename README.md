@@ -77,6 +77,13 @@ Each submission runs in a throwaway directory as a fresh process group with:
 - **`sandbox-exec`** (macOS) denying all network access and all filesystem
   writes outside the submission's own directory.
 
+Outside macOS there is no `sandbox-exec`. On Linux the judge probes for
+`unshare` at startup and uses a network namespace instead, which takes the
+network away but gives **no filesystem confinement** — there, the container is
+the boundary. `python -m stroj doctor` and the web UI footer both report the
+isolation actually in force (`sandbox-exec`, `unshare-net`, or `none`) rather
+than the one you asked for.
+
 What this is **not**: a container, a VM, or a defence against someone who is
 actually trying. Reads are unrestricted, so a submission can read files the
 judge user can read. `sandbox-exec` is deprecated by Apple. There is no user
@@ -162,8 +169,16 @@ its tests any submission passed. Ties break on the time of the last improvement.
 | `STROJ_MAX_SOURCE_BYTES` | `262144` | source size cap |
 | `STROJ_COMPILE_TIME` | `20` | compile timeout, seconds |
 | `STROJ_SESSION_TTL_DAYS` | `14` | login lifetime |
+| `STROJ_SECURE_COOKIES` | `0` | mark session cookies `Secure` — turn on for HTTPS |
 
 Everything lives under `STROJ_DATA`. Delete that directory for a clean slate.
+
+## Deploying
+
+See [DEPLOY.md](DEPLOY.md). Short version: the judge needs a real container with
+a persistent volume, so it cannot live on a serverless platform; the static
+frontend can sit on Vercel and proxy `/api/*` back to it. That file also covers
+what the hosting actually costs and which free tiers are and are not viable.
 
 ## Command line
 

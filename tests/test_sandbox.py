@@ -123,7 +123,9 @@ def test_children_are_reaped_with_the_group(tmp_path):
     assert result.status is RunStatus.TIMEOUT
 
 
-@pytest.mark.skipif(not sandbox.sandbox_available(), reason="needs macOS sandbox-exec")
+@pytest.mark.skipif(
+    not sandbox.sandbox_exec_available(), reason="needs macOS sandbox-exec"
+)
 class TestSandboxProfile:
     def test_writes_outside_the_box_are_denied(self, tmp_path):
         forbidden = tmp_path.parent / "escaped.txt"
@@ -164,3 +166,18 @@ def test_profile_quotes_paths_with_spaces():
     profile = sandbox.build_profile(["/tmp/a dir/with \"quotes\""])
     assert '\\"' in profile
     assert "(deny network*)" in profile
+
+
+class TestIsolationReporting:
+    def test_mode_matches_the_platform(self):
+        mode = sandbox.isolation_mode()
+        assert mode in ("sandbox-exec", "unshare-net", "none")
+        if sys.platform == "darwin":
+            assert mode == "sandbox-exec"
+
+    def test_available_agrees_with_mode(self):
+        assert sandbox.sandbox_available() == (sandbox.isolation_mode() != "none")
+
+    def test_unshare_prefix_is_none_off_linux(self):
+        if sys.platform != "linux":
+            assert sandbox.unshare_net_prefix() is None

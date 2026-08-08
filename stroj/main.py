@@ -19,7 +19,7 @@ from .api import (
     routes_submissions,
 )
 from .judge import worker
-from .judge.sandbox import sandbox_available
+from .judge.sandbox import isolation_mode
 
 log = logging.getLogger("stroj")
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -42,12 +42,23 @@ async def lifespan(app: FastAPI):
             password,
         )
 
-    if config.USE_SANDBOX and not sandbox_available():
-        log.warning(
-            "STROJ_SANDBOX is on but sandbox-exec is unavailable on this platform: "
-            "submissions will run with rlimits and RSS monitoring only, with NO "
-            "network or filesystem isolation. Do not expose this to untrusted users."
-        )
+    if config.USE_SANDBOX:
+        mode = isolation_mode()
+        if mode == "none":
+            log.warning(
+                "STROJ_SANDBOX is on but no isolation mechanism is usable here: "
+                "submissions run with rlimits and RSS monitoring only, with NO "
+                "network or filesystem isolation. Do not expose this to untrusted "
+                "users."
+            )
+        elif mode == "unshare-net":
+            log.warning(
+                "isolation: network namespaces only. Submissions cannot reach the "
+                "network, but nothing stops them writing anywhere this process can. "
+                "Run the judge in a disposable container."
+            )
+        else:
+            log.info("isolation: %s", mode)
 
     if config.START_WORKERS:
         worker.start_pool()

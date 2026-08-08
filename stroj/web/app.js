@@ -962,9 +962,14 @@ async function boot() {
   }
 
   const installed = state.languages.filter((l) => l.available).map((l) => l.name);
+  const isolation = {
+    'sandbox-exec': 'isolation: full',
+    'unshare-net': 'isolation: network only',
+    none: 'isolation: NONE',
+  }[state.config.isolation] || 'isolation: unknown';
   $('#footer-info').textContent =
     `stroj · ${installed.join(' · ') || 'no languages installed'} · ` +
-    `sandbox ${state.config.sandbox ? 'on' : 'off'} · ${state.config.workers} judge worker(s)`;
+    `${isolation} · ${state.config.workers} judge worker(s)`;
 
   renderAccount();
   window.addEventListener('hashchange', route);
