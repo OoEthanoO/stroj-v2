@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 
 import pytest
 
@@ -359,3 +360,47 @@ class TestSchemaMigration:
         for table, column, _ in db._ADDED_COLUMNS:
             names = {r["name"] for r in db.query(f"PRAGMA table_info({table})")}
             assert column in names, f"{table}.{column} missing"
+
+
+class TestDataDirectoryModes:
+    """The runner must be able to reach its own box while still being locked
+    out of everything else. Getting `/data` wrong breaks Python submissions and
+    only Python submissions, which is a miserable thing to debug."""
+
+    def _modes(self):
+        from stroj import config
+
+        return dict(config.data_dir_modes())
+
+    def test_data_dir_is_traversable_by_others(self):
+        from stroj import config
+
+        mode = self._modes()[config.DATA_DIR]
+        assert mode & 0o001, "runner needs execute on /data to reach its box"
+        assert not mode & 0o004, "but must not be able to list it"
+
+    def test_work_dir_is_traversable_by_others(self):
+        from stroj import config
+
+        mode = self._modes()[config.WORK_DIR]
+        assert mode & 0o001
+        assert not mode & 0o004
+
+    def test_problem_dir_is_not_reachable_at_all(self):
+        """Answer files: traversal itself is the thing to deny."""
+        from stroj import config
+
+        assert self._modes()[config.PROBLEM_DIR] & 0o007 == 0
+
+    def test_database_and_its_sidecars_are_owner_only(self):
+        from stroj import config
+
+        modes = self._modes()
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            path = pathlib.Path(str(config.DB_PATH) + suffix)
+            assert path in modes, f"{suffix or 'db'} not protected"
+            assert modes[path] & 0o077 == 0, f"{suffix or 'db'} is group/other readable"
+
+    def test_nothing_is_group_or_other_writable(self):
+        for path, mode in self._modes().items():
+            assert mode & 0o022 == 0, f"{path} is writable by someone else"

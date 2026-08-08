@@ -108,31 +108,52 @@ def ensure_dirs() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 
-def protect_data_dir() -> None:
-    """Make the data directory unreadable to anyone but the judge.
+def data_dir_modes() -> list[tuple[Path, int]]:
+    """The mode each path under STROJ_DATA must end up with.
 
-    Submissions run as a separate unprivileged account; this is what stops them
-    walking into the database or another problem's answer files. Only meaningful
-    when running as root — otherwise there is no separate account to exclude.
+    `0o711` means traverse-but-not-list. `/data` needs it: a submission runs as
+    another account and has to reach its own box at /data/work/box-*, so it
+    needs execute on every directory along that path. Making /data `0o700`
+    instead locks the runner out of its own scratch directory — C++ survives it
+    because execve resolves ./main against the already-open cwd, but CPython
+    converts the script path to absolute and walks the tree, so Python
+    submissions fail with EACCES and nothing else does.
+
+    Confidentiality does not come from /data being unreadable; it comes from
+    each thing inside it. The database is `0o600` and the answer files live in a
+    `0o700` directory, so being able to traverse /data reveals nothing.
+    """
+    modes = [
+        (DATA_DIR, 0o711),    # traverse only — see above
+        (PROBLEM_DIR, 0o700), # answer files: not even traversable
+        (WORK_DIR, 0o711),    # boxes are handed over individually
+    ]
+    # SQLite writes -wal and -shm alongside the database, and they hold recent
+    # transactions. Now that /data can be traversed by name they need locking
+    # down explicitly rather than relying on the parent directory.
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        modes.append((Path(str(DB_PATH) + suffix), 0o600))
+    return modes
+
+
+def protect_data_dir() -> None:
+    """Put the judge's data out of reach of the account submissions run as.
+
+    Only meaningful as root — unprivileged, there is no separate account to
+    exclude and nothing to enforce.
     """
     if os.geteuid() != 0:
         return
-    for path in (DATA_DIR, PROBLEM_DIR):
+
+    # Anything created from here on is owner-only. SQLite recreates -wal and
+    # -shm at runtime, so fixing their mode once at startup would not hold.
+    os.umask(0o077)
+
+    for path, mode in data_dir_modes():
+        if not path.exists():
+            continue
         try:
             os.chown(path, 0, 0)
-            os.chmod(path, 0o700)
+            os.chmod(path, mode)
         except OSError:
             pass
-    if DB_PATH.exists():
-        try:
-            os.chown(DB_PATH, 0, 0)
-            os.chmod(DB_PATH, 0o600)
-        except OSError:
-            pass
-    # The work directory holds per-submission boxes, which get handed to the
-    # runner individually, so it must be traversable by it.
-    try:
-        os.chown(WORK_DIR, 0, 0)
-        os.chmod(WORK_DIR, 0o711)
-    except OSError:
-        pass
