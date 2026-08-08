@@ -189,21 +189,43 @@ Run `./run.sh` alongside it. The judge origin is `https://judge.ethanyanxu.com`.
 
 ## Part 2 — the frontend on Vercel
 
+### Shipping the static half first (optional)
+
+The build refuses to run while `JUDGE_ORIGIN` is a placeholder, so that a
+frontend pointing at nothing cannot reach production. If you want to validate
+the domain, DNS and TLS *in parallel* with provisioning the backend, set
+`STROJ_FRONTEND_ONLY=1` in the Vercel project's environment variables. The build
+then warns instead of failing, and the deployed site loads and reports "No judge
+backend connected" until you set a real origin.
+
+Remove that variable once the judge is live, so the guard protects you again.
+
+### The real thing
+
 Set the judge origin. `scripts/build-static.sh` refuses to build while the
 placeholder is present, so a misconfigured frontend cannot ship:
 
 ```bash
 sed -i '' 's|JUDGE_ORIGIN|judge.ethanyanxu.com|g' vercel.json
 bash scripts/build-static.sh          # sanity-check locally
-git commit -am 'Point Vercel rewrites at the judge'
 ```
 
-Then deploy. Both commands need your credentials, so run them yourself:
+**Know which deploy path you are on — they read different files:**
 
-```bash
-vercel login
-vercel --prod
-```
+- **Git integration** (the repo is connected in the Vercel dashboard): Vercel
+  clones the *pushed commit*. Uncommitted files do not exist as far as the build
+  is concerned. Deploy by pushing:
+
+  ```bash
+  git commit -am 'Point Vercel rewrites at the judge' && git push
+  ```
+
+- **CLI**: `vercel --prod` uploads your *local working directory*, so it will
+  happily deploy files you have not committed — which is convenient for a
+  one-off and confusing if you forget. Needs `vercel login` first.
+
+Pick one. If the repo is connected, pushing is the path, and running the CLI as
+well just creates a second deployment from a different source.
 
 Attach the domain:
 

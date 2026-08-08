@@ -957,7 +957,23 @@ async function boot() {
     state.defaultLanguage = langs.default;
     state.config = config;
   } catch (err) {
-    setView(`<div class="empty">Could not reach the judge: ${esc(err.message)}</div>`);
+    // The static frontend can be deployed before the judge backend exists, so
+    // say which half is missing instead of showing a bare fetch error.
+    setView(`
+      <div class="empty" style="text-align:left;max-width:620px;margin:40px auto">
+        <h2 style="margin-top:0">No judge backend connected</h2>
+        <p class="muted">The site loaded, but <code>/api/*</code> is not reaching a
+        judge. The frontend is static; compiling and running submissions needs a
+        separate always-on backend.</p>
+        <p class="muted small mono">${esc(err.message)}</p>
+        <p class="muted small">If you are deploying this: stand up the judge
+        container, then point the <code>/api/*</code> rewrite at its origin and
+        redeploy. See <code>DEPLOY.md</code>.</p>
+      </div>`);
+    // Nothing here is actionable without a backend — don't imply otherwise.
+    $$('.admin-only').forEach((node) => { node.style.display = 'none'; });
+    $('#account').innerHTML = '';
+    $('#footer-info').textContent = 'stroj · frontend only — no judge connected';
     return;
   }
 
