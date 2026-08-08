@@ -129,13 +129,21 @@ fi
 take_deploy_lock
 
 git fetch -q origin main
-local_rev="$(git rev-parse HEAD)"
 remote_rev="$(git rev-parse origin/main)"
 
-if [ "$local_rev" = "$remote_rev" ]; then
+# Compare what is actually RUNNING against the remote, not what is checked out.
+# The commit is baked into the image at build time, so a `git pull` on the box
+# moves the checkout without rebuilding anything — and a checkout-to-remote
+# comparison would then report "up to date" forever while the container stayed
+# on an old commit. Ask the container what it is.
+deployed="$(docker inspect "$CONTAINER" \
+    --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+    | sed -n 's/^STROJ_COMMIT=//p' | head -1)"
+
+if [ "$deployed" = "$remote_rev" ]; then
     exit 0
 fi
-log "update available: ${local_rev:0:7} -> ${remote_rev:0:7}"
+log "running ${deployed:0:7}${deployed:+ }-> deploying ${remote_rev:0:7}"
 
 # A redeploy rebuilds the image and restarts the container. In-flight
 # submissions get requeued rather than lost, but the site is down for a minute
