@@ -147,8 +147,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         print(f"privilege sep  : submissions run as uid {target[0]} ({sandbox.RUNNER_USER})")
 
+    print(f"protection     : {sandbox.protection_summary()}")
     mode = sandbox.isolation_mode() if config.USE_SANDBOX else "off (STROJ_SANDBOX=0)"
-    print(f"isolation      : {mode}")
+    print(f"  sandbox      : {mode}")
     if mode == "none":
         print("  ! No isolation is usable here. Submissions run with rlimits and")
         print("    RSS monitoring only — no network or filesystem confinement.")

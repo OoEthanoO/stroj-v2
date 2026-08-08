@@ -232,3 +232,36 @@ class TestVersionReporting:
 
         monkeypatch.setattr(subprocess, "run", no_git)
         assert config.commit() == "unknown"
+
+
+class TestProtectionSummary:
+    """`isolation` alone reported "none" inside a container even with
+    privilege separation active, which read as "nothing is protecting you"."""
+
+    def test_privilege_separation_alone_is_not_none(self, monkeypatch):
+        monkeypatch.setattr(sandbox, "sandbox_exec_available", lambda: False)
+        monkeypatch.setattr(sandbox, "isolation_mode", lambda: "none")
+        monkeypatch.setattr(sandbox, "privilege_drop_target", lambda: (10002, 10002))
+        assert sandbox.protection_summary() == "separated"
+
+    def test_netns_and_separation_combine(self, monkeypatch):
+        monkeypatch.setattr(sandbox, "sandbox_exec_available", lambda: False)
+        monkeypatch.setattr(sandbox, "isolation_mode", lambda: "unshare-net")
+        monkeypatch.setattr(sandbox, "privilege_drop_target", lambda: (10002, 10002))
+        assert sandbox.protection_summary() == "separated+netns"
+
+    def test_sandbox_exec_wins(self, monkeypatch):
+        monkeypatch.setattr(sandbox, "sandbox_exec_available", lambda: True)
+        assert sandbox.protection_summary() == "full"
+
+    def test_nothing_available_is_still_none(self, monkeypatch):
+        monkeypatch.setattr(sandbox, "sandbox_exec_available", lambda: False)
+        monkeypatch.setattr(sandbox, "isolation_mode", lambda: "none")
+        monkeypatch.setattr(sandbox, "privilege_drop_target", lambda: None)
+        assert sandbox.protection_summary() == "none"
+
+    def test_config_exposes_it(self, client):
+        body = client.get("/api/config").json()
+        assert body["protection"] == sandbox.protection_summary()
+        # The narrower field stays, for anyone who needs the mechanism itself.
+        assert "isolation" in body

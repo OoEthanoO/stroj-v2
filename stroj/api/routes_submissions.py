@@ -9,7 +9,12 @@ from .. import __version__, config, contest as contest_mod, db
 from ..ratelimit import RateLimiter
 from ..judge import languages, worker
 from ..judge.runner import JUDGING, PENDING, VERDICT_NAMES, validate_source
-from ..judge.sandbox import isolation_mode, privilege_drop_target, sandbox_available
+from ..judge.sandbox import (
+    isolation_mode,
+    privilege_drop_target,
+    protection_summary,
+    sandbox_available,
+)
 from .deps import (
     current_user,
     get_problem,
@@ -223,6 +228,9 @@ def judge_config():
     return {
         "max_source_bytes": config.MAX_SOURCE_BYTES,
         "sandbox": active,
+        # Overall posture — what the UI shows. `isolation` below is only the
+        # in-process sandbox mechanism and is absent in a Linux container.
+        "protection": protection_summary(),
         "isolation": isolation_mode() if config.USE_SANDBOX else "none",
         "sandbox_requested": config.USE_SANDBOX,
         # Whether submissions run under an account separate from the judge's.

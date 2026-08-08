@@ -157,6 +157,30 @@ def sandbox_available() -> bool:
     return isolation_mode() != "none"
 
 
+def protection_summary() -> str:
+    """One word for how well a submission is actually contained.
+
+    ``isolation_mode()`` names only the in-process sandbox mechanism, and there
+    isn't one inside a Linux container. Reporting that alone read as "nothing
+    is protecting you", which was wrong and alarming: privilege separation is
+    the load-bearing control there, and it is invisible to that field.
+
+    Deliberately reports only what this process can verify about itself. The
+    host's egress rule does real work but lives outside the container, so it is
+    never counted here — see DEPLOY.md.
+    """
+    separated = privilege_drop_target() is not None
+    if sandbox_exec_available():
+        return "full"
+    if separated and isolation_mode() == "unshare-net":
+        return "separated+netns"
+    if separated:
+        return "separated"
+    if isolation_mode() == "unshare-net":
+        return "network-only"
+    return "none"
+
+
 def toolchain_temp_dir() -> str | None:
     """The per-user temp directory Apple's toolchain caches into.
 

@@ -1196,11 +1196,15 @@ async function boot() {
   }
 
   const installed = state.languages.filter((l) => l.available).map((l) => l.name);
+  // Reports overall posture, not just the in-process sandbox mechanism —
+  // privilege separation is what does the work inside a Linux container.
   const isolation = {
-    'sandbox-exec': 'isolation: full',
-    'unshare-net': 'isolation: network only',
+    full: 'isolation: full',
+    'separated+netns': 'isolation: separate account, no network',
+    separated: 'isolation: separate account',
+    'network-only': 'isolation: network only',
     none: 'isolation: NONE',
-  }[state.config.isolation] || 'isolation: unknown';
+  }[state.config.protection] || 'isolation: unknown';
   $('#footer-info').textContent =
     `stroj · ${installed.join(' · ') || 'no languages installed'} · ` +
     `${isolation} · ${state.config.workers} judge worker(s)${versionNote}`;
