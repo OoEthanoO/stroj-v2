@@ -144,7 +144,12 @@ def main() -> int:
     # Loopback only. Caddy terminates TLS and forwards; nothing should reach
     # this directly from the network.
     server = HTTPServer(("127.0.0.1", port), Handler)
-    log.info("listening on 127.0.0.1:%d, deploying %s on %s", port, domain, Handler.branch)
+    # Deliberately avoids the word the deploy path logs: an ambiguous startup
+    # line makes "did a webhook trigger this?" unanswerable from the journal.
+    log.info(
+        "ready on 127.0.0.1:%d — will redeploy %s when %s moves",
+        port, domain, Handler.branch,
+    )
     server.serve_forever()
     return 0
 
