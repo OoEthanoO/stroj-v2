@@ -854,3 +854,131 @@ class TestDeletionImpact:
         admin_client.post("/api/auth/logout")
         register(client, "curious")
         assert client.get("/api/admin/problems/a-plus-b/impact").status_code == 403
+
+
+class TestEditingAContest:
+    """Deleting a contest NULLs `contest_id` on every submission made during
+    it, so the scoreboard cannot be rebuilt. Editing is the only safe way to
+    fix a mistake, which makes its validation load-bearing."""
+
+    def contest(self, admin_client, **overrides):
+        now = db.parse_time(db.utcnow())
+        body = {
+            "slug": "round-1", "title": "Round 1",
+            "starts_at": now.isoformat(),
+            "ends_at": (now + timedelta(hours=3)).isoformat(),
+            **overrides,
+        }
+        admin_client.post("/api/admin/contests", json=body).raise_for_status()
+        return body["slug"]
+
+    def stored(self, slug="round-1"):
+        return db.one("SELECT * FROM contests WHERE slug = ?", (slug,))
+
+    def test_changes_are_applied(self, admin_client):
+        slug = self.contest(admin_client)
+        response = admin_client.patch(f"/api/admin/contests/{slug}",
+                                      json={"title": "Renamed", "penalty_minutes": 5})
+        assert response.status_code == 200
+        row = self.stored()
+        assert row["title"] == "Renamed" and row["penalty_minutes"] == 5
+
+    def test_untouched_fields_survive(self, admin_client):
+        slug = self.contest(admin_client, description="the original blurb")
+        admin_client.patch(f"/api/admin/contests/{slug}", json={"title": "Renamed"})
+        assert self.stored()["description"] == "the original blurb"
+
+    def test_an_empty_patch_changes_nothing(self, admin_client):
+        slug = self.contest(admin_client)
+        before = dict(self.stored())
+        assert admin_client.patch(f"/api/admin/contests/{slug}", json={}).json()["updated"] == 0
+        assert dict(self.stored()) == before
+
+    def test_times_are_stored_in_the_one_canonical_format(self, admin_client):
+        """The scoreboard filters submissions by string comparison against
+        these columns, so a different ISO spelling would drop rows silently."""
+        slug = self.contest(admin_client)
+        response = admin_client.patch(f"/api/admin/contests/{slug}", json={
+            "starts_at": "2026-09-01T10:00:00+00:00",
+            "ends_at": "2026-09-01T13:00:00+00:00",
+        })
+        assert response.status_code == 200, response.text
+        row = self.stored()
+        assert row["starts_at"] == "2026-09-01T10:00:00.000Z"
+        assert row["ends_at"] == "2026-09-01T13:00:00.000Z"
+
+    def test_a_half_patch_is_checked_against_the_stored_half(self, admin_client):
+        """Sending only `ends_at` must still be compared with the existing
+        `starts_at`, or a contest can be edited into ending before it begins."""
+        slug = self.contest(admin_client)
+        earlier = (db.parse_time(db.utcnow()) - timedelta(hours=5)).isoformat()
+        response = admin_client.patch(f"/api/admin/contests/{slug}", json={"ends_at": earlier})
+        assert response.status_code == 400
+        assert "end after it starts" in response.json()["detail"]
+
+    def test_a_freeze_longer_than_the_contest_is_refused(self, admin_client):
+        slug = self.contest(admin_client)
+        response = admin_client.patch(f"/api/admin/contests/{slug}",
+                                      json={"freeze_minutes": 600})
+        assert response.status_code == 400
+        assert self.stored()["freeze_minutes"] == 0
+
+    def test_shortening_a_contest_rechecks_an_existing_freeze(self, admin_client):
+        """The freeze was legal against the old window; it need not be against
+        the new one."""
+        slug = self.contest(admin_client, freeze_minutes=120)
+        now = db.parse_time(db.utcnow())
+        response = admin_client.patch(
+            f"/api/admin/contests/{slug}",
+            json={"ends_at": (now + timedelta(minutes=30)).isoformat()})
+        assert response.status_code == 400
+
+    def test_unknown_scoring_is_refused(self, admin_client):
+        slug = self.contest(admin_client)
+        assert admin_client.patch(f"/api/admin/contests/{slug}",
+                                  json={"scoring": "codeforces"}).status_code == 400
+
+    def test_missing_contest_is_a_404(self, admin_client):
+        assert admin_client.patch("/api/admin/contests/ghost",
+                                  json={"title": "x"}).status_code == 404
+
+    def test_requires_admin(self, client, admin_client):
+        slug = self.contest(admin_client)
+        admin_client.post("/api/auth/logout")
+        register(client, "meddler")
+        assert client.patch(f"/api/admin/contests/{slug}",
+                            json={"title": "mine now"}).status_code == 403
+
+
+class TestLastAdminIsProtected:
+    """Every admin route rejects non-admins, so demoting the final admin locks
+    the judge's owner out of their own instance with no way back in short of
+    editing the database on the server."""
+
+    def test_the_only_admin_cannot_be_demoted(self, admin_client):
+        response = admin_client.post("/api/admin/users/admin/role?role=user")
+        assert response.status_code == 400
+        assert "only admin" in response.json()["detail"]
+        assert db.one("SELECT role FROM users WHERE username = 'admin'")["role"] == "admin"
+
+    def test_demotion_works_once_a_replacement_exists(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "successor")
+        client.post("/api/auth/logout")
+        admin_client.post("/api/auth/login",
+                          json={"username": "admin", "password": "test-admin-password"})
+        admin_client.post("/api/admin/users/successor/role?role=admin")
+
+        assert admin_client.post("/api/admin/users/admin/role?role=user").status_code == 200
+        assert db.one("SELECT role FROM users WHERE username = 'admin'")["role"] == "user"
+
+    def test_promoting_is_never_blocked(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "newbie")
+        client.post("/api/auth/logout")
+        admin_client.post("/api/auth/login",
+                          json={"username": "admin", "password": "test-admin-password"})
+        assert admin_client.post("/api/admin/users/newbie/role?role=admin").status_code == 200
+
+    def test_unknown_user_is_a_404(self, admin_client):
+        assert admin_client.post("/api/admin/users/ghost/role?role=admin").status_code == 404

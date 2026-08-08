@@ -391,3 +391,11 @@ tr.subtask-head td {
   padding-top: 10px;
   padding-bottom: 10px;
 }
+
+/* An inline editor unfolds inside the table it belongs to, so the row it edits
+   stays visible directly above it for comparison. */
+/* Cells are `nowrap` so verdicts and timings never break mid-value, but a form
+   inside one needs to wrap or every label sits on the same line as its input. */
+.editor-row > td { background: var(--surface-2); padding: 16px 14px; white-space: normal; }
+.editor-row label { margin-bottom: 10px; }
+.editor-row .row.end { margin-top: 4px; }

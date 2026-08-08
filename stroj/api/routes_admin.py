@@ -89,6 +89,16 @@ class ContestBody(BaseModel):
     freeze_minutes: int = Field(default=0, ge=0, le=1440)
 
 
+class ContestPatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+    starts_at: str | None = None
+    ends_at: str | None = None
+    scoring: str | None = None
+    penalty_minutes: int | None = Field(default=None, ge=0, le=1440)
+    freeze_minutes: int | None = Field(default=None, ge=0, le=1440)
+
+
 class ContestProblemsBody(BaseModel):
     #: ``[{"slug": "a-plus-b", "label": "A"}, ...]`` — labels are assigned in
     #: order when omitted.
@@ -283,29 +293,42 @@ async def inspect_testdata(archive: UploadFile = File(...)):
     }
 
 
-@router.post("/contests")
-def create_contest(body: ContestBody):
-    _check_slug(body.slug)
-    if body.scoring not in ("icpc", "ioi"):
-        raise HTTPException(status_code=400, detail="Scoring must be 'icpc' or 'ioi'.")
+def _iso(value) -> str:
+    """The one timestamp format stored for contests.
+
+    The scoreboard filters submissions with a string comparison against these
+    columns, so a contest written in any other ISO spelling would silently
+    include or drop rows at the edges of its window.
+    """
+    return value.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _validated_window(starts_at: str, ends_at: str, freeze_minutes: int) -> tuple[str, str]:
     try:
-        starts = db.parse_time(body.starts_at)
-        ends = db.parse_time(body.ends_at)
+        starts = db.parse_time(starts_at)
+        ends = db.parse_time(ends_at)
     except ValueError:
         raise HTTPException(
             status_code=400, detail="Times must be ISO-8601, e.g. 2026-08-10T18:00:00Z."
         ) from None
     if ends <= starts:
         raise HTTPException(status_code=400, detail="The contest must end after it starts.")
-    if body.freeze_minutes * 60 >= (ends - starts).total_seconds():
+    if freeze_minutes * 60 >= (ends - starts).total_seconds():
         raise HTTPException(
             status_code=400,
             detail="The freeze would start before the contest does.",
         )
+    return _iso(starts), _iso(ends)
 
-    def iso(value) -> str:
-        return value.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
+@router.post("/contests")
+def create_contest(body: ContestBody):
+    _check_slug(body.slug)
+    if body.scoring not in ("icpc", "ioi"):
+        raise HTTPException(status_code=400, detail="Scoring must be 'icpc' or 'ioi'.")
+    starts_iso, ends_iso = _validated_window(
+        body.starts_at, body.ends_at, body.freeze_minutes
+    )
     try:
         contest_id = db.insert(
             "INSERT INTO contests (slug, title, description, starts_at, ends_at,"
@@ -315,8 +338,8 @@ def create_contest(body: ContestBody):
                 body.slug,
                 body.title,
                 body.description,
-                iso(starts),
-                iso(ends),
+                starts_iso,
+                ends_iso,
                 body.scoring,
                 body.penalty_minutes,
                 body.freeze_minutes,
@@ -326,6 +349,42 @@ def create_contest(body: ContestBody):
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="That slug is taken.") from None
     return {"id": contest_id, "slug": body.slug}
+
+
+@router.patch("/contests/{slug}")
+def update_contest(slug: str, body: ContestPatch):
+    """Amend a contest in place.
+
+    Without this the only way to fix a wrong start time is to delete and
+    recreate, and deleting a contest sets `contest_id` to NULL on every
+    submission made during it — the scoreboard cannot be rebuilt afterwards.
+    Editing is the non-destructive path, so it validates the *merged* window
+    rather than whichever half the caller happened to send.
+    """
+    contest = get_contest(slug)
+    fields = body.model_dump(exclude_none=True)
+    if not fields:
+        return {"updated": 0, "slug": slug}
+    if "scoring" in fields and fields["scoring"] not in ("icpc", "ioi"):
+        raise HTTPException(status_code=400, detail="Scoring must be 'icpc' or 'ioi'.")
+
+    if {"starts_at", "ends_at", "freeze_minutes"} & fields.keys():
+        starts_iso, ends_iso = _validated_window(
+            fields.get("starts_at", contest["starts_at"]),
+            fields.get("ends_at", contest["ends_at"]),
+            fields.get("freeze_minutes", contest["freeze_minutes"]),
+        )
+        if "starts_at" in fields:
+            fields["starts_at"] = starts_iso
+        if "ends_at" in fields:
+            fields["ends_at"] = ends_iso
+
+    assignments = ", ".join(f"{k} = ?" for k in fields)
+    db.execute(
+        f"UPDATE contests SET {assignments} WHERE id = ?",
+        (*fields.values(), contest["id"]),
+    )
+    return {"updated": len(fields), "slug": slug}
 
 
 @router.put("/contests/{slug}/problems")
@@ -403,9 +462,25 @@ def list_users():
 def set_role(username: str, role: str):
     if role not in ("user", "admin"):
         raise HTTPException(status_code=400, detail="Role must be 'user' or 'admin'.")
-    changed = db.execute(
-        "UPDATE users SET role = ? WHERE username = ?", (role, username)
-    ).rowcount
-    if not changed:
+    target = db.one("SELECT id, role FROM users WHERE username = ?", (username,))
+    if target is None:
         raise HTTPException(status_code=404, detail="No such user.")
+
+    # Demoting the last admin is unrecoverable through the web interface:
+    # every admin route would then reject everyone, including the person who
+    # made the change. Getting back in would mean editing the database on the
+    # server by hand.
+    if target["role"] == "admin" and role == "user":
+        remaining = db.one(
+            "SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND id != ?",
+            (target["id"],),
+        )["n"]
+        if remaining == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="This is the only admin. Promote someone else first,"
+                " or nobody will be able to administer the judge.",
+            )
+
+    db.execute("UPDATE users SET role = ? WHERE username = ?", (role, username))
     return {"username": username, "role": role}

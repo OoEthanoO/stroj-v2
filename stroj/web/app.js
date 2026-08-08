@@ -55,6 +55,13 @@ function relative(iso) {
 
 const absolute = (iso) => (parseTime(iso) ? parseTime(iso).toLocaleString() : '');
 
+/** A stored UTC timestamp as the local wall-clock string `datetime-local` wants. */
+function localField(iso) {
+  const at = parseTime(iso);
+  if (!at) return '';
+  return new Date(at.getTime() - at.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
 function duration(ms) {
   if (ms <= 0) return '00:00:00';
   const total = Math.floor(ms / 1000);
@@ -1074,9 +1081,43 @@ async function viewAdmin() {
       <td><span class="badge state-${esc(c.state)}">${esc(STATE_LABEL[c.state])}</span></td>
       <td>
         <div class="row">
-          <input placeholder="slug-a, slug-b, …" data-set-problems="${esc(c.slug)}" style="width:240px">
-          <button class="small" data-save-problems="${esc(c.slug)}">Set problems</button>
+          <button class="small" data-edit-contest="${esc(c.slug)}">Edit</button>
           <button class="small danger" data-delete-contest="${esc(c.slug)}">Delete</button>
+        </div>
+      </td>
+    </tr>
+    <tr class="editor-row" data-editor="${esc(c.slug)}" hidden>
+      <td colspan="4">
+        <div class="grid-2">
+          <div>
+            <label>Title <input data-f="title" value="${esc(c.title)}"></label>
+            <div class="row">
+              <label style="flex:1">Scoring
+                <select data-f="scoring">
+                  <option value="icpc"${c.scoring === 'icpc' ? ' selected' : ''}>ICPC</option>
+                  <option value="ioi"${c.scoring === 'ioi' ? ' selected' : ''}>IOI</option>
+                </select>
+              </label>
+              <label style="flex:1">Penalty (min)
+                <input data-f="penalty_minutes" type="number" min="0" max="1440" value="${c.penalty_minutes}"></label>
+            </div>
+            <label>Scoreboard freeze (min before end, 0 = none)
+              <input data-f="freeze_minutes" type="number" min="0" max="1440" value="${c.freeze_minutes}"></label>
+            <label>Problem set (comma-separated slugs, in order)
+              <input data-f="problems" placeholder="loading…" disabled></label>
+          </div>
+          <div>
+            <label>Starts (your local time)
+              <input data-f="starts_at" type="datetime-local" value="${localField(c.starts_at)}"></label>
+            <label>Ends (your local time)
+              <input data-f="ends_at" type="datetime-local" value="${localField(c.ends_at)}"></label>
+            <label>Description <textarea data-f="description" style="min-height:60px" placeholder="loading…" disabled></textarea></label>
+          </div>
+        </div>
+        <p class="small muted" data-warn="${esc(c.slug)}"></p>
+        <div class="row end">
+          <button class="small" data-cancel-contest="${esc(c.slug)}">Cancel</button>
+          <button class="small primary" data-save-contest="${esc(c.slug)}">Save changes</button>
         </div>
       </td>
     </tr>`).join('');
@@ -1335,16 +1376,83 @@ async function viewAdmin() {
     });
   });
 
-  $$('[data-save-problems]').forEach((button) => {
+  // Editing a contest, rather than deleting and recreating it. The two fields
+  // the list response does not carry — description and the current problem set
+  // — are filled in from the detail endpoint the first time an editor opens.
+  const editorOf = (slug) => $(`[data-editor="${CSS.escape(slug)}"]`);
+  const fieldsOf = (slug) => {
+    const found = {};
+    $$('[data-f]', editorOf(slug)).forEach((el) => { found[el.dataset.f] = el; });
+    return found;
+  };
+  const loaded = new Set();
+
+  $$('[data-edit-contest]').forEach((button) => {
     button.onclick = guard(async () => {
-      const slug = button.dataset.saveProblems;
-      const field = $(`[data-set-problems="${CSS.escape(slug)}"]`);
-      const slugs = field.value.split(',').map((s) => s.trim()).filter(Boolean);
-      const result = await api(`/api/admin/contests/${encodeURIComponent(slug)}/problems`, {
-        method: 'PUT', body: { problems: slugs.map((s) => ({ slug: s })) },
+      const slug = button.dataset.editContest;
+      const row = editorOf(slug);
+      row.hidden = !row.hidden;
+      if (row.hidden || loaded.has(slug)) return;
+
+      const detail = await api(`/api/contests/${encodeURIComponent(slug)}`);
+      const fields = fieldsOf(slug);
+      fields.description.value = detail.description || '';
+      fields.description.disabled = false;
+      fields.description.placeholder = '';
+      // Seeing the current set is the point: otherwise saving an empty box
+      // silently empties the contest.
+      fields.problems.value = (detail.problems || []).map((pr) => pr.slug).join(', ');
+      fields.problems.disabled = false;
+      fields.problems.placeholder = 'slug-a, slug-b, …';
+      if (detail.sealed) {
+        fields.problems.value = '';
+        fields.problems.placeholder = 'unavailable — reopen after the contest starts';
+        fields.problems.disabled = true;
+      }
+      loaded.add(slug);
+
+      const warn = $(`[data-warn="${CSS.escape(slug)}"]`);
+      if (detail.state === 'running') {
+        warn.textContent = 'This contest is running. Moving the start time' +
+          ' recomputes every penalty on the scoreboard.';
+      } else if (detail.state === 'ended') {
+        warn.textContent = 'This contest has ended. Editing it rewrites results' +
+          ' that entrants have already seen.';
+      }
+    });
+  });
+
+  $$('[data-cancel-contest]').forEach((button) => {
+    button.onclick = () => { editorOf(button.dataset.cancelContest).hidden = true; };
+  });
+
+  $$('[data-save-contest]').forEach((button) => {
+    button.onclick = guard(async () => {
+      const slug = button.dataset.saveContest;
+      const fields = fieldsOf(slug);
+      const toUtc = (value) => new Date(value).toISOString();
+
+      await api(`/api/admin/contests/${encodeURIComponent(slug)}`, {
+        method: 'PATCH',
+        body: {
+          title: fields.title.value.trim(),
+          description: fields.description.value,
+          starts_at: toUtc(fields.starts_at.value),
+          ends_at: toUtc(fields.ends_at.value),
+          scoring: fields.scoring.value,
+          penalty_minutes: Number(fields.penalty_minutes.value),
+          freeze_minutes: Number(fields.freeze_minutes.value),
+        },
       });
-      toast(`Contest now has ${result.problems} problem(s).`, 'good');
-      field.value = '';
+
+      if (!fields.problems.disabled) {
+        const slugs = fields.problems.value.split(',').map((x) => x.trim()).filter(Boolean);
+        await api(`/api/admin/contests/${encodeURIComponent(slug)}/problems`, {
+          method: 'PUT', body: { problems: slugs.map((x) => ({ slug: x })) },
+        });
+      }
+      toast('Contest updated.', 'good');
+      route();
     });
   });
 
