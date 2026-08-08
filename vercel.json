@@ -5,10 +5,10 @@
   "outputDirectory": "public",
   "installCommand": "echo 'no dependencies'",
   "rewrites": [
-    { "source": "/api/:path*", "destination": "https://JUDGE_ORIGIN/api/:path*" },
-    { "source": "/healthz", "destination": "https://JUDGE_ORIGIN/healthz" },
-    { "source": "/docs", "destination": "https://JUDGE_ORIGIN/docs" },
-    { "source": "/openapi.json", "destination": "https://JUDGE_ORIGIN/openapi.json" }
+    { "source": "/api/:path*", "destination": "https://judge.ethanyanxu.com/api/:path*" },
+    { "source": "/healthz", "destination": "https://judge.ethanyanxu.com/healthz" },
+    { "source": "/docs", "destination": "https://judge.ethanyanxu.com/docs" },
+    { "source": "/openapi.json", "destination": "https://judge.ethanyanxu.com/openapi.json" }
   ],
   "headers": [
     {
