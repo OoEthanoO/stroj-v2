@@ -185,6 +185,12 @@ def get_submission(submission_id: int, request: Request):
     data = submission_public(row, user, with_source=True)
     own = user is not None and user["id"] == row["user_id"]
     if own or is_admin(user):
+        # How many tests the problem has, so a page watching a live judge can
+        # show "4 of 18" rather than just a growing list of unknown length.
+        data["test_count"] = db.one(
+            "SELECT COUNT(*) AS n FROM testcases WHERE problem_id = ?",
+            (row["problem_id"],),
+        )["n"]
         tests = db.query(
             "SELECT * FROM submission_tests WHERE submission_id = ? ORDER BY idx",
             (submission_id,),

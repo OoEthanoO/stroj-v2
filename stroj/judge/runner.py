@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -113,6 +114,44 @@ class TestSpec:
     #: Sample tests are already public, so their diagnostics can be shown in
     #: full. Hidden tests must not echo anything back — see `check(reveal=...)`.
     is_sample: bool = False
+    #: Scoring group this test belongs to; 0 means ungrouped.
+    subtask: int = 0
+
+
+def earned_percent(
+    tests: list[TestSpec],
+    results: list[TestOutcome],
+    subtasks: dict[int, int] | None,
+    partial: bool,
+) -> int:
+    """Share of a problem's points this run earned, 0-100.
+
+    Three regimes, in order of how deliberate the problem author was:
+
+    * **Subtasks.** All-or-nothing per group — a subtask pays its percentage
+      only if every test in it passed. This is the point of subtasks: they
+      correspond to a weaker version of the problem someone actually solved,
+      not to how many tests happened to pass.
+    * **Partial, no subtasks.** The share of tests passed, so a beginner who
+      handles the small cases still gets something.
+    * **Neither.** All or nothing.
+    """
+    passed = {r.idx for r in results if r.verdict == AC}
+    if not tests:
+        return 0
+
+    if subtasks:
+        total = 0
+        for group, percent in subtasks.items():
+            in_group = [t.idx for t in tests if t.subtask == group]
+            if in_group and all(idx in passed for idx in in_group):
+                total += percent
+        return min(100, total)
+
+    scored = [t for t in tests if not t.is_sample] or tests
+    if partial:
+        return round(100 * sum(1 for t in scored if t.idx in passed) / len(scored))
+    return 100 if all(t.idx in passed for t in scored) else 0
 
 
 def validate_source(language_id: str, source: str) -> str | None:
@@ -283,8 +322,13 @@ def judge(
     *,
     use_sandbox: bool | None = None,
     work_dir: Path | None = None,
+    on_test: Callable[[TestOutcome], None] | None = None,
 ) -> JudgeOutcome:
-    """Judge one submission. Never raises — internal failures become ``IE``."""
+    """Judge one submission. Never raises — internal failures become ``IE``.
+
+    ``on_test`` is invoked as each test finishes, so a caller can publish
+    results while the rest are still running rather than at the end.
+    """
     if use_sandbox is None:
         use_sandbox = config.USE_SANDBOX
 
@@ -332,6 +376,13 @@ def judge(
             outcome.score += test_result.points
             outcome.time_ms = max(outcome.time_ms, test_result.time_ms)
             outcome.memory_kb = max(outcome.memory_kb, test_result.memory_kb)
+            if on_test is not None:
+                try:
+                    on_test(test_result)
+                except Exception:  # pragma: no cover - defensive
+                    # Publishing progress is a convenience; a failure there must
+                    # never cost the submission its verdict.
+                    pass
             if test_result.verdict != AC:
                 if outcome.verdict == AC:
                     outcome.verdict = test_result.verdict

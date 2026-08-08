@@ -123,6 +123,7 @@ def submission_public(
         "verdict_name": VERDICT_NAMES.get(row["verdict"], row["verdict"]),
         "score": row["score"],
         "max_score": row["max_score"],
+        "earned_percent": row["earned_percent"] if "earned_percent" in row.keys() else 0,
         "time_ms": row["time_ms"],
         "memory_kb": row["memory_kb"],
         "created_at": row["created_at"],

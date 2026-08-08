@@ -723,3 +723,90 @@ class TestProfilesAndAuthorship:
     def test_leaderboard_endpoint(self, client):
         body = client.get("/api/leaderboard").json()
         assert "standings" in body and "decay" in body
+
+
+class TestLiveSubmissionView:
+    def test_rows_are_visible_before_judging_finishes(self, client, admin_client):
+        """Persist each test as it lands, checked from inside the judge itself:
+        by the time test 2 finishes, test 1 must already be readable."""
+        from stroj.judge import runner as runner_mod
+
+        make_problem(admin_client)
+        response = admin_client.post("/api/submissions", json={
+            "problem": "a-plus-b", "language": "python3",
+            "source": "a,b=map(int,input().split())\nprint(a+b)"})
+        submission_id = response.json()["id"]
+
+        visible_during = []
+        original = runner_mod.judge
+
+        def spy(*args, **kwargs):
+            caller = kwargs.get("on_test")
+
+            def wrapped(test):
+                caller(test)
+                rows = db.query(
+                    "SELECT idx FROM submission_tests WHERE submission_id = ?",
+                    (submission_id,),
+                )
+                visible_during.append(len(rows))
+
+            kwargs["on_test"] = wrapped
+            return original(*args, **kwargs)
+
+        runner_mod.judge = spy
+        try:
+            worker.drain()
+        finally:
+            runner_mod.judge = original
+
+        # One row visible after the first test, two after the second, and so on.
+        assert visible_during == [1, 2]
+
+    def test_detail_reports_how_many_tests_to_expect(self, admin_client):
+        make_problem(admin_client)
+        response = admin_client.post("/api/submissions", json={
+            "problem": "a-plus-b", "language": "python3", "source": "print(1)"})
+        body = admin_client.get(f"/api/submissions/{response.json()['id']}").json()
+        assert body["test_count"] == 2
+
+    def test_a_rejudge_clears_the_previous_run(self, admin_client):
+        """Stale rows from the last run must not linger on screen while the new
+        one is still working through the tests."""
+        make_problem(admin_client)
+        response = admin_client.post("/api/submissions", json={
+            "problem": "a-plus-b", "language": "python3",
+            "source": "a,b=map(int,input().split())\nprint(a+b)"})
+        submission_id = response.json()["id"]
+        worker.drain()
+        assert len(admin_client.get(f"/api/submissions/{submission_id}").json()["tests"]) == 2
+
+        admin_client.post("/api/admin/rejudge?problem=a-plus-b")
+        cleared = []
+        from stroj.judge import worker as worker_mod
+
+        original = worker_mod.store_outcome
+
+        def spy(sid, *args, **kwargs):
+            # Sampled at the moment judging finishes but before the final write:
+            # the count must reflect this run, not the previous one plus it.
+            cleared.append(len(db.query(
+                "SELECT idx FROM submission_tests WHERE submission_id = ?", (sid,))))
+            return original(sid, *args, **kwargs)
+
+        worker_mod.store_outcome = spy
+        try:
+            worker.drain()
+        finally:
+            worker_mod.store_outcome = original
+        assert cleared == [2], "rows accumulated across runs"
+
+    def test_score_climbs_as_tests_pass(self, admin_client):
+        make_problem(admin_client)
+        response = admin_client.post("/api/submissions", json={
+            "problem": "a-plus-b", "language": "python3",
+            "source": "a,b=map(int,input().split())\nprint(a+b)"})
+        submission_id = response.json()["id"]
+        assert admin_client.get(f"/api/submissions/{submission_id}").json()["score"] == 0
+        worker.drain()
+        assert admin_client.get(f"/api/submissions/{submission_id}").json()["score"] == 2

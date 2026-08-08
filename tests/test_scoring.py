@@ -95,14 +95,19 @@ class TestLeaderboard:
                 (slug, slug.title(), points, db.utcnow()),
             )
 
-        def solve(user, slug, verdict="AC"):
+        def solve(user, slug, verdict="AC", percent=None):
+            # Mirror what the judge writes: a full solve earns 100%, anything
+            # else earns whatever the caller says (0 unless told otherwise).
+            if percent is None:
+                percent = 100 if verdict == "AC" else 0
             db.insert(
                 "INSERT INTO submissions (user_id, problem_id, language, source,"
-                " verdict, created_at) VALUES (?, ?, 'python3', '', ?, ?)",
-                (users[user], problems[slug], verdict, db.utcnow()),
+                " verdict, earned_percent, created_at)"
+                " VALUES (?, ?, 'python3', '', ?, ?, ?)",
+                (users[user], problems[slug], verdict, percent, db.utcnow()),
             )
 
-        return {"solve": solve, "users": users}
+        return {"solve": solve, "users": users, "problems": problems}
 
     def test_ranks_by_score(self, people):
         people["solve"]("challenger", "hard")

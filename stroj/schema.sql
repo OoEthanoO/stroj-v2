@@ -41,7 +41,18 @@ CREATE TABLE IF NOT EXISTS testcases (
     answer_path TEXT    NOT NULL,
     is_sample   INTEGER NOT NULL DEFAULT 0,
     points      INTEGER NOT NULL DEFAULT 0,
+    subtask     INTEGER NOT NULL DEFAULT 0,   -- 0 = ungrouped or sample
     UNIQUE (problem_id, idx)
+);
+
+-- What each subtask is worth, as a percentage of the problem's points.
+-- Solving every test in a subtask awards that percentage; a problem with
+-- no rows here falls back to the share of individual tests passed.
+CREATE TABLE IF NOT EXISTS problem_subtasks (
+    problem_id INTEGER NOT NULL REFERENCES problems(id) ON DELETE CASCADE,
+    idx        INTEGER NOT NULL,
+    percent    INTEGER NOT NULL,
+    PRIMARY KEY (problem_id, idx)
 );
 
 CREATE TABLE IF NOT EXISTS contests (
@@ -78,6 +89,10 @@ CREATE TABLE IF NOT EXISTS submissions (
     time_ms     INTEGER NOT NULL DEFAULT 0,          -- slowest test
     memory_kb   INTEGER NOT NULL DEFAULT 0,          -- peak across tests
     message     TEXT    NOT NULL DEFAULT '',
+    -- Share of the problem's points this submission earned, 0-100. Stored
+    -- as a percentage rather than an absolute so that re-pricing a problem
+    -- updates everyone's standing instead of stranding old submissions.
+    earned_percent INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT    NOT NULL,
     judged_at   TEXT
 );

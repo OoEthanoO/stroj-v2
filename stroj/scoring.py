@@ -69,24 +69,33 @@ class Standing:
         }
 
 
-def _solved_points_by_user() -> dict[int, tuple[str, str, list[int]]]:
-    """Every user's solved problems' point values, keyed by user id.
+#: Below this, a partial result is treated as noise rather than an achievement.
+#: Without a floor, one accidentally-passing sample would put a problem on
+#: someone's profile and nudge every other solve down a rank.
+MIN_EARNED_PERCENT = 1
 
-    One row per (user, problem) even if they solved it repeatedly — a problem
-    must count once however many times it is submitted.
+
+def _solved_points_by_user() -> dict[int, tuple[str, str, list[int]]]:
+    """Every user's earned value per problem, keyed by user id.
+
+    A problem counts once however many times it is submitted, at the *best*
+    result they ever achieved on it — so a later worse attempt never costs
+    someone points, and partial credit counts for its share.
     """
     rows = db.query(
-        "SELECT u.id AS user_id, u.username, u.role, p.points"
+        "SELECT u.id AS user_id, u.username, u.role, p.points,"
+        "       MAX(s.earned_percent) AS best"
         "  FROM submissions s"
         "  JOIN users u    ON u.id = s.user_id"
         "  JOIN problems p ON p.id = s.problem_id"
-        " WHERE s.verdict = 'AC'"
-        " GROUP BY u.id, p.id"
+        " WHERE s.earned_percent >= ?"
+        " GROUP BY u.id, p.id",
+        (MIN_EARNED_PERCENT,),
     )
     out: dict[int, tuple[str, str, list[int]]] = {}
     for row in rows:
         entry = out.setdefault(row["user_id"], (row["username"], row["role"], []))
-        entry[2].append(row["points"])
+        entry[2].append(round(row["points"] * row["best"] / 100))
     return out
 
 
@@ -124,33 +133,43 @@ def solved_problems(user_id: int) -> list[dict]:
     contribution at its actual rank — so a profile can show *why* the total is
     what it is."""
     rows = db.query(
-        "SELECT p.slug, p.title, p.points, MIN(s.created_at) AS first_solved"
+        "SELECT p.slug, p.title, p.points, MAX(s.earned_percent) AS best,"
+        "       MIN(s.created_at) AS first_solved"
         "  FROM submissions s"
         "  JOIN problems p ON p.id = s.problem_id"
-        " WHERE s.user_id = ? AND s.verdict = 'AC'"
-        " GROUP BY p.id"
-        " ORDER BY p.points DESC, p.slug",
-        (user_id,),
+        " WHERE s.user_id = ? AND s.earned_percent >= ?"
+        " GROUP BY p.id",
+        (user_id, MIN_EARNED_PERCENT),
+    )
+    # Rank by what each one is actually worth to this user, not by the problem's
+    # headline value — a 40% result on a 500-point problem sits where its 200
+    # earned points put it.
+    ordered = sorted(
+        rows, key=lambda r: (-round(r["points"] * r["best"] / 100), r["slug"])
     )
     return [
         {
             "slug": row["slug"],
             "title": row["title"],
             "points": row["points"],
+            "earned_percent": row["best"],
+            "earned": round(row["points"] * row["best"] / 100),
             "first_solved": row["first_solved"],
             "weight": round(DECAY ** rank, 4),
-            "contribution": round(row["points"] * (DECAY ** rank), 1),
+            "contribution": round(
+                round(row["points"] * row["best"] / 100) * (DECAY ** rank), 1
+            ),
         }
-        for rank, row in enumerate(rows)
+        for rank, row in enumerate(ordered)
     ]
 
 
 def user_score(user_id: int) -> float:
     rows = db.query(
-        "SELECT p.points FROM submissions s"
+        "SELECT p.points, MAX(s.earned_percent) AS best FROM submissions s"
         "  JOIN problems p ON p.id = s.problem_id"
-        " WHERE s.user_id = ? AND s.verdict = 'AC'"
+        " WHERE s.user_id = ? AND s.earned_percent >= ?"
         " GROUP BY p.id",
-        (user_id,),
+        (user_id, MIN_EARNED_PERCENT),
     )
-    return weighted_score([r["points"] for r in rows])
+    return weighted_score([round(r["points"] * r["best"] / 100) for r in rows])

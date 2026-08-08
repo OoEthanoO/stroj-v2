@@ -70,6 +70,8 @@ _ADDED_COLUMNS: list[tuple[str, str, str]] = [
     # so the retrofitted column is a plain integer. New databases get the real
     # foreign key from schema.sql.
     ("problems", "author_id", "INTEGER"),
+    ("testcases", "subtask", "INTEGER NOT NULL DEFAULT 0"),
+    ("submissions", "earned_percent", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 

@@ -325,6 +325,23 @@ async function viewProblem(slug, params) {
     <div class="grid-2">
       <div>
         <div class="card"><div class="statement">${markdown(problem.statement)}</div></div>
+        ${(problem.subtasks || []).length ? `
+          <div class="card">
+            <h2 style="margin-top:0">Subtasks</h2>
+            <p class="muted small">Solve every test in a subtask to earn its share
+              of the ${problem.points} points. Partial credit counts toward your score.</p>
+            <div class="table-wrap"><table><tbody>${problem.subtasks.map((st) => `
+              <tr><td class="mono" style="width:1%">${st.idx}</td>
+                  <td class="wide muted small">${st.tests} test${st.tests === 1 ? '' : 's'}</td>
+                  <td class="num">${st.percent}%</td>
+                  <td class="num">${pointsPill(Math.round(problem.points * st.percent / 100))}</td>
+              </tr>`).join('')}</tbody></table></div>
+          </div>` : (problem.partial ? `
+          <div class="card">
+            <h2 style="margin-top:0">Partial scoring</h2>
+            <p class="muted small">No subtasks, so you earn the share of tests you
+              pass — 10 of 20 tests earns half of the ${problem.points} points.</p>
+          </div>` : '')}
         ${samples ? `<div class="card"><h2 style="margin-top:0">Samples</h2>${samples}</div>` : ''}
       </div>
       <div>
@@ -484,9 +501,30 @@ async function viewSubmissions(params) {
 }
 
 async function viewSubmission(id) {
+  let lastPainted = null;
   const render = async () => {
     const s = await api(`/api/submissions/${id}`);
+    // Polling three times a second would otherwise rebuild the DOM — and lose
+    // any text selection — even when no new test has finished.
+    const fingerprint = JSON.stringify([s.verdict, s.score, s.time_ms,
+      (s.tests || []).map((t) => [t.idx, t.verdict])]);
+    if (fingerprint === lastPainted) return s.verdict === 'PENDING' || s.verdict === 'JUDGING';
+    lastPainted = fingerprint;
     const running = s.verdict === 'PENDING' || s.verdict === 'JUDGING';
+
+    const done = (s.tests || []).length;
+    const total = s.test_count || 0;
+    // Judging stops at the first failure unless the problem awards partial
+    // credit, so "4 of 18" is only meaningful while nothing has failed yet.
+    const stillPassing = (s.tests || []).every((t) => t.verdict === 'AC');
+    const progress = running && total
+      ? `<span class="muted small">${done}${stillPassing ? ` of ${total}` : ''} run</span>`
+      : '';
+    const runningRow = running
+      ? `<tr><td class="num muted">${done + 1}</td>
+           <td>${verdictBadge('JUDGING', 'Running')}</td>
+           <td colspan="4" class="muted small">…</td></tr>`
+      : '';
 
     const tests = (s.tests || []).map((t) => `
       <tr>
@@ -511,6 +549,8 @@ async function viewSubmission(id) {
           <span class="pill">${esc(s.username || '')}</span>
           <span class="pill">${esc(s.language)}</span>
           <span class="pill">score ${s.score}/${s.max_score}</span>
+          ${typeof s.earned_percent === 'number' && !running
+            ? `<span class="points-pill">${s.earned_percent}% earned</span>` : ''}
           <span class="pill">${s.time_ms} ms</span>
           <span class="pill">${memory(s.memory_kb)}</span>
           <span class="muted" title="${esc(absolute(s.created_at))}">submitted ${esc(relative(s.created_at))}</span>
@@ -519,10 +559,10 @@ async function viewSubmission(id) {
         ${s.message ? `<h3>Judge output</h3><pre class="io">${esc(s.message)}</pre>` : ''}
       </div>
 
-      ${tests ? `<h2>Tests</h2><div class="table-wrap"><table>
+      ${tests || running ? `<h2>Tests ${progress}</h2><div class="table-wrap"><table>
           <thead><tr><th class="num">#</th><th>Verdict</th><th class="num">Time</th>
             <th class="num">Memory</th><th class="num">Points</th><th>Detail</th></tr></thead>
-          <tbody>${tests}</tbody></table></div>` : ''}
+          <tbody>${tests}${runningRow}</tbody></table></div>` : ''}
 
       ${s.source !== undefined
         ? `<h2>Source</h2><pre class="source">${esc(s.source)}</pre>`
@@ -534,7 +574,7 @@ async function viewSubmission(id) {
 
   // Only poll while the verdict is still in flight; a judged submission is final.
   if (await render()) {
-    every(1200, async () => {
+    every(700, async () => {
       if (!(await render())) clearTimers();
     });
   }
@@ -766,13 +806,15 @@ async function viewLeaderboard() {
 
 async function viewUser(username) {
   const u = await api(`/api/users/${encodeURIComponent(username)}`);
-  const maxPoints = Math.max(1, ...u.solved.map((s) => s.points));
+  const maxPoints = Math.max(1, ...u.solved.map((s) => s.earned));
 
   const solvedRows = u.solved.map((s, i) => `
     <tr>
       <td class="num muted">${i + 1}</td>
-      <td class="wide"><a href="#/problem/${encodeURIComponent(s.slug)}">${esc(s.title)}</a></td>
-      <td class="num">${pointsPill(s.points)}</td>
+      <td class="wide"><a href="#/problem/${encodeURIComponent(s.slug)}">${esc(s.title)}</a>
+        ${s.earned_percent < 100 ? `<span class="muted small">${s.earned_percent}%</span>` : ''}</td>
+      <td class="num">${pointsPill(s.earned)}${s.earned_percent < 100
+        ? `<span class="muted small"> of ${s.points}</span>` : ''}</td>
       <td class="num muted">×${s.weight}</td>
       <td class="num"><strong>${s.contribution}</strong>
         <span class="weight-bar" style="width:${Math.round(60 * s.contribution / maxPoints)}px"></span></td>

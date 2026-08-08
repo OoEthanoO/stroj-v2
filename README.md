@@ -136,9 +136,30 @@ everything. `exact` compares line by line, forgiving trailing whitespace and a
 missing final newline. `float` is `token` plus an epsilon on numeric tokens,
 matching if the absolute *or* relative error is within `float_eps`.
 
-**Partial scoring.** Give tests point values and mark the problem `partial`, and
-every test runs even after one fails; the score is the points banked. Otherwise
-judging stops at the first failure — faster, and all a binary problem needs.
+**Partial scoring.** Mark a problem `partial` and every test runs even after one
+fails, and the submission earns a share of the problem's points rather than all
+or nothing. Otherwise judging stops at the first failure — faster, and all a
+binary problem needs.
+
+**Subtasks.** Put tests in directories named `subtask1`, `subtask2`, … and each
+group becomes all-or-nothing: solving every test in it earns that subtask's
+share. Name them `subtask1-30` to set the share explicitly (they must total
+100); otherwise the split is even. Samples may sit outside a subtask, but a
+hidden test that isn't in one is rejected — it could never be worth anything, so
+it would go silently unscored.
+
+```
+tests.zip
+├── sample1.in / .out       ← public, unscored
+├── subtask1-20/            ← 20% — the easy version, small n
+├── subtask2-30/            ← 30%
+└── subtask3-50/            ← 50% — full constraints
+```
+
+This is what makes a hard problem approachable: a beginner who solves only the
+small cases still earns 20% of its points toward the leaderboard, rather than
+nothing. A `partial` problem with no subtask directories falls back to the
+share of individual tests passed — 10 of 20 earns half.
 
 **Hidden problems.** `visible: false` keeps a problem off the public list. It
 becomes readable automatically once a contest containing it starts.

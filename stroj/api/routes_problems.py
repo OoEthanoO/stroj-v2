@@ -50,6 +50,22 @@ def get_problem_detail(slug: str, request: Request):
             }
         )
     data["samples"] = samples
+    data["subtasks"] = [
+        {
+            "idx": r["idx"],
+            "percent": r["percent"],
+            "tests": db.one(
+                "SELECT COUNT(*) AS n FROM testcases"
+                " WHERE problem_id = ? AND subtask = ?",
+                (problem["id"], r["idx"]),
+            )["n"],
+        }
+        for r in db.query(
+            "SELECT idx, percent FROM problem_subtasks WHERE problem_id = ?"
+            " ORDER BY idx",
+            (problem["id"],),
+        )
+    ]
     data["test_count"] = db.one(
         "SELECT COUNT(*) AS n FROM testcases WHERE problem_id = ?", (problem["id"],)
     )["n"]

@@ -228,3 +228,50 @@ class TestHiddenTestsDoNotLeak:
             "python3", PROBLEM, make_tests([("x\n", "y\n")], samples=1))
         assert outcome.verdict == runner.RE
         assert "traceback detail" in outcome.message
+
+
+class TestLiveProgress:
+    """Results are published as each test finishes, so a page watching a
+    submission fills in rather than sitting empty until the end."""
+
+    def test_callback_fires_once_per_test_in_order(self, make_tests):
+        seen = []
+        outcome = runner.judge(
+            SOLUTIONS["python3"], "python3", PROBLEM, make_tests(AB_TESTS),
+            on_test=seen.append,
+        )
+        assert outcome.verdict == runner.AC
+        assert [t.idx for t in seen] == [1, 2, 3]
+        assert all(t.verdict == runner.AC for t in seen)
+
+    def test_callback_sees_each_result_before_judging_ends(self, make_tests):
+        """The point of the callback: it must be called *during* the run, not
+        handed the whole list afterwards."""
+        progress = []
+        runner.judge(
+            SOLUTIONS["python3"], "python3", PROBLEM, make_tests(AB_TESTS),
+            on_test=lambda t: progress.append(len(progress) + 1),
+        )
+        assert progress == [1, 2, 3]
+
+    def test_callback_stops_where_judging_stops(self, make_tests):
+        """A non-partial problem halts at the first failure, so the caller must
+        not be told about tests that never ran."""
+        seen = []
+        runner.judge(
+            WRONG["python3"], "python3", PROBLEM, make_tests(AB_TESTS),
+            on_test=seen.append,
+        )
+        assert len(seen) == 1
+
+    def test_a_broken_callback_cannot_fail_the_submission(self, make_tests):
+        """Reporting progress is a convenience; it must never cost a verdict."""
+        def explode(_test):
+            raise RuntimeError("reporting blew up")
+
+        outcome = runner.judge(
+            SOLUTIONS["python3"], "python3", PROBLEM, make_tests(AB_TESTS),
+            on_test=explode,
+        )
+        assert outcome.verdict == runner.AC
+        assert outcome.score == 3

@@ -171,7 +171,7 @@ def delete_problem(slug: str):
 def list_tests(slug: str):
     problem = _problem_or_404(slug)
     rows = db.query(
-        "SELECT idx, is_sample, points, input_path, answer_path FROM testcases"
+        "SELECT idx, is_sample, points, subtask, input_path, answer_path FROM testcases"
         " WHERE problem_id = ? ORDER BY idx",
         (problem["id"],),
     )
@@ -181,6 +181,7 @@ def list_tests(slug: str):
                 "idx": r["idx"],
                 "is_sample": bool(r["is_sample"]),
                 "points": r["points"],
+                "subtask": r["subtask"],
                 "input_path": r["input_path"],
                 "answer_path": r["answer_path"],
             }
@@ -212,13 +213,15 @@ async def upload_tests(
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Archive is too large.")
     try:
-        tests = testdata.parse_zip(data)
-        for test in tests[: max(0, samples)]:
+        parsed = testdata.parse_zip(data)
+        for test in parsed.tests[: max(0, samples)]:
             test["is_sample"] = True
-        count = testdata.replace_testcases(problem["id"], slug, tests)
+        count = testdata.replace_testcases(
+            problem["id"], slug, parsed.tests, parsed.subtasks
+        )
     except testdata.TestDataError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    return {"tests": count}
+    return {"tests": count, "subtasks": parsed.subtasks}
 
 
 @router.post("/testdata/inspect")
@@ -233,14 +236,16 @@ async def inspect_testdata(archive: UploadFile = File(...)):
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Archive is too large.")
     try:
-        tests = testdata.parse_zip(data)
+        parsed = testdata.parse_zip(data)
     except testdata.TestDataError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
+    tests = parsed.tests
     first = tests[0]
     return {
         "tests": len(tests),
         "samples": sum(1 for t in tests if t["is_sample"]),
+        "subtasks": parsed.subtasks,
         "bytes": sum(len(t["input"]) + len(t["output"]) for t in tests),
         # Enough of the first case to eyeball that the pairing is right.
         "preview": {

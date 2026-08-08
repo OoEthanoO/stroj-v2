@@ -46,7 +46,7 @@ def claim_next() -> int | None:
 
 def load_tests(problem_id: int) -> list[TestSpec]:
     rows = db.query(
-        "SELECT idx, input_path, answer_path, points, is_sample FROM testcases"
+        "SELECT idx, input_path, answer_path, points, is_sample, subtask FROM testcases"
         " WHERE problem_id = ? ORDER BY idx",
         (problem_id,),
     )
@@ -58,16 +58,32 @@ def load_tests(problem_id: int) -> list[TestSpec]:
             # Problems that never set per-test points score one point per test.
             points=r["points"] if r["points"] > 0 else 1,
             is_sample=bool(r["is_sample"]),
+            subtask=r["subtask"],
         )
         for r in rows
     ]
 
 
-def store_outcome(submission_id: int, outcome: JudgeOutcome) -> None:
+def load_subtasks(problem_id: int) -> dict[int, int]:
+    """Each subtask's share of the problem's points, if it has any."""
+    return {
+        r["idx"]: r["percent"]
+        for r in db.query(
+            "SELECT idx, percent FROM problem_subtasks WHERE problem_id = ?"
+            " ORDER BY idx",
+            (problem_id,),
+        )
+    }
+
+
+def store_outcome(
+    submission_id: int, outcome: JudgeOutcome, earned: int = 0
+) -> None:
     with db.transaction() as conn:
         conn.execute(
             "UPDATE submissions SET verdict = ?, score = ?, max_score = ?,"
-            " time_ms = ?, memory_kb = ?, message = ?, judged_at = ? WHERE id = ?",
+            " time_ms = ?, memory_kb = ?, message = ?, earned_percent = ?,"
+            " judged_at = ? WHERE id = ?",
             (
                 outcome.verdict,
                 outcome.score,
@@ -75,6 +91,7 @@ def store_outcome(submission_id: int, outcome: JudgeOutcome) -> None:
                 outcome.time_ms,
                 outcome.memory_kb,
                 outcome.message[: config.MESSAGE_CLIP_BYTES],
+                earned,
                 db.utcnow(),
                 submission_id,
             ),
@@ -101,23 +118,75 @@ def store_outcome(submission_id: int, outcome: JudgeOutcome) -> None:
         )
 
 
+def publish_test(submission_id: int, test) -> None:
+    """Record one finished test straight away, so the page can show it.
+
+    Without this the whole table appears at once when judging ends, which for a
+    twenty-test problem means staring at nothing for most of the wait.
+    """
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO submission_tests"
+            " (submission_id, idx, verdict, time_ms, memory_kb, points, message)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                submission_id,
+                test.idx,
+                test.verdict,
+                test.time_ms,
+                test.memory_kb,
+                test.points,
+                test.message[:512],
+            ),
+        )
+        # Keep the header's score and timing moving too, not just the table.
+        conn.execute(
+            "UPDATE submissions SET score = score + ?,"
+            " time_ms = MAX(time_ms, ?), memory_kb = MAX(memory_kb, ?)"
+            " WHERE id = ?",
+            (test.points, test.time_ms, test.memory_kb, submission_id),
+        )
+
+
 def judge_submission(submission_id: int) -> JudgeOutcome:
     """Judge one already-claimed submission and persist the result."""
     sub = db.one("SELECT * FROM submissions WHERE id = ?", (submission_id,))
     if sub is None:
         return JudgeOutcome(IE, message="submission vanished")
 
+    # A rejudge would otherwise leave the previous run's rows on screen while
+    # the new one is still working through the tests.
+    with db.transaction() as conn:
+        conn.execute(
+            "DELETE FROM submission_tests WHERE submission_id = ?", (submission_id,)
+        )
+        conn.execute(
+            "UPDATE submissions SET score = 0, time_ms = 0, memory_kb = 0,"
+            " message = '' WHERE id = ?",
+            (submission_id,),
+        )
+
     problem = db.one("SELECT * FROM problems WHERE id = ?", (sub["problem_id"],))
+    earned = 0
     if problem is None:
         outcome = JudgeOutcome(IE, message="problem no longer exists")
     else:
+        tests = load_tests(problem["id"])
+        subtasks = load_subtasks(problem["id"])
         outcome = runner.judge(
             sub["source"],
             sub["language"],
             ProblemSpec.from_row(problem),
-            load_tests(problem["id"]),
+            tests,
+            on_test=lambda test: publish_test(submission_id, test),
         )
-    store_outcome(submission_id, outcome)
+        # A compile error never ran anything, so it earns nothing regardless of
+        # how the problem is scored.
+        if outcome.verdict != runner.CE:
+            earned = runner.earned_percent(
+                tests, outcome.tests, subtasks, bool(problem["partial"])
+            )
+    store_outcome(submission_id, outcome, earned)
     return outcome
 
 
