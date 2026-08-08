@@ -13,6 +13,18 @@ mkdir -p public/static
 cp stroj/web/index.html public/index.html
 cp stroj/web/style.css stroj/web/app.js public/static/
 
+# Stamp the build so the deployed frontend can say which commit it is. Vercel
+# supplies the SHA it built; fall back to the local checkout when run by hand.
+COMMIT="${VERCEL_GIT_COMMIT_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
+BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# BSD and GNU sed disagree about -i, so write through a temporary file instead.
+sed "s/__STROJ_COMMIT__/$COMMIT/" public/index.html > public/index.html.tmp
+mv public/index.html.tmp public/index.html
+
+printf '{"commit":"%s","short":"%s","built_at":"%s"}\n' \
+    "$COMMIT" "${COMMIT:0:7}" "$BUILT_AT" > public/version.json
+
 # Fail loudly rather than deploying a frontend that points at a placeholder.
 #
 # The escape hatch is opt-in and noisy on purpose: set STROJ_FRONTEND_ONLY=1 to

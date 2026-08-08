@@ -332,6 +332,36 @@ that exercises the rewrite, the cookie, and the worker pool in one go.
 - **`STROJ_WORKERS` should not exceed your core count.** Oversubscribing makes
   submissions contend and produces spurious `TLE`s.
 
+## Checking what is deployed
+
+The frontend and backend deploy independently — Vercel on push, the judge on
+its own timer — so either can lag behind `main` or behind each other.
+
+```bash
+./scripts/check-versions.sh
+```
+
+```
+https://stroj.ethanyanxu.com
+  main       a1b2c3d
+  backend    a1b2c3d    up to date
+  frontend   9f8e7d6    BEHIND — main is a1b2c3d
+```
+
+It exits non-zero if either half is stale, which makes it usable as a
+pre-contest check or in a script. Both halves are stamped at build time: the
+image takes `--build-arg STROJ_COMMIT`, and `build-static.sh` bakes Vercel's
+`VERCEL_GIT_COMMIT_SHA` into a `<meta>` tag and `version.json`.
+
+The web UI's footer shows the commit too, and calls out a mismatch:
+
+```
+… · 3 judge worker(s) · ⚠ frontend e644418 ≠ backend 1111111
+```
+
+A frontend newer than the backend is the one to watch — it can call an API
+endpoint that does not exist yet.
+
 ## Automatic updates
 
 The judge can redeploy itself whenever `main` moves. Install the timer once, on

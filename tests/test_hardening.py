@@ -194,3 +194,41 @@ class TestDataDirectoryProtection:
         """Must not throw on a developer machine, where there is no root."""
         config.protect_data_dir()
         assert isolated_data.exists()
+
+
+class TestVersionReporting:
+    """The frontend and backend deploy independently, so each must be able to
+    say which commit it is."""
+
+    def test_version_endpoint(self, client):
+        body = client.get("/api/version").json()
+        assert set(body) >= {"commit", "short", "version", "started_at"}
+        assert body["short"] == body["commit"][:7]
+
+    def test_reports_the_baked_in_commit(self, client, monkeypatch):
+        from stroj import config
+
+        monkeypatch.setattr(config, "COMMIT", "a" * 40)
+        assert client.get("/api/version").json()["commit"] == "a" * 40
+
+    def test_falls_back_to_the_checkout(self, monkeypatch):
+        """Running from source there is no stamp, so it should read git rather
+        than reporting 'unknown' for the common local case."""
+        from stroj import config
+
+        monkeypatch.setattr(config, "COMMIT", "unknown")
+        resolved = config.commit()
+        assert resolved == "unknown" or len(resolved) == 40
+
+    def test_unknown_when_there_is_no_git_either(self, monkeypatch):
+        import subprocess
+
+        from stroj import config
+
+        monkeypatch.setattr(config, "COMMIT", "unknown")
+
+        def no_git(*args, **kwargs):
+            raise OSError("git missing")
+
+        monkeypatch.setattr(subprocess, "run", no_git)
+        assert config.commit() == "unknown"

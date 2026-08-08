@@ -1151,13 +1151,15 @@ async function route() {
 
 async function boot() {
   try {
-    const [me, langs, config] = await Promise.all([
+    const [me, langs, config, version] = await Promise.all([
       api('/api/auth/me'), api('/api/languages'), api('/api/config'),
+      api('/api/version').catch(() => null),
     ]);
     state.user = me.user;
     state.languages = langs.languages;
     state.defaultLanguage = langs.default;
     state.config = config;
+    state.version = version;
   } catch (err) {
     // The static frontend can be deployed before the judge backend exists, so
     // say which half is missing instead of showing a bare fetch error.
@@ -1179,6 +1181,20 @@ async function boot() {
     return;
   }
 
+  // The two halves deploy independently, so they can drift apart. Show it.
+  const metaCommit = (document.querySelector('meta[name="stroj-commit"]') || {}).content;
+  const frontendCommit =
+    (!metaCommit || metaCommit.startsWith('__')) ? null : metaCommit;
+  const backendCommit = (state.version && state.version.commit) || null;
+  let versionNote = '';
+  if (frontendCommit && backendCommit && backendCommit !== 'unknown') {
+    versionNote = frontendCommit === backendCommit
+      ? ` · ${frontendCommit.slice(0, 7)}`
+      : ` · ⚠ frontend ${frontendCommit.slice(0, 7)} ≠ backend ${backendCommit.slice(0, 7)}`;
+  } else if (backendCommit && backendCommit !== 'unknown') {
+    versionNote = ` · backend ${backendCommit.slice(0, 7)}`;
+  }
+
   const installed = state.languages.filter((l) => l.available).map((l) => l.name);
   const isolation = {
     'sandbox-exec': 'isolation: full',
@@ -1187,7 +1203,7 @@ async function boot() {
   }[state.config.isolation] || 'isolation: unknown';
   $('#footer-info').textContent =
     `stroj · ${installed.join(' · ') || 'no languages installed'} · ` +
-    `${isolation} · ${state.config.workers} judge worker(s)`;
+    `${isolation} · ${state.config.workers} judge worker(s)${versionNote}`;
 
   renderAccount();
   window.addEventListener('hashchange', route);

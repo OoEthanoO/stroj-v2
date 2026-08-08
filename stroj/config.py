@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,6 +22,10 @@ def _int(name: str, default: int) -> int:
     except ValueError:
         return default
 
+
+#: Commit this build came from. Baked into the image at build time; falls back
+#: to reading the working checkout when running from source.
+COMMIT = os.environ.get("STROJ_COMMIT", "").strip() or "unknown"
 
 DATA_DIR = Path(os.environ.get("STROJ_DATA", ROOT / "data")).resolve()
 DB_PATH = DATA_DIR / "stroj.db"
@@ -64,6 +69,27 @@ SESSION_TTL_DAYS = _int("STROJ_SESSION_TTL_DAYS", 14)
 SECURE_COOKIES = _flag("STROJ_SECURE_COOKIES", False)
 # Default penalty (minutes) per rejected attempt before an accepted one, ICPC style.
 DEFAULT_ICPC_PENALTY_MINUTES = 20
+
+
+def commit() -> str:
+    """The commit this judge is running.
+
+    Baked in by the image build. When running straight from a checkout (dev, or
+    `python -m stroj serve`) there is no stamp, so read git instead — otherwise
+    the version check would report "unknown" for the common local case.
+    """
+    if COMMIT != "unknown":
+        return COMMIT
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "unknown"
 
 
 def registration_mode() -> str:

@@ -60,6 +60,11 @@ ENV PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
+# Stamped by bootstrap-judge.sh from the checkout it built. Declared last so
+# that changing it does not invalidate the dependency layers above.
+ARG STROJ_COMMIT=unknown
+ENV STROJ_COMMIT=$STROJ_COMMIT
+
 # SQLite and test data live here. Mount a real volume or you lose both on
 # every restart.
 VOLUME ["/data"]

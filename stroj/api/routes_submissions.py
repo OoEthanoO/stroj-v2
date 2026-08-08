@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from .. import config, contest as contest_mod, db
+from .. import __version__, config, contest as contest_mod, db
 from ..ratelimit import RateLimiter
 from ..judge import languages, worker
 from ..judge.runner import JUDGING, PENDING, VERDICT_NAMES, validate_source
@@ -26,6 +26,9 @@ MAX_IN_FLIGHT = 5
 # The in-flight cap alone does not stop a fast loop of tiny submissions that
 # each judge in milliseconds; this bounds sustained volume per account.
 _submit_limiter = RateLimiter(config.SUBMIT_LIMIT, config.SUBMIT_WINDOW_S)
+
+#: When this process came up — distinguishes "redeployed" from "restarted".
+STARTED_AT = db.utcnow()
 
 _JOINED = """
 SELECT s.*, u.username AS username,
@@ -194,6 +197,21 @@ def get_submission(submission_id: int, request: Request):
             for t in tests
         ]
     return data
+
+
+@router.get("/version")
+def version():
+    """What this judge is actually running.
+
+    The frontend is deployed separately and can drift ahead of or behind the
+    backend, so both halves report their commit and a check can compare them.
+    """
+    return {
+        "commit": config.commit(),
+        "short": config.commit()[:7],
+        "version": __version__,
+        "started_at": STARTED_AT,
+    }
 
 
 @router.get("/config")

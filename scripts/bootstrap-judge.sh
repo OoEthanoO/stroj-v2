@@ -83,7 +83,10 @@ sudo netfilter-persistent save >/dev/null
 
 # -------------------------------------------------------------------- image
 say "Building the image"
-docker build -t "$IMAGE" .
+# Stamp the image with the commit it was built from, so the running judge can
+# say what it is rather than leaving you to guess.
+BUILD_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+docker build --build-arg "STROJ_COMMIT=$BUILD_COMMIT" -t "$IMAGE" .
 docker volume create "$VOLUME" >/dev/null
 
 # ---------------------------------------------------------------- container
