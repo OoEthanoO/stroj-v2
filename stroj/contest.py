@@ -90,9 +90,28 @@ class Row:
 
 
 def _percentage(score: int, max_score: int) -> int:
+    """Fraction of a submission's per-test points, as a fallback.
+
+    Only used for submissions judged before `earned_percent` existed; anything
+    judged since carries its own figure, which respects subtask weights.
+    """
     if max_score <= 0:
         return 0
     return round(100 * score / max_score)
+
+
+def _earned(submission: sqlite3.Row) -> int:
+    """What a submission is worth, 0-100.
+
+    Must agree with the leaderboard, or the same submission reads as two
+    different numbers depending on which page you are looking at. A run that
+    clears one 20% subtask is worth 20 — not the 45% of individual tests that
+    subtask happened to contain.
+    """
+    keys = submission.keys()
+    if "earned_percent" in keys and submission["earned_percent"]:
+        return submission["earned_percent"]
+    return _percentage(submission["score"], submission["max_score"])
 
 
 def freeze_at(contest: sqlite3.Row) -> str | None:
@@ -154,7 +173,7 @@ def scoreboard(contest: sqlite3.Row, reveal: bool = False) -> dict:
             continue
 
         if scoring == "ioi":
-            gained = _percentage(sub["score"], sub["max_score"])
+            gained = _earned(sub)
             cell.attempts += 1
             if gained > cell.score:
                 cell.score = gained

@@ -159,6 +159,34 @@ def update_problem(slug: str, body: ProblemPatch, request: Request):
     return {"updated": len(fields)}
 
 
+@router.get("/problems/{slug}/impact")
+def deletion_impact(slug: str):
+    """What deleting this problem would destroy.
+
+    `submissions.problem_id` cascades, so removing a problem silently takes
+    every attempt at it with it — including other people's, and any contest
+    result that depended on them. A confirm dialog should say how much.
+    """
+    problem = _problem_or_404(slug)
+    counts = db.one(
+        "SELECT COUNT(*) AS submissions, COUNT(DISTINCT user_id) AS users"
+        "  FROM submissions WHERE problem_id = ?",
+        (problem["id"],),
+    )
+    contests = db.query(
+        "SELECT c.slug, c.title FROM contest_problems cp"
+        "  JOIN contests c ON c.id = cp.contest_id"
+        " WHERE cp.problem_id = ? ORDER BY c.starts_at",
+        (problem["id"],),
+    )
+    return {
+        "slug": slug,
+        "submissions": counts["submissions"],
+        "users": counts["users"],
+        "contests": [{"slug": c["slug"], "title": c["title"]} for c in contests],
+    }
+
+
 @router.delete("/problems/{slug}")
 def delete_problem(slug: str):
     problem = _problem_or_404(slug)

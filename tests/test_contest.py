@@ -282,3 +282,58 @@ class TestScoreboardFreeze:
         assert moment is not None
         delta = db.parse_time(row["ends_at"]) - db.parse_time(moment)
         assert abs(delta.total_seconds() - 30 * 60) < 1
+
+
+class TestIoiUsesEarnedPercent:
+    """A contest cell and the leaderboard must agree about what one submission
+    is worth, or the same run reads as two different numbers."""
+
+    @pytest.fixture
+    def board(self, fixtures):
+        def submit(user, label, verdict, minute, score, max_score, earned):
+            problem = db.one(
+                "SELECT problem_id FROM contest_problems cp"
+                " JOIN problems p ON p.id = cp.problem_id"
+                " WHERE cp.contest_id = ? AND cp.label = ?",
+                (fixtures["contest_id"], label),
+            )["problem_id"]
+            db.insert(
+                "INSERT INTO submissions (user_id, problem_id, contest_id, language,"
+                " source, verdict, score, max_score, earned_percent, created_at)"
+                " VALUES (?, ?, ?, 'python3', '', ?, ?, ?, ?, ?)",
+                (fixtures["users"][user], problem, fixtures["contest_id"], verdict,
+                 score, max_score, earned,
+                 iso(fixtures["started"] + timedelta(minutes=minute))),
+            )
+        return {**fixtures, "submit": submit}
+
+    def test_subtask_weight_beats_test_count(self, board):
+        """Ten of twenty-two tests that happen to be one 20% subtask is worth
+        20, not 45."""
+        board["submit"]("ann", "A", "TLE", 5, score=10, max_score=22, earned=20)
+        cell = board["board"]("ioi")["rows"][0]["cells"]["A"]
+        assert cell["score"] == 20
+
+    def test_a_full_solve_is_one_hundred(self, board):
+        board["submit"]("ann", "A", "AC", 5, score=22, max_score=22, earned=100)
+        row = board["board"]("ioi")["rows"][0]
+        assert row["cells"]["A"]["score"] == 100
+        assert row["cells"]["A"]["solved"] is True
+
+    def test_older_submissions_fall_back_to_test_counts(self, board):
+        """Anything judged before earned_percent existed stores 0; reading that
+        literally would wrongly zero out a historical scoreboard."""
+        board["submit"]("ann", "A", "WA", 5, score=5, max_score=10, earned=0)
+        assert board["board"]("ioi")["rows"][0]["cells"]["A"]["score"] == 50
+
+    def test_the_best_attempt_still_wins(self, board):
+        board["submit"]("ann", "A", "WA", 5, score=1, max_score=10, earned=60)
+        board["submit"]("ann", "A", "WA", 9, score=9, max_score=10, earned=20)
+        assert board["board"]("ioi")["rows"][0]["cells"]["A"]["score"] == 60
+
+    def test_icpc_is_unaffected(self, board):
+        """ICPC is binary by definition — a partial result is not a solve."""
+        board["submit"]("ann", "A", "TLE", 5, score=10, max_score=22, earned=20)
+        row = board["board"]("icpc")["rows"][0]
+        assert row["solved"] == 0
+        assert row["cells"]["A"]["attempts"] == 1

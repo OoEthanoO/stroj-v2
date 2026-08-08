@@ -810,3 +810,47 @@ class TestLiveSubmissionView:
         assert admin_client.get(f"/api/submissions/{submission_id}").json()["score"] == 0
         worker.drain()
         assert admin_client.get(f"/api/submissions/{submission_id}").json()["score"] == 2
+
+
+class TestDeletionImpact:
+    """Deleting a problem cascades to every submission against it, so the
+    confirm dialog should say how much that is rather than warn generically."""
+
+    def test_counts_submissions_and_users(self, client, admin_client):
+        make_problem(admin_client)
+        admin_client.post("/api/submissions", json={
+            "problem": "a-plus-b", "language": "python3", "source": "print(1)"})
+        admin_client.post("/api/auth/logout")
+        register(client, "someone-else")
+        client.post("/api/submissions", json={
+            "problem": "a-plus-b", "language": "python3", "source": "print(2)"})
+        client.post("/api/auth/logout")
+        client.post("/api/auth/login",
+                    json={"username": "admin", "password": "test-admin-password"})
+
+        impact = client.get("/api/admin/problems/a-plus-b/impact").json()
+        assert impact["submissions"] == 2
+        assert impact["users"] == 2
+
+    def test_names_the_contests_it_would_disturb(self, admin_client):
+        make_problem(admin_client)
+        now = db.parse_time(db.utcnow())
+        admin_client.post("/api/admin/contests", json={
+            "slug": "round-9", "title": "Round 9",
+            "starts_at": now.isoformat(),
+            "ends_at": (now + timedelta(hours=2)).isoformat()})
+        admin_client.put("/api/admin/contests/round-9/problems",
+                         json={"problems": [{"slug": "a-plus-b"}]})
+        impact = admin_client.get("/api/admin/problems/a-plus-b/impact").json()
+        assert impact["contests"] == [{"slug": "round-9", "title": "Round 9"}]
+
+    def test_an_untouched_problem_reports_nothing(self, admin_client):
+        make_problem(admin_client)
+        impact = admin_client.get("/api/admin/problems/a-plus-b/impact").json()
+        assert impact["submissions"] == 0 and impact["contests"] == []
+
+    def test_requires_admin(self, client, admin_client):
+        make_problem(admin_client)
+        admin_client.post("/api/auth/logout")
+        register(client, "curious")
+        assert client.get("/api/admin/problems/a-plus-b/impact").status_code == 403

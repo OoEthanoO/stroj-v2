@@ -37,6 +37,10 @@ SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 #: How often the memory monitor samples a running child.
 POLL_INTERVAL_S = 0.02
 
+#: For this long after exec, sample far more often. Short submissions would
+#: otherwise be reaped between two slow samples and report no memory at all.
+FAST_SAMPLE_WINDOW_S = 0.05
+
 # Start from `allow default` and subtract: a deny-by-default profile breaks
 # clang, the JVM and CPython in a dozen small ways that are not worth chasing
 # for a local judge. What actually matters is that submissions cannot reach the
@@ -270,27 +274,62 @@ def _make_rss_reader():
 _read_rss = _make_rss_reader()
 
 
-class _MemoryMonitor(threading.Thread):
-    """Sample a child's RSS; kill its process group if it crosses the limit."""
+def _self_rss() -> int:
+    """This process's resident size, used as a pollution floor — see below."""
+    return _read_rss(os.getpid())
 
-    def __init__(self, pid: int, limit_bytes: int) -> None:
+
+class _MemoryMonitor(threading.Thread):
+    """Sample a child's RSS; kill its process group if it crosses the limit.
+
+    Sampling only starts once the child has actually ``execve``'d. Between
+    ``fork`` and ``exec`` the child is a copy-on-write clone of the judge and
+    reports the judge's own footprint, so an early sample would attribute tens
+    of megabytes of Python interpreter to the submission.
+    """
+
+    def __init__(self, pid: int, limit_bytes: int | None, exec_path: str | None) -> None:
         super().__init__(name=f"rss-{pid}", daemon=True)
         self.pid = pid
         self.limit = limit_bytes
+        self.exec_path = exec_path
         self.peak = 0
         self.exceeded = threading.Event()
         self._done = threading.Event()
+        self._running_yet = exec_path is None
+
+    def _has_exec(self) -> bool:
+        """True once /proc says the child is running the program we launched."""
+        if self._running_yet:
+            return True
+        try:
+            if os.readlink(f"/proc/{self.pid}/exe") == self.exec_path:
+                self._running_yet = True
+        except OSError:
+            pass
+        return self._running_yet
 
     def run(self) -> None:
+        started = None
         while not self._done.is_set():
+            if not self._has_exec():
+                # Spin tightly: exec lands in well under a millisecond, and
+                # sleeping the full interval would lose real measurements.
+                self._done.wait(0.0005)
+                continue
+            if started is None:
+                started = time.monotonic()
             rss = _read_rss(self.pid)
             if rss > self.peak:
                 self.peak = rss
-            if rss >= self.limit:
+            if self.limit is not None and rss >= self.limit:
                 self.exceeded.set()
                 _killpg(self.pid)
                 return
-            self._done.wait(POLL_INTERVAL_S)
+            # A submission that finishes in a few milliseconds would otherwise
+            # be reaped before the first slow sample, and report nothing at all.
+            elapsed = time.monotonic() - started
+            self._done.wait(0.0005 if elapsed < FAST_SAMPLE_WINDOW_S else POLL_INTERVAL_S)
 
     def stop(self) -> None:
         self._done.set()
@@ -380,6 +419,11 @@ def run(
     cpu_rlimit = max(1, math.ceil(cpu_limit_s))
     write_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
 
+    # Captured before the fork: the child inherits this footprint, and
+    # ru_maxrss cannot tell it apart from memory the submission really used.
+    parent_floor = _self_rss() if sys.platform == "linux" else 0
+    exec_target = os.path.realpath(exe) if sys.platform == "linux" else None
+
     start = time.monotonic()
     try:
         pid = os.fork()
@@ -434,16 +478,15 @@ def run(
 
     timer = threading.Timer(wall_limit_s, _watchdog)
     timer.start()
-    monitor = None
-    if memory_limit_bytes is not None:
-        monitor = _MemoryMonitor(pid, memory_limit_bytes)
-        monitor.start()
+    # Always sample, even with no limit to enforce: it is the only measurement
+    # that reflects the submission rather than the judge that launched it.
+    monitor = _MemoryMonitor(pid, memory_limit_bytes, exec_target)
+    monitor.start()
     try:
         _, status, usage = os.wait4(pid, 0)
     finally:
         timer.cancel()
-        if monitor is not None:
-            monitor.stop()
+        monitor.stop()
     wall_ms = int((time.monotonic() - start) * 1000)
     # Sweep up anything the submission spawned and left behind.
     _killpg(pid)
@@ -456,16 +499,26 @@ def run(
         exit_code = os.WEXITSTATUS(status)
 
     cpu_ms = int((usage.ru_utime + usage.ru_stime) * 1000)
-    # Sampling can miss a short spike, so keep whichever number is larger.
-    max_rss = max(
-        int(usage.ru_maxrss) * RSS_UNIT_BYTES, monitor.peak if monitor else 0
-    )
+
+    # ru_maxrss is exact but has a floor at whatever the judge itself was using
+    # when it forked, because the pre-exec child is a copy of it. Above that
+    # floor the number is real and beats sampling, which can miss a short spike;
+    # at or below it, the figure says nothing about the submission and only the
+    # sampled peak is meaningful.
+    reported_rusage = int(usage.ru_maxrss) * RSS_UNIT_BYTES
+    if monitor.peak:
+        # Sampled after exec, so it describes the submission and nothing else.
+        max_rss = max(monitor.peak, reported_rusage if reported_rusage > parent_floor else 0)
+    else:
+        # Gone before a single sample landed. All that is left is the polluted
+        # figure — an overestimate, but reporting 0 MiB would be worse.
+        max_rss = reported_rusage
 
     result = RunResult(
         RunStatus.OK, exit_code, term_signal, wall_ms, cpu_ms, max_rss
     )
 
-    if monitor is not None and monitor.exceeded.is_set():
+    if monitor.exceeded.is_set():
         result.status = RunStatus.MEMORY
         result.detail = "memory limit exceeded"
     elif timed_out.is_set() or term_signal == signal.SIGXCPU:

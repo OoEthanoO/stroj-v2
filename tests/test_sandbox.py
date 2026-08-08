@@ -181,3 +181,38 @@ class TestIsolationReporting:
     def test_unshare_prefix_is_none_off_linux(self):
         if sys.platform != "linux":
             assert sandbox.unshare_net_prefix() is None
+
+
+class TestMemoryIsAttributedToTheProgram:
+    """`ru_maxrss` from wait4 counts what the child inherited at fork, before
+    exec replaced the image — so on Linux a trivial submission used to report
+    the judge's own footprint, and any limit below it produced a false MLE."""
+
+    def test_the_difference_reflects_the_allocation(self, tmp_path):
+        small = run_python("pass", tmp_path, memory_limit_bytes=512 * 1024**2)
+        big = run_python(
+            "x = bytearray(120 * 1024 * 1024)\nx[::4096] = b'1' * len(x[::4096])",
+            tmp_path, memory_limit_bytes=512 * 1024**2,
+        )
+        assert small.status is RunStatus.OK and big.status is RunStatus.OK
+        grew_by = big.max_rss_bytes - small.max_rss_bytes
+        assert grew_by > 100 * 1024**2, f"only grew {grew_by / 1e6:.1f} MB"
+
+    def test_a_short_program_still_reports_something(self, tmp_path):
+        """The fix must not swing the other way: a program that exits before the
+        sampler wakes should not report 0 MiB."""
+        result = run_python("pass", tmp_path, memory_limit_bytes=512 * 1024**2)
+        assert result.max_rss_bytes > 0
+
+    def test_measurement_works_without_a_limit(self, tmp_path):
+        """Sampling used to be tied to enforcing a limit, so an unlimited run
+        had only the polluted figure to fall back on."""
+        result = run_python("x = bytearray(40 * 1024 * 1024)", tmp_path)
+        assert result.status is RunStatus.OK
+        assert result.max_rss_bytes > 0
+
+    def test_a_generous_limit_is_not_tripped_by_the_judge(self, tmp_path):
+        """The bug this guards: with the floor counted, any limit under the
+        judge's own RSS marked every submission MLE."""
+        result = run_python("pass", tmp_path, memory_limit_bytes=64 * 1024**2)
+        assert result.status is RunStatus.OK

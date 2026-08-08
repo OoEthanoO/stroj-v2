@@ -275,3 +275,25 @@ class TestLiveProgress:
         )
         assert outcome.verdict == runner.AC
         assert outcome.score == 3
+
+
+def test_a_tight_memory_limit_is_usable(make_tests):
+    """The measurement fix exists so limits like this mean something.
+
+    While `ru_maxrss` carried the judge's own footprint, a 32 MiB limit failed
+    every submission including correct ones, so problems could not be authored
+    memory-tight. A small limit must now reject only the program that earns it.
+    """
+    tight = ProblemSpec(time_limit_ms=4000, memory_limit_mb=32)
+    correct = "a,b=map(int,input().split())\nprint(a+b)"
+    assert runner.judge(correct, "python3", tight, make_tests(AB_TESTS)).verdict == runner.AC
+
+
+def test_a_clean_allocation_failure_still_reads_as_memory(make_tests):
+    """Under a tight RLIMIT_AS the kernel refuses the mapping and CPython exits
+    with MemoryError rather than being killed, which the sandbox alone can only
+    see as a non-zero exit."""
+    tight = ProblemSpec(time_limit_ms=4000, memory_limit_mb=32)
+    hog = "x = bytearray(200 * 1024 * 1024)\nprint(len(x))"
+    outcome = runner.judge(hog, "python3", tight, make_tests(AB_TESTS))
+    assert outcome.verdict == runner.MLE, f"expected MLE, got {outcome.message}"

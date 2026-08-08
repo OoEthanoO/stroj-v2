@@ -1304,7 +1304,21 @@ async function viewAdmin() {
   $$('[data-delete]').forEach((button) => {
     button.onclick = guard(async () => {
       const slug = button.dataset.delete;
-      if (!confirm(`Delete problem "${slug}" along with its test data and submissions?`)) return;
+      // Ask the server what this would actually destroy: deleting a problem
+      // cascades to every submission against it, which a generic warning makes
+      // far too easy to click through.
+      const impact = await api(`/api/admin/problems/${encodeURIComponent(slug)}/impact`);
+      const lines = [`Delete "${slug}" and its test data?`];
+      if (impact.submissions) {
+        lines.push('', `This also deletes ${impact.submissions} submission` +
+          `${impact.submissions === 1 ? '' : 's'} from ${impact.users} ` +
+          `user${impact.users === 1 ? '' : 's'}. That cannot be undone.`);
+      }
+      if (impact.contests.length) {
+        lines.push('', `It is used in: ${impact.contests.map((c) => c.title).join(', ')}.` +
+          ' Those scoreboards will change.');
+      }
+      if (!confirm(lines.join('\n'))) return;
       await api(`/api/admin/problems/${encodeURIComponent(slug)}`, { method: 'DELETE' });
       toast('Deleted.');
       route();
