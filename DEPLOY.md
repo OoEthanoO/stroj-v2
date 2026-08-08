@@ -123,52 +123,83 @@ docker exec stroj-judge python -m stroj seed     # sample problems + contest
 curl -fsS http://localhost:8000/healthz
 ```
 
-`doctor` should report all three languages `ok` and isolation `unshare-net`. If
-isolation says `none`, the container lacks the capability for network
-namespaces — add `--cap-add SYS_ADMIN`, or accept that submissions have network
-access and do not open registration to the public.
+### Expect `isolation: none` in a container, and fix it at the host
+
+`doctor` will almost certainly report `isolation: none` inside a stock
+container, and that is not a misconfiguration you can talk your way out of:
+`unshare --net` needs `CAP_SYS_ADMIN`, which Docker does not grant by default,
+and the `--user --map-root-user` fallback runs into the default seccomp
+profile's restriction on `CLONE_NEWUSER`. The probe degrades safely rather than
+pretending, which is why the UI says `none`.
+
+The obvious fix — `--cap-add SYS_ADMIN` — is the wrong one. On Linux the
+container *is* the security boundary, and handing submissions `SYS_ADMIN`
+undermines exactly the thing protecting you.
+
+Take the network away at the host instead. It needs no container privileges,
+and the judge has no use for outbound internet once the image is built:
+
+```bash
+docker network create stroj-net --opt com.docker.network.bridge.name=stroj0
+sudo iptables -I DOCKER-USER -i stroj0 -j DROP
+sudo netfilter-persistent save
+```
+
+`DOCKER-USER` is consulted ahead of Docker's own rules and survives daemon
+restarts. Matching on `-i` (traffic *leaving* the bridge) leaves published-port
+ingress, which arrives with `-o`, untouched.
+
+Then run the container with `--network stroj-net`, and **verify it rather than
+trusting it**:
+
+```bash
+docker exec stroj-judge /usr/bin/python3 -c \
+  "import socket;socket.setdefaulttimeout(5);socket.create_connection(('1.1.1.1',53));print('NOT BLOCKED')"
+```
+
+That must fail. If it prints `NOT BLOCKED`, submissions can reach the internet —
+do not open registration until it doesn't.
 
 ### Oracle Cloud Always Free
 
-Create an Always Free **Ampere A1** instance (Ubuntu 22.04+, 2+ OCPU, 12+ GB),
-then:
+Create an Always Free **Ampere A1** instance (Ubuntu 24.04, 2+ OCPU, 12+ GB).
+The image is multi-arch, so aarch64 is fine. Then:
 
 ```bash
-sudo apt update && sudo apt install -y docker.io
-sudo usermod -aG docker "$USER" && newgrp docker
 git clone https://github.com/OoEthanoO/stroj-v2.git && cd stroj-v2
-# …the docker build/run above…
+./scripts/bootstrap-judge.sh judge.ethanyanxu.com
 ```
 
-Open port 443 in both the OCI security list and the host firewall, and put
-Caddy in front for automatic TLS:
+That script does everything above — docker and caddy, the dedicated bridge, the
+egress rule, the build, a volume, the container bound to `127.0.0.1` so only
+Caddy can reach it, and TLS. It finishes by running `doctor` and the egress test
+and printing both, plus a generated admin password. It is idempotent; re-run it
+freely.
 
-```bash
-sudo apt install -y caddy
-echo 'judge.ethanyanxu.com { reverse_proxy 127.0.0.1:8000 }' | sudo tee /etc/caddy/Caddyfile
-sudo systemctl restart caddy
-```
+Two things it cannot do for you:
 
-Point `judge.ethanyanxu.com` at the instance's public IP with an `A` record.
-That hostname is your **judge origin**.
+- **Open 80 and 443 in the VCN security list.** Oracle's firewall is separate
+  from the host's, and forgetting this is the single most common reason a fresh
+  A1 instance appears dead. Ubuntu images also ship restrictive local
+  `iptables`; `sudo netfilter-persistent save` after opening them.
+- **Point DNS.** Add an `A` record for `judge.ethanyanxu.com` to the instance's
+  public IP. Caddy cannot issue a certificate until that resolves.
+
+If A1 capacity is unavailable in your region — common — either retry (capacity
+frees up), pick a quieter region, or fall back to Hetzner below. The script is
+identical there.
 
 ### Hetzner (or any plain VPS)
 
-Identical to the above once Docker is installed — Hetzner just hands you a box
-that is actually available, unlike Oracle's A1 capacity:
+Same script, and Hetzner hands you a box that is actually available:
 
 ```bash
-# Ubuntu 24.04, CAX11 (ARM) or CX22 (x86)
-sudo apt update && sudo apt install -y docker.io caddy
-sudo usermod -aG docker "$USER" && newgrp docker
+# Ubuntu 24.04, CAX11 (ARM) or CX22 (x86) — the image is multi-arch
 git clone https://github.com/OoEthanoO/stroj-v2.git && cd stroj-v2
-docker build -t stroj-judge .            # the Dockerfile is arch-independent
-# …the docker volume/run above…
-echo 'judge.ethanyanxu.com { reverse_proxy 127.0.0.1:8000 }' | sudo tee /etc/caddy/Caddyfile
-sudo systemctl restart caddy
+./scripts/bootstrap-judge.sh judge.ethanyanxu.com
 ```
 
-Hetzner's firewall defaults to open; restrict inbound to 22/80/443 in the
+Hetzner's firewall defaults to open, so restrict inbound to 22/80/443 in the
 console. Point `judge.ethanyanxu.com` at the IP with an `A` record.
 
 ### Cloudflare Tunnel alternative
