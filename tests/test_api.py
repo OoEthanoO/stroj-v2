@@ -655,3 +655,71 @@ def test_samples_are_ordered_first(admin_client):
     assert [t["is_sample"] for t in tests] == [True, True, False, False]
     samples = admin_client.get("/api/problems/ordered").json()["samples"]
     assert [s["input"] for s in samples] == ["s\n", "b\n"]
+
+
+class TestProfilesAndAuthorship:
+    def test_profile_shows_solved_and_score(self, client, admin_client):
+        admin_client.post("/api/admin/problems", json={
+            "slug": "p1", "title": "P1", "points": 400})
+        admin_client.put("/api/admin/problems/p1/tests", json={"tests": [
+            {"input": "1\n", "output": "1\n"}]})
+        admin_client.post("/api/auth/logout")
+        register(client, "solver")
+        client.post("/api/submissions", json={
+            "problem": "p1", "language": "python3", "source": "print(input())"})
+        worker.drain()
+
+        body = client.get("/api/users/solver").json()
+        assert body["solved_count"] == 1
+        assert body["score"] == 400
+        assert body["rank"] == 1
+        assert body["solved"][0]["slug"] == "p1"
+
+    def test_bio_round_trips_and_is_own_only(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "writer")
+        client.patch("/api/users/me", json={"bio": "# Hi\n\nI like **graphs**."})
+        assert "graphs" in client.get("/api/users/writer").json()["bio"]
+        assert client.get("/api/users/writer").json()["editable"] is True
+
+        client.post("/api/auth/logout")
+        register(client, "stranger")
+        other = client.get("/api/users/writer").json()
+        assert other["editable"] is False
+        assert "graphs" in other["bio"]      # bios are public
+
+    def test_bio_requires_sign_in(self, client):
+        assert client.patch("/api/users/me", json={"bio": "x"}).status_code == 401
+
+    def test_author_defaults_to_the_creating_admin(self, admin_client):
+        admin_client.post("/api/admin/problems", json={"slug": "mine", "title": "Mine"})
+        assert admin_client.get("/api/problems/mine").json()["author"] == "admin"
+
+    def test_author_can_be_someone_else(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "guest-author")
+        client.post("/api/auth/logout")
+        client.post("/api/auth/login",
+                    json={"username": "admin", "password": "test-admin-password"})
+        client.post("/api/admin/problems", json={
+            "slug": "theirs", "title": "Theirs", "author": "guest-author"})
+        assert client.get("/api/problems/theirs").json()["author"] == "guest-author"
+        assert client.get("/api/users/guest-author").json()["authored"][0]["slug"] == "theirs"
+
+    def test_unknown_author_is_rejected(self, admin_client):
+        response = admin_client.post("/api/admin/problems", json={
+            "slug": "ghosted", "title": "Ghosted", "author": "nobody"})
+        assert response.status_code == 404
+
+    def test_points_default_and_are_editable(self, admin_client):
+        admin_client.post("/api/admin/problems", json={"slug": "pts", "title": "Pts"})
+        assert admin_client.get("/api/problems/pts").json()["points"] == 100
+        admin_client.patch("/api/admin/problems/pts", json={"points": 750})
+        assert admin_client.get("/api/problems/pts").json()["points"] == 750
+
+    def test_missing_profile_is_a_404(self, client):
+        assert client.get("/api/users/nobody").status_code == 404
+
+    def test_leaderboard_endpoint(self, client):
+        body = client.get("/api/leaderboard").json()
+        assert "standings" in body and "decay" in body

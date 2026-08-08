@@ -15,6 +15,7 @@ from . import db, testdata
 A_PLUS_B = {
     "slug": "a-plus-b",
     "title": "A + B",
+    "points": 25,
     "time_limit_ms": 1000,
     "memory_limit_mb": 256,
     "checker": "token",
@@ -34,6 +35,7 @@ One line: the value of `a + b`.
 MAX_SUBARRAY = {
     "slug": "max-subarray",
     "title": "Maximum Subarray Sum",
+    "points": 300,
     "time_limit_ms": 2000,
     "memory_limit_mb": 256,
     "checker": "token",
@@ -59,6 +61,7 @@ An `O(n^2)` scan will not finish inside the time limit on the larger tests.
 CIRCLE = {
     "slug": "circle-area",
     "title": "Circle Area",
+    "points": 50,
     "time_limit_ms": 1000,
     "memory_limit_mb": 256,
     "checker": "float",
@@ -139,8 +142,8 @@ def _insert_problem(spec: dict) -> int:
         return existing["id"]
     return db.insert(
         "INSERT INTO problems (slug, title, statement, time_limit_ms, memory_limit_mb,"
-        " checker, float_eps, partial, visible, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+        " checker, float_eps, partial, visible, points, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
         (
             spec["slug"],
             spec["title"],
@@ -150,6 +153,7 @@ def _insert_problem(spec: dict) -> int:
             spec["checker"],
             spec.get("float_eps", 1e-6),
             spec.get("partial", 0),
+            spec.get("points", 100),
             db.utcnow(),
         ),
     )

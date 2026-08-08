@@ -5,7 +5,15 @@ from __future__ import annotations
 import re
 import sqlite3
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from pydantic import BaseModel, Field
 
 from .. import db, testdata
@@ -45,6 +53,11 @@ class ProblemBody(BaseModel):
     float_eps: float = 1e-6
     partial: bool = False
     visible: bool = True
+    #: Difficulty value awarded for solving it. Distinct from a testcase's
+    #: `points`, which only splits partial credit within one problem.
+    points: int = Field(default=100, ge=1, le=10000)
+    #: Username to credit. Defaults to whoever creates the problem.
+    author: str | None = None
 
 
 class ProblemPatch(BaseModel):
@@ -56,6 +69,8 @@ class ProblemPatch(BaseModel):
     float_eps: float | None = None
     partial: bool | None = None
     visible: bool | None = None
+    points: int | None = Field(default=None, ge=1, le=10000)
+    author: str | None = None
 
 
 class TestsBody(BaseModel):
@@ -80,16 +95,28 @@ class ContestProblemsBody(BaseModel):
     problems: list[dict]
 
 
+def _author_id(username: str | None, fallback: sqlite3.Row) -> int | None:
+    """Resolve a username to credit, defaulting to whoever is authoring."""
+    if not username:
+        return fallback["id"]
+    row = db.one("SELECT id FROM users WHERE username = ?", (username,))
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No such user: {username}")
+    return row["id"]
+
+
 @router.post("/problems")
-def create_problem(body: ProblemBody):
+def create_problem(body: ProblemBody, request: Request):
     _check_slug(body.slug)
     if body.checker not in checkers.CHECKERS:
         raise HTTPException(status_code=400, detail=f"Unknown checker: {body.checker}")
+    author_id = _author_id(body.author, require_admin(request))
     try:
         problem_id = db.insert(
             "INSERT INTO problems (slug, title, statement, time_limit_ms,"
-            " memory_limit_mb, checker, float_eps, partial, visible, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " memory_limit_mb, checker, float_eps, partial, visible, points,"
+            " author_id, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 body.slug,
                 body.title,
@@ -100,6 +127,8 @@ def create_problem(body: ProblemBody):
                 body.float_eps,
                 int(body.partial),
                 int(body.visible),
+                body.points,
+                author_id,
                 db.utcnow(),
             ),
         )
@@ -109,13 +138,16 @@ def create_problem(body: ProblemBody):
 
 
 @router.patch("/problems/{slug}")
-def update_problem(slug: str, body: ProblemPatch):
+def update_problem(slug: str, body: ProblemPatch, request: Request):
     problem = _problem_or_404(slug)
     fields = body.model_dump(exclude_none=True)
     if not fields:
         return {"updated": 0}
     if "checker" in fields and fields["checker"] not in checkers.CHECKERS:
         raise HTTPException(status_code=400, detail=f"Unknown checker: {fields['checker']}")
+    if "author" in fields:
+        # The column is author_id; the API speaks usernames.
+        fields["author_id"] = _author_id(fields.pop("author"), require_admin(request))
     for key in ("partial", "visible"):
         if key in fields:
             fields[key] = int(fields[key])

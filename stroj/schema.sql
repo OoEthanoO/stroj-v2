@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS users (
     username      TEXT    NOT NULL UNIQUE,
     password_hash TEXT    NOT NULL,
     role          TEXT    NOT NULL DEFAULT 'user',   -- 'user' | 'admin'
+    bio           TEXT    NOT NULL DEFAULT '',       -- markdown, shown on the profile
     created_at    TEXT    NOT NULL
 );
 
@@ -27,6 +28,8 @@ CREATE TABLE IF NOT EXISTS problems (
     float_eps       REAL    NOT NULL DEFAULT 1e-6,
     partial         INTEGER NOT NULL DEFAULT 0,      -- 1 = score partial credit, run every test
     visible         INTEGER NOT NULL DEFAULT 1,      -- 0 = hidden outside a running contest
+    points          INTEGER NOT NULL DEFAULT 100,    -- difficulty value awarded for solving it
+    author_id       INTEGER          REFERENCES users(id) ON DELETE SET NULL,
     created_at      TEXT    NOT NULL
 );
 

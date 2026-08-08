@@ -36,7 +36,7 @@ _submit_limiter = RateLimiter(config.SUBMIT_LIMIT, config.SUBMIT_WINDOW_S)
 STARTED_AT = db.utcnow()
 
 _JOINED = """
-SELECT s.*, u.username AS username,
+SELECT s.*, u.username AS username, u.role AS user_role,
        p.slug AS problem_slug, p.title AS problem_title,
        c.slug AS contest_slug
   FROM submissions s

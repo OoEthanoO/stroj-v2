@@ -339,3 +339,45 @@ details.admin-section { margin-bottom: 14px; }
 details.admin-section > summary {
   cursor: pointer; font-weight: 600; padding: 10px 0; list-style-position: inside;
 }
+
+/* ---------- identity ---------- */
+
+/* Admins are visually distinct wherever a username appears, so nobody has to
+   cross-reference who is staff. */
+.user-link { color: var(--accent); font-weight: 500; }
+.user-link:hover { text-decoration: underline; }
+.user-admin {
+  color: var(--bad);
+  font-weight: 600;
+}
+.user-admin::after {
+  content: "admin";
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  background: var(--bad-bg);
+  color: var(--bad);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  vertical-align: 1px;
+}
+
+.points-pill {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 5px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.score-big { font-family: var(--mono); font-size: 30px; font-weight: 700; letter-spacing: -.02em; }
+.weight-bar {
+  display: inline-block; height: 6px; border-radius: 3px;
+  background: var(--accent); vertical-align: middle; min-width: 2px;
+}

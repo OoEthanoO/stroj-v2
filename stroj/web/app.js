@@ -64,6 +64,16 @@ function duration(ms) {
 
 const verdictBadge = (v, name) => `<span class="badge v-${esc(v)}">${esc(name || v)}</span>`;
 
+/** One renderer for every username in the app, so admins are marked
+ *  consistently rather than in whichever views happened to remember. */
+function userLink(username, role) {
+  if (!username) return '<span class="muted">—</span>';
+  const admin = role === 'admin' ? ' user-admin' : '';
+  return `<a class="user-link${admin}" href="#/user/${encodeURIComponent(username)}">${esc(username)}</a>`;
+}
+
+const pointsPill = (points) => `<span class="points-pill">${Number(points) || 0}</span>`;
+
 function memory(kb) {
   if (!kb) return '—';
   return kb >= 1024 ? `${(kb / 1024).toFixed(1)} MiB` : `${kb} KiB`;
@@ -265,7 +275,8 @@ async function viewProblems() {
         <a href="#/problem/${encodeURIComponent(p.slug)}">${esc(p.title)}</a>
         ${p.visible ? '' : ' <span class="pill">hidden</span>'}
       </td>
-      <td class="mono small muted">${esc(p.slug)}</td>
+      <td class="num">${pointsPill(p.points)}</td>
+      <td class="small">${p.author ? userLink(p.author) : '<span class="muted">—</span>'}</td>
       <td class="num">${p.time_limit_ms} ms</td>
       <td class="num">${p.memory_limit_mb} MiB</td>
       <td class="small muted">${esc(p.checker)}${p.partial ? ' · partial' : ''}</td>
@@ -274,7 +285,7 @@ async function viewProblems() {
   setView(`
     <div class="page-head"><h1>Problems</h1><span class="muted small">${problems.length} total</span></div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Problem</th><th>Slug</th><th class="num">Time</th><th class="num">Memory</th><th>Checker</th></tr></thead>
+      <thead><tr><th>Problem</th><th class="num">Points</th><th>Author</th><th class="num">Time</th><th class="num">Memory</th><th>Checker</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>`);
 }
@@ -302,6 +313,8 @@ async function viewProblem(slug, params) {
       ${contestSlug ? `<a class="pill" href="#/contest/${encodeURIComponent(contestSlug)}">← contest</a>` : ''}
     </div>
     <div class="row small muted" style="margin-bottom:18px">
+      <span class="points-pill">${problem.points} points</span>
+      ${problem.author ? `<span class="pill">by ${userLink(problem.author)}</span>` : ''}
       <span class="pill">${problem.time_limit_ms} ms</span>
       <span class="pill">${problem.memory_limit_mb} MiB</span>
       <span class="pill">${esc(problem.checker)} checker</span>
@@ -434,7 +447,7 @@ async function viewSubmissions(params) {
     const rows = submissions.map((s) => `
       <tr>
         <td><a href="#/submission/${s.id}">#${s.id}</a></td>
-        <td class="muted">${esc(s.username || '')}</td>
+        <td>${userLink(s.username, s.user_role)}</td>
         <td class="wide"><a href="#/problem/${encodeURIComponent(s.problem_slug)}">${esc(s.problem_title)}</a>
           ${s.contest_slug ? `<a class="pill" href="#/contest/${encodeURIComponent(s.contest_slug)}">${esc(s.contest_slug)}</a>` : ''}</td>
         <td class="small muted">${esc(s.language)}</td>
@@ -657,7 +670,7 @@ async function viewScoreboard(slug) {
       const me = state.user && state.user.id === r.user_id;
       return `<tr${me ? ' style="outline:2px solid var(--accent);outline-offset:-2px"' : ''}>
         <td class="rank">${r.rank}</td>
-        <td class="wide">${esc(r.username)}</td>
+        <td class="wide">${userLink(r.username, r.role)}</td>
         <td class="num"><strong>${isIcpc ? r.solved : r.total_score}</strong></td>
         ${isIcpc ? `<td class="num muted">${r.penalty}</td>` : ''}
         ${cells}
@@ -709,6 +722,132 @@ async function viewScoreboard(slug) {
   every(1000, () => $$('.countdown').forEach(updateCountdown));
 }
 
+/* ---- leaderboard ---- */
+
+async function viewLeaderboard() {
+  const board = await api('/api/leaderboard');
+  const rows = board.standings.map((s) => {
+    const me = state.user && state.user.username === s.username;
+    return `<tr${me ? ' style="outline:2px solid var(--accent);outline-offset:-2px"' : ''}>
+      <td class="rank">${s.rank}</td>
+      <td class="wide">${userLink(s.username, s.role)}</td>
+      <td class="num"><strong>${s.score}</strong></td>
+      <td class="num muted">${s.solved}</td>
+      <td class="num">${pointsPill(s.hardest)}</td>
+    </tr>`;
+  }).join('');
+
+  setView(`
+    <div class="page-head"><h1>Leaderboard</h1>
+      <span class="muted small">${board.standings.length} ranked</span></div>
+
+    ${board.standings.length
+      ? `<div class="table-wrap"><table>
+           <thead><tr><th class="num">#</th><th>Who</th><th class="num">Score</th>
+             <th class="num">Solved</th><th class="num">Hardest</th></tr></thead>
+           <tbody>${rows}</tbody></table></div>`
+      : '<div class="empty">Nobody has solved anything yet.</div>'}
+
+    <div class="card" style="margin-top:18px">
+      <h2 style="margin-top:0">How the score works</h2>
+      <p class="muted small">Your solved problems are sorted hardest first, and the
+        <em>k</em>-th one counts for <code>points × ${board.decay}<sup>k</sup></code>.
+        So your hardest solve counts in full, the tenth counts about
+        ${Math.round(Math.pow(board.decay, 9) * 100)}%, and the fiftieth about
+        ${Math.round(Math.pow(board.decay, 49) * 100)}%.</p>
+      <p class="muted small">Grinding a difficulty tier has a ceiling — repeating
+        <code>p</code>-point problems forever converges to
+        <code>${Math.round(1 / (1 - board.decay))} × p</code>. The only way past it is
+        a harder problem, which lands near the front and counts nearly in full.</p>
+    </div>`);
+}
+
+/* ---- user profile ---- */
+
+async function viewUser(username) {
+  const u = await api(`/api/users/${encodeURIComponent(username)}`);
+  const maxPoints = Math.max(1, ...u.solved.map((s) => s.points));
+
+  const solvedRows = u.solved.map((s, i) => `
+    <tr>
+      <td class="num muted">${i + 1}</td>
+      <td class="wide"><a href="#/problem/${encodeURIComponent(s.slug)}">${esc(s.title)}</a></td>
+      <td class="num">${pointsPill(s.points)}</td>
+      <td class="num muted">×${s.weight}</td>
+      <td class="num"><strong>${s.contribution}</strong>
+        <span class="weight-bar" style="width:${Math.round(60 * s.contribution / maxPoints)}px"></span></td>
+    </tr>`).join('');
+
+  setView(`
+    <div class="page-head">
+      <h1>${esc(u.username)}</h1>
+      ${u.is_admin ? '<span class="badge v-CE">admin</span>' : ''}
+      <div class="spacer"></div>
+      <span class="muted small">joined ${esc(absolute(u.created_at).split(',')[0])}</span>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="row" style="align-items:flex-end;gap:26px">
+          <div><div class="muted small">Score</div><div class="score-big">${u.score}</div></div>
+          <div><div class="muted small">Rank</div><div class="score-big">${u.rank ? '#' + u.rank : '—'}</div>
+            ${u.rank ? `<div class="muted small">of ${u.ranked_of}</div>` : ''}</div>
+          <div><div class="muted small">Solved</div><div class="score-big">${u.solved_count}</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <h2 style="margin:0">About</h2>
+          ${u.editable ? '<button class="small" id="edit-bio">Edit</button>' : ''}
+        </div>
+        <div class="statement" id="bio-view">${u.bio.trim()
+          ? markdown(u.bio)
+          : '<p class="muted small">Nothing here yet.</p>'}</div>
+        <div id="bio-edit" hidden>
+          <textarea id="bio-text" class="code" style="min-height:160px">${esc(u.bio)}</textarea>
+          <div class="row end" style="margin-top:8px">
+            <button class="small" id="bio-cancel">Cancel</button>
+            <button class="small primary" id="bio-save">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    ${u.authored.length ? `
+      <h2>Problems written</h2>
+      <div class="table-wrap"><table><tbody>${u.authored.map((p) => `
+        <tr><td class="wide"><a href="#/problem/${encodeURIComponent(p.slug)}">${esc(p.title)}</a></td>
+            <td class="num">${pointsPill(p.points)}</td></tr>`).join('')}</tbody></table></div>` : ''}
+
+    <h2>Solved</h2>
+    ${u.solved.length
+      ? `<div class="table-wrap"><table>
+           <thead><tr><th class="num">Rank</th><th>Problem</th><th class="num">Points</th>
+             <th class="num">Weight</th><th class="num">Counts for</th></tr></thead>
+           <tbody>${solvedRows}</tbody></table></div>
+         <p class="muted small">Each solve is weighted by its rank among your own
+           solves, so the total shows why it is what it is.</p>`
+      : '<div class="empty">Nothing solved yet.</div>'}`, { wide: true });
+
+  if (!u.editable) return;
+  const view = $('#bio-view');
+  const editor = $('#bio-edit');
+  $('#edit-bio').onclick = () => { view.hidden = true; editor.hidden = false; };
+  $('#bio-cancel').onclick = () => { view.hidden = false; editor.hidden = true; };
+  $('#bio-save').onclick = async () => {
+    try {
+      const saved = await api('/api/users/me', {
+        method: 'PATCH', body: { bio: $('#bio-text').value },
+      });
+      view.innerHTML = saved.bio.trim()
+        ? markdown(saved.bio)
+        : '<p class="muted small">Nothing here yet.</p>';
+      view.hidden = false; editor.hidden = true;
+      toast('Profile updated.', 'good');
+    } catch (err) { toast(err.message, 'bad'); }
+  };
+}
+
 /* ---- admin: edit one problem ---- */
 
 async function viewAdminProblem(slug) {
@@ -743,6 +882,10 @@ async function viewAdminProblem(slug) {
           </select></label>
         <label style="flex:1;min-width:130px">Float epsilon
           <input id="e-eps" type="number" step="any" value="${p.float_eps}"></label>
+        <label style="flex:1;min-width:110px">Points
+          <input id="e-points" type="number" min="1" max="10000" value="${p.points}"></label>
+        <label style="flex:2;min-width:160px">Author
+          <input id="e-author" value="${esc(p.author || '')}" placeholder="(unattributed)"></label>
       </div>
       <div class="row">
         <label class="row" style="gap:6px"><input type="checkbox" id="e-partial" style="width:auto"
@@ -801,6 +944,8 @@ async function viewAdminProblem(slug) {
           float_eps: Number($('#e-eps').value),
           partial: $('#e-partial').checked,
           visible: $('#e-visible').checked,
+          points: Number($('#e-points').value),
+          author: $('#e-author').value.trim() || null,
         },
       });
       $('#e-status').textContent = 'Saved.';
@@ -867,6 +1012,10 @@ async function viewAdmin() {
         <div>
           <label>Slug <input id="p-slug" placeholder="two-sum" required></label>
           <label>Title <input id="p-title" placeholder="Two Sum"></label>
+          <div class="row">
+            <label style="flex:1">Points <input id="p-points" type="number" value="100" min="1" max="10000"></label>
+            <label style="flex:2">Author <input id="p-author" placeholder="(you)"></label>
+          </div>
           <div class="row">
             <label style="flex:1">Time limit (ms) <input id="p-tl" type="number" value="1000" min="100" max="60000"></label>
             <label style="flex:1">Memory (MiB) <input id="p-ml" type="number" value="256" min="16" max="4096"></label>
@@ -996,6 +1145,8 @@ async function viewAdmin() {
         float_eps: Number($('#p-eps').value),
         partial: $('#p-partial').checked,
         visible: $('#p-visible').checked,
+        points: Number($('#p-points').value),
+        author: $('#p-author').value.trim() || null,
       },
     });
 
@@ -1121,7 +1272,8 @@ async function route() {
   const parts = path.split('/').filter(Boolean);
 
   // Detail routes are singular ("#/problem/x"); highlight their list nav entry.
-  const section = { problem: 'problems', contest: 'contests', submission: 'submissions' }[parts[0]] || parts[0];
+  const section = { problem: 'problems', contest: 'contests', submission: 'submissions',
+                    user: 'leaderboard' }[parts[0]] || parts[0];
   $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === section));
 
   try {
@@ -1135,6 +1287,8 @@ async function route() {
         if (parts[2] === 'scoreboard') await viewScoreboard(decodeURIComponent(parts[1]));
         else await viewContest(decodeURIComponent(parts[1] || ''));
         break;
+      case 'leaderboard': await viewLeaderboard(); break;
+      case 'user': await viewUser(decodeURIComponent(parts[1] || '')); break;
       case 'admin':
         if (parts[1] === 'problem' && parts[2]) await viewAdminProblem(decodeURIComponent(parts[2]));
         else await viewAdmin();

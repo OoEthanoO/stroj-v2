@@ -64,6 +64,12 @@ def close() -> None:
 #: hand. Append-only; never reorder.
 _ADDED_COLUMNS: list[tuple[str, str, str]] = [
     ("contests", "freeze_minutes", "INTEGER NOT NULL DEFAULT 0"),
+    ("users", "bio", "TEXT NOT NULL DEFAULT ''"),
+    ("problems", "points", "INTEGER NOT NULL DEFAULT 100"),
+    # SQLite cannot add a column with a REFERENCES clause to an existing table,
+    # so the retrofitted column is a plain integer. New databases get the real
+    # foreign key from schema.sql.
+    ("problems", "author_id", "INTEGER"),
 ]
 
 

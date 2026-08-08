@@ -70,6 +70,15 @@ def user_public(user: sqlite3.Row | None) -> dict | None:
     }
 
 
+def _author_of(problem) -> str | None:
+    """Username of whoever wrote the problem, if it is still attributed."""
+    author_id = problem["author_id"] if "author_id" in problem.keys() else None
+    if not author_id:
+        return None
+    row = db.one("SELECT username FROM users WHERE id = ?", (author_id,))
+    return row["username"] if row else None
+
+
 def problem_summary(problem: sqlite3.Row, user: sqlite3.Row | None = None) -> dict:
     data = {
         "slug": problem["slug"],
@@ -79,6 +88,8 @@ def problem_summary(problem: sqlite3.Row, user: sqlite3.Row | None = None) -> di
         "checker": problem["checker"],
         "partial": bool(problem["partial"]),
         "visible": bool(problem["visible"]),
+        "points": problem["points"],
+        "author": _author_of(problem),
     }
     if user is not None:
         best = db.one(
@@ -103,6 +114,7 @@ def submission_public(
     data = {
         "id": row["id"],
         "username": row["username"] if "username" in row.keys() else None,
+        "user_role": row["user_role"] if "user_role" in row.keys() else None,
         "problem_slug": row["problem_slug"] if "problem_slug" in row.keys() else None,
         "problem_title": row["problem_title"] if "problem_title" in row.keys() else None,
         "contest_slug": row["contest_slug"] if "contest_slug" in row.keys() else None,
