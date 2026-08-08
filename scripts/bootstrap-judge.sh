@@ -141,8 +141,16 @@ docker run -d --name "$CONTAINER" \
 # Bound to 127.0.0.1 above, so the container is only reachable through Caddy,
 # which owns TLS.
 say "Configuring Caddy for $DOMAIN"
+# /_deploy/* goes to the webhook receiver on the host, everything else to the
+# judge container. The receiver is a separate process precisely so the
+# container never gains the ability to make the host run anything.
 echo "$DOMAIN {
-    reverse_proxy 127.0.0.1:$PORT
+    handle /_deploy/* {
+        reverse_proxy 127.0.0.1:8787
+    }
+    handle {
+        reverse_proxy 127.0.0.1:$PORT
+    }
 }" | sudo tee /etc/caddy/Caddyfile >/dev/null
 sudo systemctl restart caddy
 

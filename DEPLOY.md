@@ -364,21 +364,39 @@ endpoint that does not exist yet.
 
 ## Automatic updates
 
-The judge can redeploy itself whenever `main` moves. Install the timer once, on
-the server:
+Pushes to `main` deploy within seconds. Install once, on the server:
 
 ```bash
 ./scripts/auto-update.sh --install judge.ethanyanxu.com
 ```
 
-It checks every five minutes and does nothing unless the remote has actually
-moved. `journalctl -u stroj-update -f` shows what it decided.
+It prints a webhook secret and the URL to register at
+`https://github.com/OoEthanoO/stroj-v2/settings/hooks/new` — payload URL
+`https://judge.ethanyanxu.com/_deploy/hook`, content type `application/json`,
+just the push event.
 
-**The server polls GitHub; GitHub does not push to the server.** A CI-driven
-deploy would mean parking an SSH key with root on this box in a secret store —
-a credential that, if it ever leaked, would hand over the machine running
-untrusted student code. Polling needs no secret and opens no port. The cost is
-up to five minutes of latency, which for a judge is nothing.
+**Why a webhook and not GitHub Actions.** An Actions deploy needs an SSH key
+with root on this box stored as a repo secret — a credential that, if it ever
+leaked, hands over the machine running untrusted student code. A webhook
+inverts that: GitHub holds nothing of yours, and the only thing it can do is
+present an HMAC signature over its own payload. The receiver checks that
+signature before parsing anything, in constant time, and rejects an unsigned
+request rather than treating it as trusted.
+
+**Why the receiver is not part of the judge.** It runs on the host, as a
+separate systemd service that Caddy routes `/_deploy/*` to. It launches a
+deploy, and a container able to make the host run commands is an escape hatch
+with extra steps — so the judge container has no path to it.
+
+A **fallback timer** still runs every 30 minutes. A webhook that silently stops
+delivering is the classic way continuous deployment rots, and the timer means
+the box converges anyway. Both take the same lock, so a webhook and a timer
+firing together cannot start two deploys.
+
+```bash
+journalctl -u stroj-deploy-hook -f   # what the receiver sees
+journalctl -u stroj-update -f        # what the deploy does
+```
 
 Two behaviours worth knowing:
 
@@ -393,8 +411,12 @@ Two behaviours worth knowing:
 To pause it — before a contest you are hand-managing, say:
 
 ```bash
-systemctl stop stroj-update.timer      # systemctl start … to resume
+systemctl stop stroj-update.timer stroj-deploy-hook.service
 ```
+
+(Both, or a push will still deploy. `systemctl start …` to resume.) The
+updater also refuses to deploy during a live contest on its own, so this is
+only needed for a window you are managing by hand.
 
 ## Backups
 
