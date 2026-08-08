@@ -265,3 +265,97 @@ class TestProtectionSummary:
         assert body["protection"] == sandbox.protection_summary()
         # The narrower field stays, for anyone who needs the mechanism itself.
         assert "isolation" in body
+
+
+class TestSchemaMigration:
+    """`CREATE TABLE IF NOT EXISTS` does nothing to a table that already
+    exists, so every column added after the first release has to be retrofitted
+    by hand — against a live database, on a deploy nobody is watching."""
+
+    def _old_schema(self, path):
+        import sqlite3
+
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,"
+            " role TEXT NOT NULL DEFAULT 'user', created_at TEXT NOT NULL);"
+            "CREATE TABLE problems (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " slug TEXT NOT NULL UNIQUE, title TEXT NOT NULL,"
+            " statement TEXT NOT NULL DEFAULT '', time_limit_ms INTEGER NOT NULL DEFAULT 1000,"
+            " memory_limit_mb INTEGER NOT NULL DEFAULT 256, checker TEXT NOT NULL DEFAULT 'token',"
+            " float_eps REAL NOT NULL DEFAULT 1e-6, partial INTEGER NOT NULL DEFAULT 0,"
+            " visible INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);"
+            "CREATE TABLE contests (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " slug TEXT NOT NULL UNIQUE, title TEXT NOT NULL,"
+            " description TEXT NOT NULL DEFAULT '', starts_at TEXT NOT NULL,"
+            " ends_at TEXT NOT NULL, scoring TEXT NOT NULL DEFAULT 'icpc',"
+            " penalty_minutes INTEGER NOT NULL DEFAULT 20, created_at TEXT NOT NULL);"
+        )
+        conn.execute(
+            "INSERT INTO users (username, password_hash, role, created_at)"
+            " VALUES ('existing', 'hash', 'admin', 't')"
+        )
+        conn.execute(
+            "INSERT INTO problems (slug, title, created_at) VALUES ('old', 'Old', 't')"
+        )
+        conn.commit()
+        conn.close()
+
+    def test_upgrades_a_pre_release_database(self, tmp_path, monkeypatch):
+        from stroj import config, db
+
+        path = tmp_path / "old.db"
+        self._old_schema(path)
+        monkeypatch.setattr(config, "DB_PATH", path)
+        db.close()
+
+        applied = db.init_db()
+        assert "users.bio" in applied
+        assert "problems.points" in applied
+        assert "problems.author_id" in applied
+        assert "contests.freeze_minutes" in applied
+        db.close()
+
+    def test_existing_rows_survive_with_defaults(self, tmp_path, monkeypatch):
+        from stroj import config, db
+
+        path = tmp_path / "old.db"
+        self._old_schema(path)
+        monkeypatch.setattr(config, "DB_PATH", path)
+        db.close()
+        db.init_db()
+
+        user = db.one("SELECT username, role, bio FROM users")
+        assert user["username"] == "existing" and user["role"] == "admin"
+        assert user["bio"] == ""
+        problem = db.one("SELECT slug, points, author_id FROM problems")
+        assert problem["slug"] == "old"
+        assert problem["points"] == 100      # not NULL — the column default applied
+        assert problem["author_id"] is None  # unattributed, and nullable
+        db.close()
+
+    def test_is_idempotent(self, tmp_path, monkeypatch):
+        """Every restart calls this. The second run must be a no-op, not an error."""
+        from stroj import config, db
+
+        path = tmp_path / "old.db"
+        self._old_schema(path)
+        monkeypatch.setattr(config, "DB_PATH", path)
+        db.close()
+
+        assert db.init_db() != []
+        assert db.init_db() == []
+        assert db.init_db() == []
+        db.close()
+
+    def test_every_declared_column_actually_exists_after_init(self, isolated_data):
+        """Guards the reverse mistake: a column added to schema.sql but never
+        listed for migration would work on a fresh database and fail on a live
+        one — the failure you would only see in production."""
+        from stroj import db
+
+        db.init_db()
+        for table, column, _ in db._ADDED_COLUMNS:
+            names = {r["name"] for r in db.query(f"PRAGMA table_info({table})")}
+            assert column in names, f"{table}.{column} missing"
