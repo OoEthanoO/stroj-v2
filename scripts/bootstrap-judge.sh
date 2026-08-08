@@ -107,6 +107,10 @@ docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 docker run -d --name "$CONTAINER" \
     --network "$NETWORK" \
     --publish "127.0.0.1:$PORT:$PORT" \
+    `# Point DNS at the container itself so lookups fail. The judge resolves
+     # nothing at runtime, and Docker's embedded resolver bypasses the host
+     # egress rule entirely — leaving a lookup-based exfiltration channel.` \
+    --dns 127.0.0.1 \
     --volume "$VOLUME:/data" \
     --env "STROJ_ADMIN_PASSWORD=$ADMIN_PASSWORD" \
     --env "STROJ_WORKERS=$WORKERS" \
@@ -136,15 +140,33 @@ say "Toolchains and isolation"
 docker exec "$CONTAINER" python -m stroj doctor || true
 
 say "Egress test (this MUST fail closed)"
-docker exec "$CONTAINER" /usr/bin/python3 - <<'PY' || true
+# `docker exec` without -i does not attach stdin, so a heredoc script silently
+# never runs and this check printed nothing at all.
+docker exec -i "$CONTAINER" /usr/bin/python3 - <<'PY' || true
 import socket
+
+socket.setdefaulttimeout(6)
+failures = 0
+
 try:
-    socket.setdefaulttimeout(5)
     socket.create_connection(("1.1.1.1", 53))
-    print("  FAIL: the container reached the internet. Egress is NOT blocked.")
-    print("        Do not open registration until this is fixed.")
+    print("  FAIL: the container reached the internet over TCP.")
+    failures += 1
 except OSError as exc:
-    print(f"  ok: egress blocked ({type(exc).__name__})")
+    print(f"  ok: TCP egress blocked ({type(exc).__name__})")
+
+# DNS leaves through Docker's embedded resolver, which is a host-local path and
+# so never traverses the FORWARD chain the DOCKER-USER rule lives on. Blocking
+# TCP is not enough: name lookups alone are an exfiltration channel.
+try:
+    address = socket.gethostbyname("cloudflare.com")
+    print(f"  FAIL: DNS resolved ({address}) — submissions can exfiltrate by lookup.")
+    failures += 1
+except OSError as exc:
+    print(f"  ok: DNS blocked ({type(exc).__name__})")
+
+if failures:
+    print("  *** Submissions are NOT fully isolated. ***")
 PY
 
 say "Health"
