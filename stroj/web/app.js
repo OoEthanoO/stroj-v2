@@ -709,6 +709,111 @@ async function viewScoreboard(slug) {
   every(1000, () => $$('.countdown').forEach(updateCountdown));
 }
 
+/* ---- admin: edit one problem ---- */
+
+async function viewAdminProblem(slug) {
+  if (!state.user || !state.user.is_admin) {
+    setView('<div class="empty">Admins only.</div>');
+    return;
+  }
+  const p = await api(`/api/problems/${encodeURIComponent(slug)}`);
+  const checkerOption = (value, label) =>
+    `<option value="${value}" ${p.checker === value ? 'selected' : ''}>${label}</option>`;
+
+  setView(`
+    <div class="page-head">
+      <a href="#/admin">← Admin</a>
+      <div class="spacer"></div>
+      <a class="pill" href="#/problem/${encodeURIComponent(slug)}">view as solver</a>
+    </div>
+    <h1 style="margin-bottom:4px">Edit ${esc(p.title)}</h1>
+    <p class="muted small mono" style="margin-top:0">${esc(slug)} · ${p.test_count} tests
+      — the slug is the problem's identity and cannot be changed here.</p>
+
+    <div class="card">
+      <div class="row">
+        <label style="flex:3;min-width:220px">Title <input id="e-title" value="${esc(p.title)}"></label>
+        <label style="flex:1;min-width:110px">Time (ms)
+          <input id="e-tl" type="number" min="100" max="60000" value="${p.time_limit_ms}"></label>
+        <label style="flex:1;min-width:110px">Memory (MiB)
+          <input id="e-ml" type="number" min="16" max="4096" value="${p.memory_limit_mb}"></label>
+        <label style="flex:1;min-width:120px">Checker
+          <select id="e-checker">
+            ${checkerOption('token', 'token')}${checkerOption('exact', 'exact')}${checkerOption('float', 'float')}
+          </select></label>
+        <label style="flex:1;min-width:130px">Float epsilon
+          <input id="e-eps" type="number" step="any" value="${p.float_eps}"></label>
+      </div>
+      <div class="row">
+        <label class="row" style="gap:6px"><input type="checkbox" id="e-partial" style="width:auto"
+          ${p.partial ? 'checked' : ''}> partial scoring</label>
+        <label class="row" style="gap:6px"><input type="checkbox" id="e-visible" style="width:auto"
+          ${p.visible ? 'checked' : ''}> visible</label>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div>
+        <h2 style="margin-top:0">Statement (Markdown)</h2>
+        <textarea id="e-statement" class="code" style="min-height:460px"
+          spellcheck="false">${esc(p.statement)}</textarea>
+      </div>
+      <div>
+        <h2 style="margin-top:0">Preview</h2>
+        <div class="card statement" id="e-preview" style="min-height:460px"></div>
+      </div>
+    </div>
+
+    <div class="row end" style="margin-top:14px">
+      <span class="muted small spacer" id="e-status"></span>
+      <button id="e-save" class="primary">Save changes</button>
+    </div>`, { wide: true });
+
+  const editor = $('#e-statement');
+  // Render through the same function the solver page uses, so what an author
+  // sees here is exactly what gets published.
+  const renderPreview = () => { $('#e-preview').innerHTML = markdown(editor.value); };
+  renderPreview();
+  editor.oninput = renderPreview;
+  editor.onkeydown = (event) => {
+    if (event.key === 'Tab') {
+      event.preventDefault();
+      const { selectionStart: a, selectionEnd: b, value } = editor;
+      editor.value = value.slice(0, a) + '    ' + value.slice(b);
+      editor.selectionStart = editor.selectionEnd = a + 4;
+      renderPreview();
+    }
+  };
+
+  $('#e-save').onclick = async () => {
+    const button = $('#e-save');
+    button.disabled = true;
+    $('#e-status').textContent = 'Saving…';
+    try {
+      await api(`/api/admin/problems/${encodeURIComponent(slug)}`, {
+        method: 'PATCH',
+        body: {
+          title: $('#e-title').value.trim(),
+          statement: editor.value,
+          time_limit_ms: Number($('#e-tl').value),
+          memory_limit_mb: Number($('#e-ml').value),
+          checker: $('#e-checker').value,
+          float_eps: Number($('#e-eps').value),
+          partial: $('#e-partial').checked,
+          visible: $('#e-visible').checked,
+        },
+      });
+      $('#e-status').textContent = 'Saved.';
+      toast('Problem updated.', 'good');
+    } catch (err) {
+      $('#e-status').textContent = '';
+      toast(err.message, 'bad');
+    } finally {
+      button.disabled = false;
+    }
+  };
+}
+
 /* ---- admin ---- */
 
 async function viewAdmin() {
@@ -727,6 +832,7 @@ async function viewAdmin() {
       <td>${p.visible ? '<span class="pill">visible</span>' : '<span class="pill">hidden</span>'}</td>
       <td>
         <div class="row">
+          <a class="btn small" href="#/admin/problem/${encodeURIComponent(p.slug)}">Edit</a>
           <input type="file" accept=".zip" class="small" data-upload="${esc(p.slug)}" style="width:190px">
           <button class="small" data-toggle="${esc(p.slug)}" data-visible="${p.visible ? 1 : 0}">${p.visible ? 'Hide' : 'Show'}</button>
           <button class="small" data-rejudge="${esc(p.slug)}">Rejudge</button>
@@ -971,7 +1077,10 @@ async function route() {
         if (parts[2] === 'scoreboard') await viewScoreboard(decodeURIComponent(parts[1]));
         else await viewContest(decodeURIComponent(parts[1] || ''));
         break;
-      case 'admin': await viewAdmin(); break;
+      case 'admin':
+        if (parts[1] === 'problem' && parts[2]) await viewAdminProblem(decodeURIComponent(parts[2]));
+        else await viewAdmin();
+        break;
       default: location.hash = '#/problems';
     }
   } catch (err) {

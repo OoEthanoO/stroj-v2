@@ -165,7 +165,7 @@ button.primary, .btn.primary { background: var(--accent); border-color: var(--ac
 button.primary:hover:not(:disabled), .btn.primary:hover { filter: brightness(1.08); background: var(--accent); }
 button.ghost { background: transparent; }
 button.danger { color: var(--bad); border-color: var(--bad); background: transparent; }
-button.small { padding: 4px 9px; font-size: 13px; }
+button.small, .btn.small { padding: 4px 9px; font-size: 13px; }
 
 input, select, textarea {
   font: inherit;

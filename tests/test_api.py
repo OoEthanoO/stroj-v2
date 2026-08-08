@@ -520,3 +520,48 @@ class TestRegistrationModes:
 
         monkeypatch.setattr(config, "REGISTRATION", "banana")
         assert config.registration_mode() == "open"
+
+
+class TestEditingProblems:
+    """Admins author statements in the browser, so the round trip matters."""
+
+    def test_statement_round_trips(self, client, admin_client):
+        make_problem(admin_client)
+        markdown = "# Heading\n\nA **bold** claim with `code` and `n <= 10^9`.\n\n- one\n- two\n"
+        response = admin_client.patch(
+            "/api/admin/problems/a-plus-b", json={"statement": markdown}
+        )
+        assert response.status_code == 200
+        assert client.get("/api/problems/a-plus-b").json()["statement"] == markdown
+
+    def test_statement_can_be_emptied(self, admin_client):
+        """`exclude_none` must not swallow a deliberate empty string."""
+        make_problem(admin_client)
+        admin_client.patch("/api/admin/problems/a-plus-b", json={"statement": ""})
+        assert admin_client.get("/api/problems/a-plus-b").json()["statement"] == ""
+
+    def test_editing_does_not_disturb_test_data(self, admin_client):
+        """Rewriting a statement must not invalidate the problem's tests."""
+        make_problem(admin_client)
+        before = admin_client.get("/api/admin/problems/a-plus-b/tests").json()["tests"]
+        admin_client.patch(
+            "/api/admin/problems/a-plus-b", json={"statement": "rewritten", "title": "Renamed"}
+        )
+        after = admin_client.get("/api/admin/problems/a-plus-b/tests").json()["tests"]
+        assert before == after
+        assert admin_client.get("/api/problems/a-plus-b").json()["title"] == "Renamed"
+
+    def test_a_plain_user_cannot_edit(self, client, admin_client):
+        make_problem(admin_client)
+        admin_client.post("/api/auth/logout")
+        register(client, "meddler")
+        response = client.patch(
+            "/api/admin/problems/a-plus-b", json={"statement": "defaced"}
+        )
+        assert response.status_code == 403
+        assert client.get("/api/problems/a-plus-b").json()["statement"] == "Add them."
+
+    def test_editing_a_missing_problem_is_a_404(self, admin_client):
+        assert admin_client.patch(
+            "/api/admin/problems/ghost", json={"statement": "x"}
+        ).status_code == 404
