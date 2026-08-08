@@ -32,7 +32,8 @@ def make_tests(tmp_path):
     """Write ``(input, answer)`` pairs to disk and return TestSpec objects."""
     from stroj.judge.runner import TestSpec
 
-    def build(pairs, points=None):
+    def build(pairs, points=None, samples=0):
+        """`samples` marks the first N tests as public samples."""
         directory = tmp_path / "cases"
         directory.mkdir(exist_ok=True)
         specs = []
@@ -43,7 +44,8 @@ def make_tests(tmp_path):
             answer_path.write_text(answer)
             specs.append(
                 TestSpec(idx, str(input_path), str(answer_path),
-                         points[idx - 1] if points else 1)
+                         points[idx - 1] if points else 1,
+                         is_sample=idx <= samples)
             )
         return specs
 

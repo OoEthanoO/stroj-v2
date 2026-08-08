@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hmac
+
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
@@ -14,6 +16,10 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 class Credentials(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=256)
+
+
+class Registration(Credentials):
+    invite: str | None = None
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
@@ -29,7 +35,18 @@ def _set_session_cookie(response: Response, token: str) -> None:
 
 
 @router.post("/register")
-def register(body: Credentials, response: Response):
+def register(body: Registration, response: Response):
+    mode = config.registration_mode()
+    if mode == "closed":
+        raise HTTPException(
+            status_code=403,
+            detail="Registration is closed. Ask an organiser for an account.",
+        )
+    if mode == "invite" and not hmac.compare_digest(
+        (body.invite or "").strip(), config.INVITE_CODE
+    ):
+        raise HTTPException(status_code=403, detail="That invite code is not valid.")
+
     try:
         user_id = auth.create_user(body.username, body.password)
     except auth.AuthError as exc:

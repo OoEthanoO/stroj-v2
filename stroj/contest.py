@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import timedelta
 
 from . import db
 from .judge.runner import AC, JUDGING, PENDING
@@ -59,6 +60,8 @@ class Cell:
     penalty: int = 0
     score: int = 0
     pending: bool = False
+    #: Attempts made after the freeze, counted but deliberately not resolved.
+    frozen: int = 0
 
     def as_dict(self) -> dict:
         return {
@@ -68,6 +71,7 @@ class Cell:
             "penalty": self.penalty,
             "score": self.score,
             "pending": self.pending,
+            "frozen": self.frozen,
         }
 
 
@@ -91,12 +95,35 @@ def _percentage(score: int, max_score: int) -> int:
     return round(100 * score / max_score)
 
 
-def scoreboard(contest: sqlite3.Row) -> dict:
-    """Build the full scoreboard for a contest."""
+def freeze_at(contest: sqlite3.Row) -> str | None:
+    """When the board stops updating, or None if this contest has no freeze."""
+    minutes = contest["freeze_minutes"] if "freeze_minutes" in contest.keys() else 0
+    if not minutes:
+        return None
+    moment = db.parse_time(contest["ends_at"]) - timedelta(minutes=minutes)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def scoreboard(contest: sqlite3.Row, reveal: bool = False) -> dict:
+    """Build the scoreboard.
+
+    Near the end of a contest the board conventionally freezes: submissions
+    still count, but the standings stop reflecting them, so nobody can tell
+    whether the team above them just solved something. Attempts made after the
+    freeze are shown as a count and nothing more.
+
+    ``reveal`` bypasses the freeze — for organisers, and for anyone once the
+    contest is over.
+    """
     problems = problems_of(contest["id"])
     label_of = {p["id"]: p["label"] for p in problems}
     scoring = contest["scoring"]
     penalty_minutes = contest["penalty_minutes"]
+
+    state = state_of(contest)
+    # A freeze only makes sense while the contest is live; once it is over the
+    # full result is public.
+    frozen_from = freeze_at(contest) if state == RUNNING and not reveal else None
 
     submissions = db.query(
         "SELECT s.*, u.username FROM submissions s"
@@ -115,6 +142,12 @@ def scoreboard(contest: sqlite3.Row) -> dict:
             sub["user_id"], Row(sub["user_id"], sub["username"])
         )
         cell = row.cell(label)
+
+        # Past the freeze the attempt is recorded but never resolved, so the
+        # standings look exactly as they did the moment the board froze.
+        if frozen_from is not None and sub["created_at"] >= frozen_from:
+            cell.frozen += 1
+            continue
 
         if sub["verdict"] in (PENDING, JUDGING):
             cell.pending = True
@@ -187,7 +220,10 @@ def scoreboard(contest: sqlite3.Row) -> dict:
     return {
         "scoring": scoring,
         "penalty_minutes": penalty_minutes,
-        "state": state_of(contest),
+        "state": state,
+        "freeze_minutes": contest["freeze_minutes"] if "freeze_minutes" in contest.keys() else 0,
+        "frozen_from": frozen_from,
+        "frozen": frozen_from is not None,
         "problems": [
             {
                 "label": p["label"],

@@ -453,3 +453,70 @@ def test_languages_endpoint(client):
     ids = {lang["id"] for lang in body["languages"]}
     assert {"python3", "cpp", "java"} <= ids
     assert body["default"] in ids
+
+
+class TestRegistrationModes:
+    """A judge on a public URL should not let the whole internet in."""
+
+    def test_open_is_the_default(self, client):
+        assert client.get("/api/config").json()["registration"] == "open"
+        register(client, "anyone")
+
+    def test_closed_refuses_everyone(self, client, monkeypatch):
+        from stroj import config
+
+        monkeypatch.setattr(config, "REGISTRATION", "closed")
+        assert client.get("/api/config").json()["registration"] == "closed"
+        response = client.post(
+            "/api/auth/register", json={"username": "sneaky", "password": "password123"}
+        )
+        assert response.status_code == 403
+        assert "closed" in response.json()["detail"].lower()
+
+    def test_invite_mode_requires_the_code(self, client, monkeypatch):
+        from stroj import config
+
+        monkeypatch.setattr(config, "REGISTRATION", "invite")
+        monkeypatch.setattr(config, "INVITE_CODE", "chess-club-2026")
+        assert client.get("/api/config").json()["registration"] == "invite"
+
+        missing = client.post(
+            "/api/auth/register", json={"username": "student", "password": "password123"}
+        )
+        assert missing.status_code == 403
+
+        wrong = client.post("/api/auth/register", json={
+            "username": "student", "password": "password123", "invite": "guess"})
+        assert wrong.status_code == 403
+
+        right = client.post("/api/auth/register", json={
+            "username": "student", "password": "password123", "invite": "chess-club-2026"})
+        assert right.status_code == 200
+        assert right.json()["user"]["username"] == "student"
+
+    def test_invite_mode_without_a_code_fails_closed(self, client, monkeypatch):
+        """Misconfiguration must not silently mean 'let everyone in'."""
+        from stroj import config
+
+        monkeypatch.setattr(config, "REGISTRATION", "invite")
+        monkeypatch.setattr(config, "INVITE_CODE", "")
+        assert config.registration_mode() == "closed"
+        response = client.post(
+            "/api/auth/register", json={"username": "student", "password": "password123"}
+        )
+        assert response.status_code == 403
+
+    def test_admins_can_still_create_accounts_when_closed(self, client, monkeypatch):
+        from stroj import auth, config
+
+        monkeypatch.setattr(config, "REGISTRATION", "closed")
+        auth.create_user("added-by-organiser", "password123")
+        response = client.post("/api/auth/login", json={
+            "username": "added-by-organiser", "password": "password123"})
+        assert response.status_code == 200
+
+    def test_unknown_mode_falls_back_to_open(self, monkeypatch):
+        from stroj import config
+
+        monkeypatch.setattr(config, "REGISTRATION", "banana")
+        assert config.registration_mode() == "open"

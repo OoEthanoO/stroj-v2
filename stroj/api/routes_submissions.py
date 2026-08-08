@@ -193,5 +193,6 @@ def judge_config():
         "isolation": isolation_mode() if config.USE_SANDBOX else "none",
         "sandbox_requested": config.USE_SANDBOX,
         "workers": config.JUDGE_WORKERS,
+        "registration": config.registration_mode(),
         "verdicts": VERDICT_NAMES,
     }

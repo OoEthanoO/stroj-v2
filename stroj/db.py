@@ -59,10 +59,29 @@ def close() -> None:
         _local.path = None
 
 
-def init_db() -> None:
-    """Create the schema if it is not there yet."""
+#: Columns added after the first release. `CREATE TABLE IF NOT EXISTS` will not
+#: retrofit these onto a database that already exists, so they are applied by
+#: hand. Append-only; never reorder.
+_ADDED_COLUMNS: list[tuple[str, str, str]] = [
+    ("contests", "freeze_minutes", "INTEGER NOT NULL DEFAULT 0"),
+]
+
+
+def _migrate(conn: sqlite3.Connection) -> list[str]:
+    applied = []
+    for table, column, declaration in _ADDED_COLUMNS:
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if existing and column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+            applied.append(f"{table}.{column}")
+    return applied
+
+
+def init_db() -> list[str]:
+    """Create the schema if absent, then bring an older database up to date."""
     conn = connect()
     conn.executescript(_SCHEMA.read_text())
+    return _migrate(conn)
 
 
 def query(sql: str, params: tuple | dict = ()) -> list[sqlite3.Row]:

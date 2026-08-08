@@ -61,7 +61,9 @@ def _floats_match(expected: float, actual: float, eps: float) -> bool:
     return scale > 0 and diff / scale <= eps
 
 
-def check_tokens(expected: str, actual: str, eps: float | None = None) -> CheckResult:
+def check_tokens(
+    expected: str, actual: str, eps: float | None = None, reveal: bool = True
+) -> CheckResult:
     exp = expected.split()
     got = actual.split()
     for i in range(min(len(exp), len(got))):
@@ -72,6 +74,8 @@ def check_tokens(expected: str, actual: str, eps: float | None = None) -> CheckR
             fa, fb = _as_float(a), _as_float(b)
             if fa is not None and fb is not None and _floats_match(fa, fb, eps):
                 continue
+        if not reveal:
+            return CheckResult(False, f"token {i + 1} differs")
         return CheckResult(
             False,
             f"token {i + 1}: expected '{_clip(a)}', got '{_clip(b)}'",
@@ -82,19 +86,21 @@ def check_tokens(expected: str, actual: str, eps: float | None = None) -> CheckR
             f"output is too short: expected {len(exp)} tokens, got {len(got)}",
         )
     if len(got) > len(exp):
+        extra = "" if not reveal else f" (first extra: '{_clip(got[len(exp)])}')"
         return CheckResult(
             False,
-            f"output is too long: expected {len(exp)} tokens, got {len(got)}"
-            f" (first extra: '{_clip(got[len(exp)])}')",
+            f"output is too long: expected {len(exp)} tokens, got {len(got)}{extra}",
         )
     return CheckResult(True)
 
 
-def check_exact(expected: str, actual: str) -> CheckResult:
+def check_exact(expected: str, actual: str, reveal: bool = True) -> CheckResult:
     exp = _normalize_exact(expected)
     got = _normalize_exact(actual)
     for i in range(min(len(exp), len(got))):
         if exp[i] != got[i]:
+            if not reveal:
+                return CheckResult(False, f"line {i + 1} differs")
             return CheckResult(
                 False,
                 f"line {i + 1}: expected '{_clip(exp[i])}', got '{_clip(got[i])}'",
@@ -110,13 +116,27 @@ def check_exact(expected: str, actual: str) -> CheckResult:
     return CheckResult(True)
 
 
-def check(expected: str, actual: str, mode: str = "token", eps: float = 1e-6) -> CheckResult:
+def check(
+    expected: str,
+    actual: str,
+    mode: str = "token",
+    eps: float = 1e-6,
+    reveal: bool = True,
+) -> CheckResult:
+    """Compare output against the answer.
+
+    ``reveal`` controls whether the message may quote the actual values. It must
+    be false for hidden tests: the message travels back to the submitter, so
+    quoting *their* output turns a wrong answer into a read primitive (print a
+    file, read the verdict), and quoting the *expected* value hands them the
+    answer to a test they were never meant to see.
+    """
     if mode == "exact":
-        return check_exact(expected, actual)
+        return check_exact(expected, actual, reveal=reveal)
     if mode == "float":
-        return check_tokens(expected, actual, eps=eps)
+        return check_tokens(expected, actual, eps=eps, reveal=reveal)
     if mode == "token":
-        return check_tokens(expected, actual)
+        return check_tokens(expected, actual, reveal=reveal)
     raise ValueError(f"unknown checker: {mode}")
 
 

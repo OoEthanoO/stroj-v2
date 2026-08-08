@@ -85,3 +85,43 @@ def test_long_tokens_are_clipped_in_the_message():
     result = checkers.check("x" * 500, "y" * 500)
     assert len(result.message) < 200
     assert "…" in result.message
+
+
+class TestHiddenTestsDoNotLeak:
+    """Checker messages travel back to the submitter.
+
+    On a hidden test the message must not quote either side: quoting the
+    submission's own output turns a wrong answer into a file-read primitive,
+    and quoting the expected value hands over the answer to a secret test.
+    """
+
+    def test_token_mismatch_hides_both_values(self):
+        secret = "SECRET-CONTENTS-OF-ETC-PASSWD"
+        result = checkers.check("42", secret, reveal=False)
+        assert not result.ok
+        assert secret not in result.message
+        assert "42" not in result.message
+        assert "token 1" in result.message
+
+    def test_exact_mismatch_hides_both_values(self):
+        result = checkers.check("expected-line", "leaked-line", mode="exact", reveal=False)
+        assert "leaked" not in result.message
+        assert "expected-line" not in result.message
+        assert "line 1" in result.message
+
+    def test_float_mismatch_hides_both_values(self):
+        result = checkers.check("1.0", "999.5", mode="float", reveal=False)
+        assert "999.5" not in result.message
+
+    def test_extra_output_is_not_echoed(self):
+        result = checkers.check("1", "1 SECRET", reveal=False)
+        assert "SECRET" not in result.message
+        assert "too long" in result.message
+
+    def test_samples_still_show_detail(self):
+        result = checkers.check("42", "43", reveal=True)
+        assert "42" in result.message and "43" in result.message
+
+    def test_reveal_defaults_to_true_for_callers_that_opt_in(self):
+        # The default is only safe because runner.py passes test.is_sample.
+        assert "43" in checkers.check("42", "43").message

@@ -176,3 +176,55 @@ def test_bits_stdcpp_shim_is_usable(make_tests):
               "int main(){long long a,b;cin>>a>>b;cout<<a+b<<endl;}")
     outcome = runner.judge(source, "cpp", PROBLEM, make_tests(AB_TESTS))
     assert outcome.verdict == runner.AC, outcome.message
+
+
+class TestHiddenTestsDoNotLeak:
+    """A verdict message goes back to whoever submitted the code.
+
+    Reads are unrestricted inside the sandbox, so any channel that echoes a
+    submission's own bytes back to it is a file-read primitive. Both stdout
+    (via the checker) and stderr (via the runtime-error detail) are such
+    channels, and both must stay shut on hidden tests.
+    """
+
+    SECRET = "SUPERSECRET-abcdef0123456789"
+
+    def test_stdout_is_not_echoed_from_a_hidden_test(self, make_tests):
+        source = f"print({self.SECRET!r})"
+        outcome = runner.judge(
+            source, "python3", PROBLEM, make_tests([("x\n", "expected\n")]))
+        assert outcome.verdict == runner.WA
+        assert self.SECRET not in outcome.message
+        assert all(self.SECRET not in t.message for t in outcome.tests)
+
+    def test_stderr_is_not_echoed_from_a_hidden_test(self, make_tests):
+        source = f"import sys\nsys.stderr.write({self.SECRET!r})\nraise SystemExit(1)"
+        outcome = runner.judge(
+            source, "python3", PROBLEM, make_tests([("x\n", "expected\n")]))
+        assert outcome.verdict == runner.RE
+        assert self.SECRET not in outcome.message
+        assert all(self.SECRET not in t.message for t in outcome.tests)
+
+    def test_expected_answer_is_not_leaked_from_a_hidden_test(self, make_tests):
+        answer = "THE-HIDDEN-ANSWER-9931"
+        outcome = runner.judge(
+            "print('wrong')", "python3", PROBLEM,
+            make_tests([("x\n", answer + "\n")]))
+        assert outcome.verdict == runner.WA
+        assert answer not in outcome.message
+        assert all(answer not in t.message for t in outcome.tests)
+
+    def test_samples_still_report_detail(self, make_tests):
+        """Samples are public, so their diagnostics must stay useful."""
+        outcome = runner.judge(
+            "print('wrong')", "python3", PROBLEM,
+            make_tests([("x\n", "right\n")], samples=1))
+        assert outcome.verdict == runner.WA
+        assert "right" in outcome.message and "wrong" in outcome.message
+
+    def test_sample_stderr_still_reported(self, make_tests):
+        outcome = runner.judge(
+            "import sys\nsys.stderr.write('traceback detail')\nraise SystemExit(1)",
+            "python3", PROBLEM, make_tests([("x\n", "y\n")], samples=1))
+        assert outcome.verdict == runner.RE
+        assert "traceback detail" in outcome.message

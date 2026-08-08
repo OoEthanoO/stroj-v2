@@ -20,6 +20,8 @@ def _summary(row: sqlite3.Row) -> dict:
         "ends_at": row["ends_at"],
         "scoring": row["scoring"],
         "penalty_minutes": row["penalty_minutes"],
+        "freeze_minutes": row["freeze_minutes"],
+        "freeze_at": contest_mod.freeze_at(row),
         "state": contest_mod.state_of(row),
         "server_time": db.utcnow(),
     }
@@ -75,8 +77,10 @@ def contest_detail(slug: str, request: Request):
 
 
 @router.get("/{slug}/scoreboard")
-def scoreboard(slug: str):
+def scoreboard(slug: str, request: Request):
     row = get_contest(slug)
-    data = contest_mod.scoreboard(row)
+    # Organisers need the true standings during the freeze — to spot a broken
+    # problem, and to know the result before announcing it.
+    data = contest_mod.scoreboard(row, reveal=is_admin(current_user(request)))
     data["contest"] = _summary(row)
     return data

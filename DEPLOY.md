@@ -90,11 +90,26 @@ Prices drift — check current rates before committing.
 
 ### Recommendation
 
-Try **Oracle Always Free** first — it is $0 indefinitely and over-specced for
-this. If A1 capacity is unavailable in your region, **Hetzner CAX11 at ~€3.3/mo**
-is the cheapest thing that still gives trustworthy verdicts. Use the
-**Cloudflare Tunnel** path if you would rather not sign up for anything and have
-a machine that stays on.
+For a **club running real contests**, size on concurrency rather than cost. Each
+submission costs a compile plus a run per test — call it 5–10 seconds — and
+everyone submits in the last ten minutes of a round. Two cores means one judge
+worker and a queue that backs up exactly when it matters most.
+
+**Hetzner CAX21** (4 ARM vCPU, 8 GB, ~€6.5/mo) is the pick: Ampere Altra has no
+turbo boost, so every core runs at a fixed clock and the boost-then-sag
+behaviour that ruins laptop timings simply does not exist. Three judge workers,
+consistent verdicts, no capacity lottery.
+
+**Oracle A1 Always Free** is the same silicon for $0 and worth trying first —
+but Always Free accounts are deprioritised for A1 capacity. Upgrading to Pay As
+You Go keeps the free allowance at $0 and removes that deprioritisation; the
+catch is that a card is then on file, so exceeding 4 OCPU / 24 GB starts
+charging you.
+
+A dedicated laptop over **Cloudflare Tunnel** is fine for solo practice — and on
+macOS it keeps full `sandbox-exec` isolation, which no Linux host gives you —
+but a thin-chassis machine will thermally throttle under contest load. Measure
+before trusting it: `python -m stroj calibrate --seconds 180`.
 
 ---
 
@@ -282,13 +297,51 @@ Then open the site and check the footer: it should list the three languages and
 the isolation mode. Sign in, submit a solution, and confirm the verdict lands —
 that exercises the rewrite, the cookie, and the worker pool in one go.
 
-## Operational notes
+## Running a contest
 
-- **Back up `/data`.** It holds the database and every problem's test data.
-  `docker run --rm -v stroj-data:/data -v "$PWD:/backup" alpine tar czf /backup/stroj-$(date +%F).tar.gz /data`
-- **Change the seeded admin password** — `python -m stroj passwd admin` also
-  revokes existing sessions.
+- **Set a scoreboard freeze** when creating the contest — 60 minutes is
+  conventional for a 3-hour round. The board stops resolving submissions for
+  the final stretch, so nobody can tell whether the team above them just solved
+  something. Attempts still count and still appear as a hidden count; organisers
+  see through the freeze automatically. It lifts when the contest ends.
+- **Registration is invite-only by default.** `bootstrap-judge.sh` generates a
+  code and prints it; share that with the club. `STROJ_REGISTRATION=open` opens
+  it up, `closed` means you create accounts with `python -m stroj adduser`.
+- **Time limits are specific to this machine.** A submission's runtime is
+  measured on whatever hardware the judge sits on, so limits calibrated
+  elsewhere do not transfer. Set them at 2–3x a reference solution, and if you
+  ever move hosts, `python -m stroj rejudge` everything — previously accepted
+  submissions can start failing.
+- **Check the host is steady before a round**: `python -m stroj calibrate`.
+  Watch `drift`; anything above 15% means identical submissions will get
+  different verdicts as the machine heats up.
 - **`STROJ_WORKERS` should not exceed your core count.** Oversubscribing makes
   submissions contend and produces spurious `TLE`s.
+
+## Backups
+
+`/data` holds the database and every problem's test data. Losing it mid-contest
+is unrecoverable, so take snapshots:
+
+```bash
+docker exec stroj-judge python -m stroj backup --into /data/backups --keep 14
+```
+
+That uses SQLite's backup API rather than copying the file, so it is consistent
+even while the judge is writing verdicts. Run it nightly, and once more just
+before a contest:
+
+```bash
+(crontab -l 2>/dev/null; echo "17 4 * * * docker exec stroj-judge python -m stroj backup >/dev/null 2>&1") | crontab -
+```
+
+Those live inside the volume, which protects you from a bad rejudge but not from
+losing the box. Copy them off periodically:
+
+```bash
+docker cp stroj-judge:/data/backups ./stroj-backups
+```
+
+## Operational notes
 - **Redeploying the frontend is independent of the judge.** Vercel only serves
   three static files; the judge keeps running.

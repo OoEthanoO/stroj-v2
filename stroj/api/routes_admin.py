@@ -70,6 +70,8 @@ class ContestBody(BaseModel):
     ends_at: str
     scoring: str = "icpc"
     penalty_minutes: int = Field(default=20, ge=0, le=1440)
+    #: Minutes before the end when the scoreboard stops updating. 0 disables.
+    freeze_minutes: int = Field(default=0, ge=0, le=1440)
 
 
 class ContestProblemsBody(BaseModel):
@@ -201,6 +203,11 @@ def create_contest(body: ContestBody):
         ) from None
     if ends <= starts:
         raise HTTPException(status_code=400, detail="The contest must end after it starts.")
+    if body.freeze_minutes * 60 >= (ends - starts).total_seconds():
+        raise HTTPException(
+            status_code=400,
+            detail="The freeze would start before the contest does.",
+        )
 
     def iso(value) -> str:
         return value.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -208,7 +215,8 @@ def create_contest(body: ContestBody):
     try:
         contest_id = db.insert(
             "INSERT INTO contests (slug, title, description, starts_at, ends_at,"
-            " scoring, penalty_minutes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            " scoring, penalty_minutes, freeze_minutes, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 body.slug,
                 body.title,
@@ -217,6 +225,7 @@ def create_contest(body: ContestBody):
                 iso(ends),
                 body.scoring,
                 body.penalty_minutes,
+                body.freeze_minutes,
                 db.utcnow(),
             ),
         )

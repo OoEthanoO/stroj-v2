@@ -282,6 +282,23 @@ pre.source {
 .cell.solved { background: var(--ok-bg); color: var(--ok); font-weight: 600; }
 .cell.failed { background: var(--bad-bg); color: var(--bad); }
 .cell.pending { background: var(--info-bg); color: var(--info); }
+/* Frozen cells must read as "deliberately hidden", not as "nothing here" —
+   the stripes distinguish them from an empty cell at a glance. */
+.cell.frozen {
+  background: repeating-linear-gradient(
+    -45deg, var(--info-bg), var(--info-bg) 6px, var(--surface-2) 6px, var(--surface-2) 12px);
+  color: var(--info);
+}
+.freeze-banner {
+  background: var(--info-bg);
+  color: var(--info);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  font-size: 14px;
+  font-weight: 500;
+}
 .cell .sub { display: block; font-size: 11px; opacity: .8; font-weight: 400; }
 .rank { font-family: var(--mono); color: var(--muted); }
 

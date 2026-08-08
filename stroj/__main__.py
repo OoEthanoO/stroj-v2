@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import sys
+from pathlib import Path
 
 from . import auth, config, db, seed as seed_module
 from .judge import languages, sandbox
@@ -97,6 +98,43 @@ def cmd_rejudge(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backup(args: argparse.Namespace) -> int:
+    """Snapshot the database and test data into a single tarball."""
+    import sqlite3
+    import tarfile
+    import tempfile
+    from datetime import datetime, timezone
+
+    _init()
+    destination = Path(args.into)
+    destination.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archive_path = destination / f"stroj-{stamp}.tar.gz"
+
+    with tempfile.TemporaryDirectory() as scratch:
+        snapshot = Path(scratch) / "stroj.db"
+        # sqlite's own backup API takes a consistent copy of a live database;
+        # copying the file while the judge is writing would not.
+        source = db.connect()
+        with sqlite3.connect(snapshot) as target:
+            source.backup(target)
+
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(snapshot, arcname="stroj.db")
+            if config.PROBLEM_DIR.exists():
+                tar.add(config.PROBLEM_DIR, arcname="problems")
+
+    size_mb = archive_path.stat().st_size / 1e6
+    print(f"wrote {archive_path} ({size_mb:.1f} MB)")
+
+    if args.keep > 0:
+        archives = sorted(destination.glob("stroj-*.tar.gz"))
+        for stale in archives[: max(0, len(archives) - args.keep)]:
+            stale.unlink()
+            print(f"pruned {stale.name}")
+    return 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"data directory : {config.DATA_DIR}")
     print(f"judge workers  : {config.JUDGE_WORKERS}")
@@ -116,6 +154,33 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         mark = "ok  " if installed else "MISS"
         print(f"  [{mark}] {lang_id:<8} {languages.version_string(lang_id)}")
     return 0 if ok else 1
+
+
+def cmd_calibrate(args: argparse.Namespace) -> int:
+    from . import calibrate as calibrate_module
+
+    print(
+        f"Running a CPU-bound workload through the sandbox for ~{args.seconds}s.\n"
+        "Leave the machine otherwise idle.\n"
+    )
+
+    # Only animate on a terminal; redirected output would collect one line per
+    # repetition and bury the report.
+    interactive = sys.stdout.isatty()
+
+    def progress(index: int, sample) -> None:
+        if interactive:
+            print(f"\r  rep {index:>4}  {sample.wall_ms:>5} ms", end="", flush=True)
+
+    try:
+        report = calibrate_module.calibrate(seconds=args.seconds, progress=progress)
+    except RuntimeError as exc:
+        print(f"\nerror: {exc}", file=sys.stderr)
+        return 1
+    if interactive:
+        print("\r" + " " * 40 + "\r", end="")
+    print(calibrate_module.format_report(report))
+    return 0 if report.rating[0] != "UNRELIABLE" else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -152,6 +217,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = sub.add_parser("doctor", help="report toolchain and sandbox status")
     doctor.set_defaults(func=cmd_doctor)
+
+    calibrate = sub.add_parser(
+        "calibrate", help="measure whether this host's timings are consistent"
+    )
+    calibrate.add_argument(
+        "--seconds", type=float, default=90.0,
+        help="how long to hold the machine under load (default: 90)",
+    )
+    calibrate.set_defaults(func=cmd_calibrate)
+
+    backup = sub.add_parser("backup", help="snapshot the database and test data")
+    backup.add_argument("--into", default="/data/backups", help="destination directory")
+    backup.add_argument(
+        "--keep", type=int, default=14,
+        help="how many archives to retain; 0 keeps everything (default: 14)",
+    )
+    backup.set_defaults(func=cmd_backup)
 
     return parser
 

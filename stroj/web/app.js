@@ -171,11 +171,12 @@ function renderAccount() {
       toast('Signed out.');
     };
   } else {
+    const canRegister = state.config.registration !== 'closed';
     box.innerHTML = `
-      <button class="small ghost" id="show-register">Register</button>
+      ${canRegister ? '<button class="small ghost" id="show-register">Register</button>' : ''}
       <button class="small primary" id="show-login">Sign in</button>`;
     $('#show-login').onclick = () => openAuth('login');
-    $('#show-register').onclick = () => openAuth('register');
+    if (canRegister) $('#show-register').onclick = () => openAuth('register');
   }
   $$('.admin-only').forEach((node) => {
     node.style.display = state.user && state.user.is_admin ? '' : 'none';
@@ -190,19 +191,30 @@ function openAuth(mode) {
   $('#auth-submit').textContent = isLogin ? 'Sign in' : 'Register';
   $('#auth-error').hidden = true;
   form.password.autocomplete = isLogin ? 'current-password' : 'new-password';
+
+  const needsInvite = !isLogin && state.config.registration === 'invite';
+  $('#invite-field').hidden = !needsInvite;
+  form.invite.required = needsInvite;
+  const closed = state.config.registration === 'closed';
   $('#auth-switch').innerHTML = isLogin
-    ? 'No account yet? <a href="#" data-switch="register">Register</a>'
+    ? (closed
+      ? '<span class="muted">Registration is closed — ask an organiser for an account.</span>'
+      : 'No account yet? <a href="#" data-switch="register">Register</a>')
     : 'Already registered? <a href="#" data-switch="login">Sign in</a>';
-  $('#auth-switch').querySelector('a').onclick = (e) => {
-    e.preventDefault();
-    dialog.close();
-    openAuth(e.target.dataset.switch);
-  };
+  const switcher = $('#auth-switch').querySelector('a');
+  if (switcher) {
+    switcher.onclick = (e) => {
+      e.preventDefault();
+      dialog.close();
+      openAuth(e.target.dataset.switch);
+    };
+  }
 
   form.onsubmit = async (event) => {
     if (event.submitter && event.submitter.value === 'cancel') return;
     event.preventDefault();
     const body = { username: form.username.value.trim(), password: form.password.value };
+    if (needsInvite) body.invite = form.invite.value.trim();
     try {
       const result = await api(`/api/auth/${mode}`, { method: 'POST', body });
       state.user = result.user;
@@ -620,7 +632,9 @@ async function viewScoreboard(slug) {
     const rows = board.rows.map((r) => {
       const cells = board.problems.map((p) => {
         const cell = r.cells[p.label];
-        if (!cell || (!cell.attempts && !cell.pending)) return '<td class="cell"></td>';
+        if (!cell || (!cell.attempts && !cell.pending && !cell.frozen)) {
+          return '<td class="cell"></td>';
+        }
         let cls = cell.solved ? 'solved' : (cell.pending ? 'pending' : 'failed');
         let main;
         let sub;
@@ -630,6 +644,13 @@ async function viewScoreboard(slug) {
         } else {
           main = `${cell.score}`;
           sub = `${cell.attempts} sub`;
+        }
+        // Attempts made after the freeze are counted but not resolved — the
+        // cell has to look unresolved, not empty and not failed.
+        if (cell.frozen) {
+          cls += ' frozen';
+          sub = `+${cell.frozen} hidden`;
+          if (!cell.attempts) main = '?';
         }
         return `<td class="cell ${cls}">${esc(main)}${sub ? `<span class="sub">${esc(sub)}</span>` : ''}</td>`;
       }).join('');
@@ -643,7 +664,18 @@ async function viewScoreboard(slug) {
       </tr>`;
     }).join('');
 
-    const html = board.rows.length
+    // Inside #board so it appears and disappears as the freeze takes effect,
+    // rather than only on first render.
+    const banner = board.frozen
+      ? `<div class="freeze-banner">❄ Scoreboard frozen for the final
+           ${board.freeze_minutes} minutes. Submissions still count — you just
+           cannot see them resolve.</div>`
+      : (board.freeze_minutes && board.state === 'running'
+        ? `<div class="muted small" style="margin-bottom:10px">Freezes for the
+             final ${board.freeze_minutes} minutes.</div>`
+        : '');
+
+    const html = banner + (board.rows.length
       ? `<div class="table-wrap"><table class="scoreboard">
            <thead><tr>
              <th class="num">#</th><th>Who</th>
@@ -652,7 +684,7 @@ async function viewScoreboard(slug) {
              ${headCells}
            </tr></thead>
            <tbody>${rows}</tbody></table></div>`
-      : '<div class="empty">Nobody has submitted yet.</div>';
+      : '<div class="empty">Nobody has submitted yet.</div>');
 
     const existing = $('#board');
     if (existing) existing.innerHTML = html;
@@ -772,6 +804,8 @@ async function viewAdmin() {
             </label>
             <label style="flex:1">Penalty (min) <input id="c-penalty" type="number" value="20" min="0" max="1440"></label>
           </div>
+          <label>Scoreboard freeze (min before end, 0 = none)
+            <input id="c-freeze" type="number" value="0" min="0" max="1440"></label>
         </div>
         <div>
           <label>Starts (your local time) <input id="c-start" type="datetime-local" value="${isoLocal(now)}"></label>
@@ -834,6 +868,7 @@ async function viewAdmin() {
         ends_at: toUtc($('#c-end').value),
         scoring: $('#c-scoring').value,
         penalty_minutes: Number($('#c-penalty').value),
+        freeze_minutes: Number($('#c-freeze').value),
       },
     });
     toast('Contest created.', 'good');

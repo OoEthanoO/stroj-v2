@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS contests (
     ends_at     TEXT    NOT NULL,
     scoring     TEXT    NOT NULL DEFAULT 'icpc',     -- 'icpc' | 'ioi'
     penalty_minutes INTEGER NOT NULL DEFAULT 20,
+    freeze_minutes  INTEGER NOT NULL DEFAULT 0,      -- hide board this long before the end
     created_at  TEXT    NOT NULL
 );
 

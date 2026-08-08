@@ -46,7 +46,7 @@ def claim_next() -> int | None:
 
 def load_tests(problem_id: int) -> list[TestSpec]:
     rows = db.query(
-        "SELECT idx, input_path, answer_path, points FROM testcases"
+        "SELECT idx, input_path, answer_path, points, is_sample FROM testcases"
         " WHERE problem_id = ? ORDER BY idx",
         (problem_id,),
     )
@@ -57,6 +57,7 @@ def load_tests(problem_id: int) -> list[TestSpec]:
             answer_path=r["answer_path"],
             # Problems that never set per-test points score one point per test.
             points=r["points"] if r["points"] > 0 else 1,
+            is_sample=bool(r["is_sample"]),
         )
         for r in rows
     ]

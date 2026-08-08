@@ -43,12 +43,29 @@ MESSAGE_CLIP_BYTES = 4 * 1024
 COMPILE_TIME_LIMIT_S = _int("STROJ_COMPILE_TIME", 20)
 COMPILE_MEMORY_MB = _int("STROJ_COMPILE_MEMORY_MB", 2048)
 
+# Who may create an account. "open" lets anyone; "invite" requires
+# STROJ_INVITE_CODE, which is what a club wants — share one code with members;
+# "closed" means admins create accounts with `python -m stroj adduser`.
+REGISTRATION = os.environ.get("STROJ_REGISTRATION", "open").strip().lower()
+INVITE_CODE = os.environ.get("STROJ_INVITE_CODE", "").strip()
+
 SESSION_TTL_DAYS = _int("STROJ_SESSION_TTL_DAYS", 14)
 # Mark session cookies `Secure`. Turn this on for any HTTPS deployment; it is
 # off by default so local http://127.0.0.1 development still works.
 SECURE_COOKIES = _flag("STROJ_SECURE_COOKIES", False)
 # Default penalty (minutes) per rejected attempt before an accepted one, ICPC style.
 DEFAULT_ICPC_PENALTY_MINUTES = 20
+
+
+def registration_mode() -> str:
+    """Effective registration policy.
+
+    An "invite" setting with no code configured would silently let everyone in,
+    which is the opposite of the intent, so it fails closed instead.
+    """
+    if REGISTRATION == "invite":
+        return "invite" if INVITE_CODE else "closed"
+    return REGISTRATION if REGISTRATION in ("open", "closed") else "open"
 
 
 def ensure_dirs() -> None:

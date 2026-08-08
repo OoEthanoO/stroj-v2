@@ -201,3 +201,84 @@ def test_minutes_since_start_never_goes_negative(fixtures):
     row = db.one("SELECT * FROM contests WHERE id = ?", (fixtures["contest_id"],))
     early = iso(fixtures["started"] - timedelta(minutes=5))
     assert contest.minutes_since_start(row, early) == 0
+
+
+class TestScoreboardFreeze:
+    """Near the end the board stops resolving submissions, so nobody can tell
+    whether the team above them just solved something."""
+
+    def freeze(self, fixtures, minutes):
+        db.execute(
+            "UPDATE contests SET freeze_minutes = ? WHERE id = ?",
+            (minutes, fixtures["contest_id"]),
+        )
+
+    def test_no_freeze_by_default(self, fixtures):
+        fixtures["submit"]("ann", "A", "AC", minute=115)
+        board = fixtures["board"]()
+        assert board["frozen"] is False
+        assert board["rows"][0]["solved"] == 1
+
+    def test_submissions_before_the_freeze_still_resolve(self, fixtures):
+        # Contest runs 60 min either side of now; freeze covers the last 30.
+        self.freeze(fixtures, 30)
+        fixtures["submit"]("ann", "A", "AC", minute=10)
+        board = fixtures["board"]()
+        assert board["frozen"] is True
+        assert board["rows"][0]["solved"] == 1
+        assert board["rows"][0]["cells"]["A"]["frozen"] == 0
+
+    def test_submissions_after_the_freeze_are_hidden(self, fixtures):
+        self.freeze(fixtures, 45)
+        # The contest ends 60 minutes from its start + 60; a submission at
+        # minute 100 lands inside the last 45 minutes.
+        fixtures["submit"]("ann", "A", "AC", minute=100)
+        board = fixtures["board"]()
+        row = board["rows"][0]
+        assert row["solved"] == 0, "a frozen solve must not show as solved"
+        assert row["cells"]["A"]["frozen"] == 1
+        assert row["cells"]["A"]["attempts"] == 0
+
+    def test_frozen_attempts_do_not_change_the_ranking(self, fixtures):
+        self.freeze(fixtures, 45)
+        fixtures["submit"]("ann", "A", "AC", minute=5)
+        fixtures["submit"]("bob", "A", "AC", minute=100)   # frozen
+        fixtures["submit"]("bob", "B", "AC", minute=101)   # frozen
+        rows = fixtures["board"]()["rows"]
+        # bob has more solves in reality, but the visible board must not say so.
+        assert [r["username"] for r in rows] == ["ann", "bob"]
+        assert rows[0]["solved"] == 1 and rows[1]["solved"] == 0
+
+    def test_admins_can_see_through_the_freeze(self, fixtures):
+        self.freeze(fixtures, 45)
+        fixtures["submit"]("ann", "A", "AC", minute=100)
+        row = db.one("SELECT * FROM contests WHERE id = ?", (fixtures["contest_id"],))
+        revealed = contest.scoreboard(row, reveal=True)
+        assert revealed["frozen"] is False
+        assert revealed["rows"][0]["solved"] == 1
+
+    def test_freeze_lifts_once_the_contest_ends(self, fixtures):
+        self.freeze(fixtures, 45)
+        now = db.parse_time(db.utcnow())
+        # Move the whole window into the past. The submission has to stay
+        # inside it, or the scoreboard filters it out for unrelated reasons —
+        # so it lands 30 min before the end, well within the frozen tail.
+        db.execute(
+            "UPDATE contests SET starts_at = ?, ends_at = ? WHERE id = ?",
+            (iso(now - timedelta(hours=3)), iso(now - timedelta(hours=1)),
+             fixtures["contest_id"]),
+        )
+        fixtures["submit"]("ann", "A", "AC", minute=-30)  # now - 1h30m
+
+        board = fixtures["board"]()
+        assert board["state"] == contest.ENDED
+        assert board["frozen"] is False
+        assert board["rows"][0]["solved"] == 1
+
+    def test_freeze_moment_is_reported(self, fixtures):
+        self.freeze(fixtures, 30)
+        row = db.one("SELECT * FROM contests WHERE id = ?", (fixtures["contest_id"],))
+        moment = contest.freeze_at(row)
+        assert moment is not None
+        delta = db.parse_time(row["ends_at"]) - db.parse_time(moment)
+        assert abs(delta.total_seconds() - 30 * 60) < 1

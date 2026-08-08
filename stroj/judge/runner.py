@@ -110,6 +110,9 @@ class TestSpec:
     input_path: str
     answer_path: str
     points: int = 1
+    #: Sample tests are already public, so their diagnostics can be shown in
+    #: full. Hidden tests must not echo anything back — see `check(reveal=...)`.
+    is_sample: bool = False
 
 
 def validate_source(language_id: str, source: str) -> str | None:
@@ -230,7 +233,10 @@ def _run_one_test(
         if _looks_like_oom(stderr_text) or memory_kb >= memory_limit_mb * 1024:
             return outcome(MLE, f"exceeded {memory_limit_mb} MiB")
         detail = result.detail
-        if stderr_text.strip():
+        # stderr is echoed back to the submitter, so on a hidden test it is a
+        # 4 KiB read primitive: print a secret, exit non-zero, read the verdict.
+        # Sample tests are public, so their diagnostics stay useful.
+        if test.is_sample and stderr_text.strip():
             detail = f"{detail}\n{stderr_text.strip()}"
         return outcome(RE, detail)
 
@@ -240,7 +246,7 @@ def _run_one_test(
     expected, _ = _read_clipped(Path(test.answer_path), OUTPUT_READ_CAP)
 
     verdict_check = checkers.check(
-        expected, actual, problem.checker, problem.float_eps
+        expected, actual, problem.checker, problem.float_eps, reveal=test.is_sample
     )
     if not verdict_check.ok:
         return outcome(WA, verdict_check.message)

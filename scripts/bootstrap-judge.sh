@@ -71,6 +71,12 @@ say "Starting the judge"
 ADMIN_PASSWORD="${STROJ_ADMIN_PASSWORD:-$(head -c 18 /dev/urandom | base64 | tr -d '/+=')}"
 WORKERS="${STROJ_WORKERS:-$(( $(nproc) > 2 ? $(nproc) - 1 : 1 ))}"
 
+# Default to invite-only. A judge on a public URL that anyone can register on
+# is a free code-execution service for the whole internet; a club wants one
+# shared code instead. Override with STROJ_REGISTRATION=open.
+REGISTRATION="${STROJ_REGISTRATION:-invite}"
+INVITE_CODE="${STROJ_INVITE_CODE:-$(head -c 9 /dev/urandom | base64 | tr -d '/+=')}"
+
 # A backstop, not a working limit. The judge's own per-submission RSS monitor
 # should always bind first; sizing this tightly risks the cgroup OOM killer
 # taking out the judge instead of the submission that misbehaved.
@@ -84,6 +90,8 @@ docker run -d --name "$CONTAINER" \
     --volume "$VOLUME:/data" \
     --env "STROJ_ADMIN_PASSWORD=$ADMIN_PASSWORD" \
     --env "STROJ_WORKERS=$WORKERS" \
+    --env "STROJ_REGISTRATION=$REGISTRATION" \
+    --env "STROJ_INVITE_CODE=$INVITE_CODE" \
     --restart unless-stopped \
     --memory "${MEM_LIMIT_MB}m" \
     --pids-limit 512 \
@@ -129,6 +137,9 @@ Judge is up on https://$DOMAIN (once DNS points here and Caddy has
 issued a certificate).
 
   admin password: $ADMIN_PASSWORD
+  registration  : $REGISTRATION
+  invite code   : $INVITE_CODE   (share this with club members)
+  judge workers : $WORKERS
 
 Next:
   1. Point an A record for $DOMAIN at this machine's public IP.
