@@ -318,6 +318,40 @@ that exercises the rewrite, the cookie, and the worker pool in one go.
 - **`STROJ_WORKERS` should not exceed your core count.** Oversubscribing makes
   submissions contend and produces spurious `TLE`s.
 
+## Automatic updates
+
+The judge can redeploy itself whenever `main` moves. Install the timer once, on
+the server:
+
+```bash
+./scripts/auto-update.sh --install judge.ethanyanxu.com
+```
+
+It checks every five minutes and does nothing unless the remote has actually
+moved. `journalctl -u stroj-update -f` shows what it decided.
+
+**The server polls GitHub; GitHub does not push to the server.** A CI-driven
+deploy would mean parking an SSH key with root on this box in a secret store —
+a credential that, if it ever leaked, would hand over the machine running
+untrusted student code. Polling needs no secret and opens no port. The cost is
+up to five minutes of latency, which for a judge is nothing.
+
+Two behaviours worth knowing:
+
+- **It refuses to deploy during a live contest.** A redeploy rebuilds the image
+  and restarts the container; in-flight submissions get requeued rather than
+  lost, but the site is down for a minute and verdicts stall. The updater checks
+  for a running contest first and waits until it ends.
+- **It carries the running configuration across.** Registration mode, invite
+  code, admin password and worker count are read back off the live container and
+  re-applied, so an update cannot silently revert registration to invite-only.
+
+To pause it — before a contest you are hand-managing, say:
+
+```bash
+systemctl stop stroj-update.timer      # systemctl start … to resume
+```
+
 ## Backups
 
 `/data` holds the database and every problem's test data. Losing it mid-contest
