@@ -26,9 +26,29 @@ cd "$(dirname "$0")/.."
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
 # ---------------------------------------------------------------- packages
+# iptables-persistent asks, interactively, whether to save current rules — which
+# would hang this script forever on a box nobody is watching.
+export DEBIAN_FRONTEND=noninteractive
+
 say "Installing docker and caddy"
-sudo apt-get update -qq
-sudo apt-get install -y -qq docker.io caddy iptables-persistent
+sudo -E apt-get update -qq
+sudo -E apt-get install -y -qq docker.io iptables-persistent
+
+# Caddy is not in every Ubuntu release's archive. Use it if it is there, and
+# fall back to the project's own repo rather than failing halfway through.
+if ! apt-cache show caddy >/dev/null 2>&1; then
+    say "Adding the Caddy repository"
+    sudo -E apt-get install -y -qq debian-keyring debian-archive-keyring \
+        apt-transport-https curl gnupg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+        | sudo gpg --batch --yes --dearmor \
+              -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+        | sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
+    sudo -E apt-get update -qq
+fi
+sudo -E apt-get install -y -qq caddy
+
 sudo systemctl enable --now docker
 
 if ! docker info >/dev/null 2>&1; then
