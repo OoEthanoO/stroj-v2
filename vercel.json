@@ -5,24 +5,66 @@
   "outputDirectory": "public",
   "installCommand": "echo 'no dependencies'",
   "rewrites": [
-    { "source": "/api/:path*", "destination": "https://judge.ethanyanxu.com/api/:path*" },
-    { "source": "/healthz", "destination": "https://judge.ethanyanxu.com/healthz" },
-    { "source": "/docs", "destination": "https://judge.ethanyanxu.com/docs" },
-    { "source": "/openapi.json", "destination": "https://judge.ethanyanxu.com/openapi.json" }
+    {
+      "source": "/api/:path*",
+      "destination": "https://judge.ethanyanxu.com/api/:path*"
+    },
+    {
+      "source": "/healthz",
+      "destination": "https://judge.ethanyanxu.com/healthz"
+    },
+    {
+      "source": "/docs",
+      "destination": "https://judge.ethanyanxu.com/docs"
+    },
+    {
+      "source": "/openapi.json",
+      "destination": "https://judge.ethanyanxu.com/openapi.json"
+    }
   ],
   "headers": [
     {
+      "source": "/version.json",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
+      ]
+    },
+    {
+      "source": "/",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, must-revalidate"
+        }
+      ]
+    },
+    {
       "source": "/static/(.*)",
       "headers": [
-        { "key": "Cache-Control", "value": "no-cache, must-revalidate" }
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, must-revalidate"
+        }
       ]
     },
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "Referrer-Policy", "value": "same-origin" },
-        { "key": "X-Frame-Options", "value": "DENY" }
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "same-origin"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        }
       ]
     }
   ]

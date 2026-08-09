@@ -478,3 +478,28 @@ math.math-display {
    token width collapses these to their content and hands the slack to the
    first column. */
 .limits-table th:not(:first-child), .limits-table td:not(:first-child) { width: 1px; }
+
+/* ---------- version state ---------- */
+
+/* Non-blocking: it sits in the flow above the page rather than over it, so
+   nothing is ever covered and no interaction is trapped behind it. */
+.update-banner {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 24px;
+  background: var(--warn-bg); color: var(--warn);
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.update-banner strong { color: var(--warn); }
+.update-banner button { padding: 4px 10px; }
+
+/* Blocking, by contrast: a mismatched pair cannot be reasoned about, so the
+   site must not be usable at all until the two halves agree. */
+.updating {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; text-align: center;
+  background: var(--bg); color: var(--text);
+}
+.updating h1 { margin: 0 0 10px; }
+.updating p { margin: 0 0 6px; color: var(--muted); }

@@ -2019,9 +2019,115 @@ async function route() {
   }
 }
 
+/* --------------------------------------------------------- version watch */
+
+/* Three commits matter, not two:
+ *
+ *   pageCommit   what the HTML in this tab was built from — what you are using
+ *   frontend     what the site is serving right now (/version.json)
+ *   backend      what the judge is running right now (/api/version)
+ *
+ * The two halves deploy independently — Vercel on push, the judge on its
+ * webhook — so during a rollout they disagree for a while. A mismatched pair
+ * cannot be reasoned about: the page may call an endpoint that does not exist
+ * yet, or read a field the judge stopped sending. So a mismatch blocks the
+ * site outright, while a merely stale tab, sitting on a pair that does agree,
+ * only earns a warning. */
+
+const VERSION_POLL_MS = 20000;
+
+const PAGE_COMMIT = (() => {
+  const meta = document.querySelector('meta[name="stroj-commit"]');
+  const value = meta && meta.content;
+  // A checkout served straight from disk never gets stamped.
+  return !value || value.startsWith('__') ? null : value;
+})();
+
+let blockedByUpdate = false;
+
+async function fetchJson(url) {
+  try {
+    // The whole point is to see past a cached copy of these two files.
+    const response = await fetch(url, { cache: 'no-store' });
+    return response.ok ? await response.json() : null;
+  } catch { return null; }
+}
+
+async function deployedCommits() {
+  const [frontend, backend] = await Promise.all([
+    fetchJson('/version.json'), fetchJson('/api/version'),
+  ]);
+  const usable = (v) => (v && v.commit && v.commit !== 'unknown' ? v.commit : null);
+  return { frontend: usable(frontend), backend: usable(backend) };
+}
+
+function showUpdating(detail) {
+  blockedByUpdate = true;
+  $('#updating-detail').textContent = detail;
+  $('#updating').hidden = false;
+  $('#update-banner').hidden = true;
+}
+
+/* Deliberately not dismissible. The warning is about a real hazard — this tab
+   may call an endpoint that has changed shape — and that hazard does not go
+   away when the notice is closed, so neither should the notice. */
+function showUpdateBanner() {
+  $('#update-banner').hidden = false;
+}
+
+/**
+ * What the three commits mean, as one decision.
+ *
+ *   'unknown'  nothing to compare — say nothing
+ *   'updating' the halves disagree; the site must not be used
+ *   'stale'    the halves agree, but this tab predates them
+ *   'current'  nothing to do
+ */
+function versionState(page, frontend, backend) {
+  // A self-hosted judge serving its own files has no version.json, and a dev
+  // checkout is never stamped. Warning about a mismatch that was never
+  // measured would be worse than staying quiet.
+  if (!frontend || !backend) return 'unknown';
+  if (frontend !== backend) return 'updating';
+  if (page && page !== frontend) return 'stale';
+  return 'current';
+}
+
+async function checkVersions() {
+  const { frontend, backend } = await deployedCommits();
+  const verdict = versionState(PAGE_COMMIT, frontend, backend);
+
+  if (verdict === 'updating') {
+    showUpdating(`frontend ${frontend.slice(0, 7)} · backend ${backend.slice(0, 7)}`);
+    return;
+  }
+  if (verdict === 'unknown') return;
+
+  // Back in agreement. Reload rather than resuming in place: this tab is very
+  // likely running the frontend from before the update, and drafts are saved
+  // to localStorage on every keystroke, so nothing is lost by doing so.
+  if (blockedByUpdate) {
+    location.reload();
+    return;
+  }
+  if (verdict === 'stale') showUpdateBanner();
+}
+
+function startVersionWatch() {
+  // Deliberately not registered with `every()`, which route() clears on every
+  // navigation — this has to keep running for the life of the tab.
+  setInterval(() => { checkVersions().catch(() => {}); }, VERSION_POLL_MS);
+  $('#update-refresh').onclick = () => location.reload();
+}
+
 /* ------------------------------------------------------------------- boot */
 
 async function boot() {
+  startVersionWatch();
+  await checkVersions().catch(() => {});
+  // A mismatch means the site does not load. The watcher above brings it back.
+  if (blockedByUpdate) return;
+
   try {
     const [me, langs, config, version] = await Promise.all([
       api('/api/auth/me'), api('/api/languages'), api('/api/config'),
