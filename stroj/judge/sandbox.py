@@ -278,6 +278,30 @@ def _make_rss_reader():
 _read_rss = _make_rss_reader()
 
 
+def resolve_rss(sampled_peak: int, reported_rusage: int, parent_floor: int) -> int:
+    """Pick the figure that actually describes the program.
+
+    Two measurements are available and only one of them is trustworthy.
+
+    ``sampled_peak`` is read from the child after it has ``execve``'d, so it is
+    the program's own resident size. ``reported_rusage`` is ``ru_maxrss`` from
+    ``wait4``, which measures the child from ``fork`` — and at that moment the
+    child is a copy-on-write clone of the judge, so on Linux it can never come
+    back smaller than the Python interpreter that launched it, whatever the
+    program went on to do.
+
+    So a sample wins outright. Taking the larger of the two, as this once did,
+    reinstated the floor it was meant to remove: every submission reported
+    roughly the judge's own size, and a C++ program that adds two integers came
+    back at 42 MiB. Only when nothing was sampled — the process was gone inside
+    a millisecond — is the inherited figure used at all, and then with the
+    judge's own footprint taken off it.
+    """
+    if sampled_peak:
+        return sampled_peak
+    return max(0, reported_rusage - parent_floor)
+
+
 def _self_rss() -> int:
     """This process's resident size, used as a pollution floor — see below."""
     return _read_rss(os.getpid())
@@ -533,13 +557,7 @@ def run(
     # at or below it, the figure says nothing about the submission and only the
     # sampled peak is meaningful.
     reported_rusage = int(usage.ru_maxrss) * RSS_UNIT_BYTES
-    if monitor.peak:
-        # Sampled after exec, so it describes the submission and nothing else.
-        max_rss = max(monitor.peak, reported_rusage if reported_rusage > parent_floor else 0)
-    else:
-        # Gone before a single sample landed. All that is left is the polluted
-        # figure — an overestimate, but reporting 0 MiB would be worse.
-        max_rss = reported_rusage
+    max_rss = resolve_rss(monitor.peak, reported_rusage, parent_floor)
 
     result = RunResult(
         RunStatus.OK, exit_code, term_signal, wall_ms, cpu_ms, max_rss

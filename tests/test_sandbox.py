@@ -216,3 +216,79 @@ class TestMemoryIsAttributedToTheProgram:
         judge's own RSS marked every submission MLE."""
         result = run_python("pass", tmp_path, memory_limit_bytes=64 * 1024**2)
         assert result.status is RunStatus.OK
+
+
+class TestChoosingWhichMeasurementToTrust:
+    """Tested as a decision rather than an outcome, because the bug it guards
+    is Linux-only: `ru_maxrss` inherits the parent's footprint there, but not
+    on macOS, so measuring a real program cannot tell the two rules apart on a
+    developer's machine.
+    """
+
+    MB = 1024 * 1024
+
+    def test_a_sample_wins_over_the_inherited_figure(self):
+        """The regression: taking the larger of the two put the judge's own
+        size under every submission."""
+        got = sandbox.resolve_rss(4 * self.MB, 42 * self.MB, 41 * self.MB)
+        assert got == 4 * self.MB, "ru_maxrss must not be able to raise a sample"
+
+    def test_a_sample_wins_even_when_it_is_tiny(self):
+        assert sandbox.resolve_rss(300 * 1024, 42 * self.MB, 41 * self.MB) == 300 * 1024
+
+    def test_a_sample_wins_even_with_no_known_floor(self):
+        """parent_floor is 0 off Linux; that must not re-open the door."""
+        assert sandbox.resolve_rss(4 * self.MB, 42 * self.MB, 0) == 4 * self.MB
+
+    def test_without_a_sample_the_judge_is_subtracted(self):
+        got = sandbox.resolve_rss(0, 42 * self.MB, 41 * self.MB)
+        assert got == 1 * self.MB
+
+    def test_a_shrinking_judge_cannot_produce_a_negative(self):
+        assert sandbox.resolve_rss(0, 10 * self.MB, 40 * self.MB) == 0
+
+    def test_without_a_sample_or_a_floor_the_raw_figure_is_used(self):
+        assert sandbox.resolve_rss(0, 7 * self.MB, 0) == 7 * self.MB
+
+
+class TestReportedMemoryExcludesTheJudge:
+    """`ru_maxrss` measures the child from `fork`, when it is still a copy of
+    the judge — so it can never report less than the Python interpreter that
+    launched it. Consulting it at all put a floor of roughly the judge's own
+    size under every submission: a C++ A+B came back at 42 MiB.
+    """
+
+    def test_a_trivial_program_is_far_below_the_judge_itself(self, tmp_path):
+        judge = sandbox._self_rss()
+        # Nothing to measure on a platform without a working sampler.
+        if not judge:
+            pytest.skip("no RSS reader on this platform")
+        result = run_python("pass", tmp_path)
+        assert result.status is RunStatus.OK
+        assert 0 < result.max_rss_bytes, "a live program cannot use nothing"
+        # The interpreter is real; the judge's own footprint is not.
+        assert result.max_rss_bytes < judge * 2, (
+            f"reported {result.max_rss_bytes/1048576:.1f} MiB against a judge "
+            f"holding {judge/1048576:.1f} MiB — the floor is back"
+        )
+
+    def test_an_allocation_shows_up_at_close_to_its_real_size(self, tmp_path):
+        """The strongest check available: the *difference* between two runs of
+        the same interpreter is the allocation and nothing else."""
+        base = run_python("pass", tmp_path, memory_limit_bytes=512 * 1024**2)
+        grown = run_python(
+            "x = bytearray(80 * 1024 * 1024)\nx[::4096] = b'1' * len(x[::4096])",
+            tmp_path, memory_limit_bytes=512 * 1024**2)
+        assert base.status is RunStatus.OK and grown.status is RunStatus.OK
+        delta = (grown.max_rss_bytes - base.max_rss_bytes) / 1048576
+        assert 70 < delta < 95, f"80 MiB allocation measured as {delta:.1f} MiB"
+
+    def test_two_different_programs_do_not_report_the_same_floor(self, tmp_path):
+        """With the floor in place every language reported within a megabyte of
+        the others, whatever it actually held — which is what gave the game
+        away on a problem that stores two integers."""
+        if not sandbox._self_rss():
+            pytest.skip("no RSS reader on this platform")
+        small = run_python("pass", tmp_path)
+        large = run_python("x = bytearray(60 * 1024 * 1024)", tmp_path)
+        assert large.max_rss_bytes > small.max_rss_bytes * 1.5
