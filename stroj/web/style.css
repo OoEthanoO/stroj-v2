@@ -194,6 +194,19 @@ textarea.code {
   overflow-x: auto;
 }
 .error { color: var(--bad); font-size: 13px; }
+.filters { margin-bottom: 14px; }
+.filters input { width: auto; }
+
+/* Chips are the multiselect: one per type, `.on` when picked. */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+label .chips { margin-top: 4px; }
+.chip {
+  font-family: var(--mono); font-size: 12px; font-weight: 400;
+  padding: 2px 8px; background: var(--surface-2); color: var(--muted);
+}
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chip.on:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+.chip-add { width: 100px; font-size: 12px; padding: 2px 8px; }
 
 /* ---------- tables ---------- */
 

@@ -79,6 +79,16 @@ def _author_of(problem) -> str | None:
     return row["username"] if row else None
 
 
+def problem_types(problem_id: int) -> list[str]:
+    return [
+        r["type"]
+        for r in db.query(
+            "SELECT type FROM problem_types WHERE problem_id = ? ORDER BY type",
+            (problem_id,),
+        )
+    ]
+
+
 def problem_summary(problem: sqlite3.Row, user: sqlite3.Row | None = None) -> dict:
     data = {
         "slug": problem["slug"],
@@ -90,6 +100,7 @@ def problem_summary(problem: sqlite3.Row, user: sqlite3.Row | None = None) -> di
         "visible": bool(problem["visible"]),
         "points": problem["points"],
         "author": _author_of(problem),
+        "types": problem_types(problem["id"]),
     }
     if user is not None:
         best = db.one(

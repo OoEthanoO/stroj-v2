@@ -55,6 +55,15 @@ CREATE TABLE IF NOT EXISTS problem_subtasks (
     PRIMARY KEY (problem_id, idx)
 );
 
+-- Categories an admin assigns to a problem ('graphs', 'dp', ...), used to
+-- filter the problem list. Free-form, but stored lowercased so that one
+-- spelling of a type is one type.
+CREATE TABLE IF NOT EXISTS problem_types (
+    problem_id INTEGER NOT NULL REFERENCES problems(id) ON DELETE CASCADE,
+    type       TEXT    NOT NULL,
+    PRIMARY KEY (problem_id, type)
+);
+
 CREATE TABLE IF NOT EXISTS contests (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     slug        TEXT    NOT NULL UNIQUE,

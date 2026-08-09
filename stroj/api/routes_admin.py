@@ -24,6 +24,7 @@ from .deps import get_contest, require_admin
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
+TYPE_RE = re.compile(r"^[a-z0-9][a-z0-9 +/-]{0,31}$")
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
 
@@ -58,6 +59,8 @@ class ProblemBody(BaseModel):
     points: int = Field(default=100, ge=1, le=10000)
     #: Username to credit. Defaults to whoever creates the problem.
     author: str | None = None
+    #: Categories to file it under, e.g. ``["graphs", "dp"]``.
+    types: list[str] = []
 
 
 class ProblemPatch(BaseModel):
@@ -71,6 +74,7 @@ class ProblemPatch(BaseModel):
     visible: bool | None = None
     points: int | None = Field(default=None, ge=1, le=10000)
     author: str | None = None
+    types: list[str] | None = None
 
 
 class TestsBody(BaseModel):
@@ -115,11 +119,34 @@ def _author_id(username: str | None, fallback: sqlite3.Row) -> int | None:
     return row["id"]
 
 
+def _clean_types(types: list[str]) -> list[str]:
+    """Fold case and spacing so that 'Graphs' and 'graphs' filter as one type."""
+    cleaned = []
+    for raw in types:
+        value = " ".join(raw.lower().split())
+        if not value:
+            continue
+        if not TYPE_RE.match(value):
+            raise HTTPException(status_code=400, detail=f"Bad problem type: {raw}")
+        cleaned.append(value)
+    return cleaned
+
+
+def _set_types(problem_id: int, cleaned: list[str]) -> None:
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM problem_types WHERE problem_id = ?", (problem_id,))
+        conn.executemany(
+            "INSERT OR IGNORE INTO problem_types (problem_id, type) VALUES (?, ?)",
+            [(problem_id, t) for t in cleaned],
+        )
+
+
 @router.post("/problems")
 def create_problem(body: ProblemBody, request: Request):
     _check_slug(body.slug)
     if body.checker not in checkers.CHECKERS:
         raise HTTPException(status_code=400, detail=f"Unknown checker: {body.checker}")
+    types = _clean_types(body.types)
     author_id = _author_id(body.author, require_admin(request))
     try:
         problem_id = db.insert(
@@ -144,6 +171,7 @@ def create_problem(body: ProblemBody, request: Request):
         )
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="That slug is taken.") from None
+    _set_types(problem_id, types)
     return {"id": problem_id, "slug": body.slug}
 
 
@@ -151,6 +179,9 @@ def create_problem(body: ProblemBody, request: Request):
 def update_problem(slug: str, body: ProblemPatch, request: Request):
     problem = _problem_or_404(slug)
     fields = body.model_dump(exclude_none=True)
+    types = fields.pop("types", None)
+    if types is not None:
+        _set_types(problem["id"], _clean_types(types))
     if not fields:
         return {"updated": 0}
     if "checker" in fields and fields["checker"] not in checkers.CHECKERS:

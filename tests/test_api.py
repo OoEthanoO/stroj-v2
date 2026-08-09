@@ -372,6 +372,19 @@ class TestAdminAuthoring:
         assert detail["time_limit_ms"] == 5000
         assert detail["visible"] is False
 
+    def test_types_are_normalised_and_replaced_wholesale(self, admin_client):
+        admin_client.post("/api/admin/problems", json={
+            "slug": "typed", "title": "Typed", "types": ["Graphs", " dp ", "graphs"]})
+        assert admin_client.get("/api/problems/typed").json()["types"] == ["dp", "graphs"]
+
+        admin_client.patch("/api/admin/problems/typed", json={"types": ["greedy"]})
+        assert admin_client.get("/api/problems/typed").json()["types"] == ["greedy"]
+
+    def test_bad_type_rejected(self, admin_client):
+        response = admin_client.post(
+            "/api/admin/problems", json={"slug": "typed", "title": "x", "types": ["d&p"]})
+        assert response.status_code == 400
+
     def test_deleting_takes_the_test_data_with_it(self, admin_client, isolated_data):
         make_problem(admin_client)
         directory = isolated_data / "problems" / "a-plus-b"

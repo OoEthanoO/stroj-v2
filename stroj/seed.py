@@ -19,6 +19,7 @@ A_PLUS_B = {
     "time_limit_ms": 1000,
     "memory_limit_mb": 256,
     "checker": "token",
+    "types": ["implementation"],
     "statement": """\
 Read two integers and print their sum.
 
@@ -40,6 +41,7 @@ MAX_SUBARRAY = {
     "memory_limit_mb": 256,
     "checker": "token",
     "partial": 1,
+    "types": ["dp", "arrays"],
     "statement": """\
 Given an array, find the largest sum of any non-empty contiguous subarray.
 
@@ -66,6 +68,7 @@ CIRCLE = {
     "memory_limit_mb": 256,
     "checker": "float",
     "float_eps": 1e-6,
+    "types": ["math", "geometry"],
     "statement": """\
 Print the area of a circle of radius `r`.
 
@@ -140,7 +143,7 @@ def _insert_problem(spec: dict) -> int:
     existing = db.one("SELECT id FROM problems WHERE slug = ?", (spec["slug"],))
     if existing is not None:
         return existing["id"]
-    return db.insert(
+    problem_id = db.insert(
         "INSERT INTO problems (slug, title, statement, time_limit_ms, memory_limit_mb,"
         " checker, float_eps, partial, visible, points, created_at)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
@@ -157,6 +160,12 @@ def _insert_problem(spec: dict) -> int:
             db.utcnow(),
         ),
     )
+    for name in spec.get("types", []):
+        db.execute(
+            "INSERT INTO problem_types (problem_id, type) VALUES (?, ?)",
+            (problem_id, name),
+        )
+    return problem_id
 
 
 def seed(with_contest: bool = True) -> dict:

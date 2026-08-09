@@ -81,6 +81,46 @@ function userLink(username, role) {
 
 const pointsPill = (points) => `<span class="points-pill">${Number(points) || 0}</span>`;
 
+const typePills = (types) => ((types || []).length
+  ? types.map((t) => `<span class="pill">${esc(t)}</span>`).join(' ')
+  : '<span class="muted">—</span>');
+
+/* Multiselect of problem types, as toggleable chips. Assigning types and
+ * filtering by them are the same control; only authoring passes `creatable`,
+ * which adds a field for types nothing uses yet. */
+function typeChips(id, all, selected = [], creatable = false) {
+  const chip = (t) => `<button type="button" class="chip${selected.includes(t) ? ' on' : ''}"
+    data-type="${esc(t)}">${esc(t)}</button>`;
+  return `<div class="chips" id="${id}">${all.map(chip).join('')}
+    ${creatable ? '<input class="chip-add" placeholder="+ type">' : ''}</div>`;
+}
+
+const chosenTypes = (id) => $$(`#${id} .chip.on`).map((c) => c.dataset.type);
+
+function bindTypeChips(id, onChange = () => {}) {
+  const root = $(`#${id}`);
+  root.onclick = (event) => {
+    const chip = event.target.closest('.chip');
+    if (!chip) return;
+    chip.classList.toggle('on');
+    onChange();
+  };
+  const add = $('.chip-add', root);
+  if (!add) return;
+  add.onkeydown = (event) => {
+    if (event.key !== 'Enter' && event.key !== ',') return;
+    event.preventDefault();
+    const value = add.value.trim().toLowerCase();
+    add.value = '';
+    if (!value) return;
+    const existing = $$('.chip', root).find((c) => c.dataset.type === value);
+    if (existing) existing.classList.add('on');
+    else add.insertAdjacentHTML('beforebegin',
+      `<button type="button" class="chip on" data-type="${esc(value)}">${esc(value)}</button>`);
+    onChange();
+  };
+}
+
 function memory(kb) {
   if (!kb) return '—';
   return kb >= 1024 ? `${(kb / 1024).toFixed(1)} MiB` : `${kb} KiB`;
@@ -277,26 +317,56 @@ async function viewProblems() {
         : 'Run <code class="mono">python -m stroj seed</code> to load the samples.'}</div>`);
     return;
   }
-  const rows = problems.map((p) => `
+  const row = (p) => `
     <tr>
       <td class="wide">
         ${state.user ? `<span class="dot ${esc(p.status)}" title="${esc(p.status)}"></span>` : ''}
         <a href="#/problem/${encodeURIComponent(p.slug)}">${esc(p.title)}</a>
         ${p.visible ? '' : ' <span class="pill">hidden</span>'}
       </td>
+      <td class="small">${typePills(p.types)}</td>
       <td class="num">${pointsPill(p.points)}</td>
       <td class="small">${p.author ? userLink(p.author) : '<span class="muted">—</span>'}</td>
       <td class="num">${p.time_limit_ms} ms</td>
       <td class="num">${p.memory_limit_mb} MiB</td>
       <td class="small muted">${esc(p.checker)}${p.partial ? ' · partial' : ''}</td>
-    </tr>`).join('');
+    </tr>`;
 
+  const types = [...new Set(problems.flatMap((p) => p.types))].sort();
   setView(`
-    <div class="page-head"><h1>Problems</h1><span class="muted small">${problems.length} total</span></div>
+    <div class="page-head"><h1>Problems</h1><span class="muted small" id="p-count"></span></div>
+    <div class="filters">
+      <div class="row">
+        <input id="f-q" type="search" placeholder="Search problems…" style="flex:2;min-width:180px">
+        <input id="f-min" type="number" min="0" placeholder="Min points" style="width:120px">
+        <input id="f-max" type="number" min="0" placeholder="Max points" style="width:120px">
+      </div>
+      ${types.length ? `<div class="row" style="margin-top:8px">
+        <span class="muted small">Types</span>${typeChips('f-types', types)}</div>` : ''}
+    </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Problem</th><th class="num">Points</th><th>Author</th><th class="num">Time</th><th class="num">Memory</th><th>Checker</th></tr></thead>
-      <tbody>${rows}</tbody>
+      <thead><tr><th>Problem</th><th>Types</th><th class="num">Points</th><th>Author</th><th class="num">Time</th><th class="num">Memory</th><th>Checker</th></tr></thead>
+      <tbody id="p-rows"></tbody>
     </table></div>`);
+
+  const apply = () => {
+    const q = $('#f-q').value.trim().toLowerCase();
+    // No type selected means no type filter; several mean any of them.
+    const chosen = types.length ? chosenTypes('f-types') : [];
+    const min = Number($('#f-min').value) || 0;
+    const max = Number($('#f-max').value) || Infinity;
+    const shown = problems.filter((p) =>
+      (!q || p.title.toLowerCase().includes(q) || p.slug.includes(q))
+      && (!chosen.length || chosen.some((t) => p.types.includes(t)))
+      && p.points >= min && p.points <= max);
+    $('#p-rows').innerHTML = shown.map(row).join('')
+      || '<tr><td colspan="7" class="muted">Nothing matches those filters.</td></tr>';
+    $('#p-count').textContent = shown.length === problems.length
+      ? `${problems.length} total` : `${shown.length} of ${problems.length}`;
+  };
+  $$('.filters input').forEach((el) => { el.oninput = apply; });
+  if (types.length) bindTypeChips('f-types', apply);
+  apply();
 }
 
 const draftKey = (slug, language) => `stroj:draft:${slug}:${language}`;
@@ -324,6 +394,7 @@ async function viewProblem(slug, params) {
     <div class="row small muted" style="margin-bottom:18px">
       <span class="points-pill">${problem.points} points</span>
       ${problem.author ? `<span class="pill">by ${userLink(problem.author)}</span>` : ''}
+      ${(problem.types || []).map((t) => `<span class="pill">${esc(t)}</span>`).join('')}
       <span class="pill">${problem.time_limit_ms} ms</span>
       <span class="pill">${problem.memory_limit_mb} MiB</span>
       <span class="pill">${esc(problem.checker)} checker</span>
@@ -943,7 +1014,12 @@ async function viewAdminProblem(slug) {
     setView('<div class="empty">Admins only.</div>');
     return;
   }
-  const p = await api(`/api/problems/${encodeURIComponent(slug)}`);
+  // The list comes along for the type vocabulary: chips offer what other
+  // problems already use, so authors reuse a type instead of coining one.
+  const [p, { problems }] = await Promise.all([
+    api(`/api/problems/${encodeURIComponent(slug)}`), api('/api/problems'),
+  ]);
+  const allTypes = [...new Set(problems.flatMap((x) => x.types).concat(p.types))].sort();
   const checkerOption = (value, label) =>
     `<option value="${value}" ${p.checker === value ? 'selected' : ''}>${label}</option>`;
 
@@ -975,6 +1051,7 @@ async function viewAdminProblem(slug) {
         <label style="flex:2;min-width:160px">Author
           <input id="e-author" value="${esc(p.author || '')}" placeholder="(unattributed)"></label>
       </div>
+      <label>Types ${typeChips('e-types', allTypes, p.types, true)}</label>
       <div class="row">
         <label class="row" style="gap:6px"><input type="checkbox" id="e-partial" style="width:auto"
           ${p.partial ? 'checked' : ''}> partial scoring</label>
@@ -1000,6 +1077,7 @@ async function viewAdminProblem(slug) {
       <button id="e-save" class="primary">Save changes</button>
     </div>`, { wide: true });
 
+  bindTypeChips('e-types');
   const editor = $('#e-statement');
   // Render through the same function the solver page uses, so what an author
   // sees here is exactly what gets published.
@@ -1034,6 +1112,7 @@ async function viewAdminProblem(slug) {
           visible: $('#e-visible').checked,
           points: Number($('#e-points').value),
           author: $('#e-author').value.trim() || null,
+          types: chosenTypes('e-types'),
         },
       });
       $('#e-status').textContent = 'Saved.';
@@ -1058,6 +1137,7 @@ async function viewAdmin() {
     api('/api/problems'), api('/api/contests'), api('/api/admin/users'),
   ]);
 
+  const allTypes = [...new Set(problems.flatMap((p) => p.types))].sort();
   const problemRows = problems.map((p) => `
     <tr>
       <td class="wide"><a href="#/problem/${encodeURIComponent(p.slug)}">${esc(p.title)}</a></td>
@@ -1138,6 +1218,7 @@ async function viewAdmin() {
             <label style="flex:1">Points <input id="p-points" type="number" value="100" min="1" max="10000"></label>
             <label style="flex:2">Author <input id="p-author" placeholder="(you)"></label>
           </div>
+          <label>Types ${typeChips('p-types', allTypes, [], true)}</label>
           <div class="row">
             <label style="flex:1">Time limit (ms) <input id="p-tl" type="number" value="1000" min="100" max="60000"></label>
             <label style="flex:1">Memory (MiB) <input id="p-ml" type="number" value="256" min="16" max="4096"></label>
@@ -1249,6 +1330,8 @@ async function viewAdmin() {
     }
   };
 
+  bindTypeChips('p-types');
+
   $('#create-problem').onclick = guard(async () => {
     const slug = $('#p-slug').value.trim();
     if ($('#p-tests').files.length && !pendingTests) {
@@ -1269,6 +1352,7 @@ async function viewAdmin() {
         visible: $('#p-visible').checked,
         points: Number($('#p-points').value),
         author: $('#p-author').value.trim() || null,
+        types: chosenTypes('p-types'),
       },
     });
 
