@@ -14,6 +14,7 @@ container and not a defence against a determined attacker. See README.
 from __future__ import annotations
 
 import ctypes
+import logging
 import math
 import os
 import pwd
@@ -26,10 +27,13 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from enum import Enum
 from functools import lru_cache
 
 # getrusage reports ru_maxrss in bytes on the BSDs (macOS) and kilobytes on Linux.
+log = logging.getLogger("stroj.judge")
+
 RSS_UNIT_BYTES = 1 if sys.platform == "darwin" else 1024
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
@@ -43,6 +47,13 @@ FAST_SAMPLE_WINDOW_S = 0.05
 
 #: How often the abort watcher looks for a cancellation request.
 ABORT_POLL_S = 0.02
+
+#: Sample with no pause at all for this long after the program starts. A C++
+#: solution can be finished inside three milliseconds, and even a half
+#: millisecond of sleep between samples was enough to miss every one of them
+#: and report no memory usage. Busy-looping briefly is the price of measuring
+#: short programs at all; it costs a couple of milliseconds of CPU per test.
+BUSY_SAMPLE_WINDOW_S = 0.004
 
 # Start from `allow default` and subtract: a deny-by-default profile breaks
 # clang, the JVM and CPython in a dozen small ways that are not worth chasing
@@ -301,7 +312,61 @@ def _make_rss_reader():
 _read_rss = _make_rss_reader()
 
 
-def resolve_rss(sampled_peak: int, reported_rusage: int, parent_floor: int) -> int:
+#: Built on demand from `measure.c` and cached beside the judge's data, so no
+#: image change is needed and a checkout works the same as a container.
+_MEASURE_SOURCE = Path(__file__).resolve().parent / "measure.c"
+_measure_path: "str | None | bool" = False      # False = not looked for yet
+_measure_lock = threading.Lock()
+
+
+def measure_helper() -> str | None:
+    """Path to the compiled measuring wrapper, or None if it is unavailable.
+
+    Compiled once and cached. A judge with no C compiler simply goes without
+    it and falls back to sampling, which is accurate for anything that lives
+    longer than a few milliseconds.
+    """
+    global _measure_path
+    with _measure_lock:
+        if _measure_path is not False:
+            return _measure_path
+        _measure_path = None
+        try:
+            # Imported here rather than at module scope: this file is otherwise
+            # free of stroj imports and takes every limit as an argument, and
+            # the only thing needed from configuration is somewhere writable
+            # to cache a binary.
+            from .. import config
+
+            target = config.DATA_DIR / "bin" / "stroj-measure"
+            if target.exists() and target.stat().st_mtime >= _MEASURE_SOURCE.stat().st_mtime:
+                _measure_path = str(target)
+                return _measure_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            for compiler in ("cc", "gcc", "clang"):
+                if shutil.which(compiler) is None:
+                    continue
+                built = subprocess.run(
+                    [compiler, "-O2", "-o", str(target), str(_MEASURE_SOURCE)],
+                    capture_output=True, timeout=60,
+                )
+                if built.returncode == 0:
+                    os.chmod(target, 0o755)
+                    _measure_path = str(target)
+                    break
+        except (OSError, ImportError, subprocess.SubprocessError) as exc:
+            # Going without is survivable — sampling still covers anything
+            # living longer than a few milliseconds — but staying silent about
+            # it is not: a swallowed error here reads as "no compiler".
+            log.warning("could not build the memory wrapper: %s", exc)
+            _measure_path = None
+        return _measure_path
+
+
+def resolve_rss(
+    sampled_peak: int, reported_rusage: int, parent_floor: int,
+    from_helper: int = 0,
+) -> int:
     """Combine the two measurements into the program's own peak.
 
     ``sampled_peak`` is read from the child after it has ``execve``'d, so it is
@@ -320,6 +385,10 @@ def resolve_rss(sampled_peak: int, reported_rusage: int, parent_floor: int) -> i
     made every submission report ~41 MiB, while still catching a peak the
     sampler was too slow to see.
     """
+    if from_helper:
+        # Measured by a process holding a megabyte rather than the judge's
+        # fourteen, so there is nothing to subtract and nothing to race.
+        return from_helper
     return max(sampled_peak, max(0, reported_rusage - parent_floor))
 
 
@@ -382,6 +451,8 @@ class _MemoryMonitor(threading.Thread):
             # A submission that finishes in a few milliseconds would otherwise
             # be reaped before the first slow sample, and report nothing at all.
             elapsed = time.monotonic() - started
+            if elapsed < BUSY_SAMPLE_WINDOW_S:
+                continue          # no pause: the program may not last one
             self._done.wait(0.0005 if elapsed < FAST_SAMPLE_WINDOW_S else POLL_INTERVAL_S)
 
     def stop(self) -> None:
@@ -460,6 +531,30 @@ def run(
             if prefix is not None:
                 argv = [*prefix, *argv]
 
+    # The wrapper reports peak memory on its own descriptor. Sampling cannot see
+    # a program that finishes in two milliseconds; this can. It has to go on
+    # before `exe` is resolved, or the child execs the original program while
+    # carrying the wrapper's argv — which hands `python3 -c ...` an argv it
+    # reads as a filename.
+    # Only where it costs nothing to give up sampling. The monitor watches the
+    # process it started, so putting a wrapper in front means it no longer sees
+    # the submission — fine when `RLIMIT_AS` is doing the enforcing, but not for
+    # a runtime that opts out of it. The JVM reserves a huge virtual arena and
+    # so runs without `RLIMIT_AS`; its memory ceiling is held by sampling alone,
+    # and it lives far longer than the milliseconds sampling struggles with.
+    #
+    # macOS is excluded too: `ru_maxrss` is already the child's own there, so
+    # there is nothing for a wrapper to fix and enforcement stays with sampling.
+    helper = (
+        measure_helper()
+        if sys.platform == "linux" and address_space_rlimit
+        else None
+    )
+    report_r = report_w = None
+    if helper:
+        report_r, report_w = os.pipe()
+        argv = [helper, *argv]
+
     exe = _resolve(argv[0], child_env.get("PATH"))
     if exe is None:
         return RunResult(
@@ -490,6 +585,14 @@ def run(
     if pid == 0:  # ---- child ----
         try:
             os.close(exec_r)
+            if report_w is not None:
+                os.close(report_r)
+                # Fixed descriptor 3: the submission's own stderr must stay
+                # exactly what the solver wrote, with no report mixed in.
+                if report_w != 3:
+                    os.dup2(report_w, 3)
+                    os.close(report_w)
+                os.set_inheritable(3, True)
             os.setpgid(0, 0)
             os.chdir(cwd)
             fd_in = os.open(in_path, os.O_RDONLY)
@@ -525,6 +628,8 @@ def run(
     # Both sides set the process group so a kill can never race the exec.
     # Only the child's copy may stay open, or the read below never ends.
     os.close(exec_w)
+    if report_w is not None:
+        os.close(report_w)
 
     try:
         os.setpgid(pid, pid)
@@ -589,8 +694,20 @@ def run(
     # floor the number is real and beats sampling, which can miss a short spike;
     # at or below it, the figure says nothing about the submission and only the
     # sampled peak is meaningful.
+    from_helper = 0
+    if report_r is not None:
+        try:
+            raw = os.read(report_r, 64).strip()
+            if raw:
+                from_helper = int(raw) * RSS_UNIT_BYTES
+        except (OSError, ValueError):
+            pass
+
     reported_rusage = int(usage.ru_maxrss) * RSS_UNIT_BYTES
-    max_rss = resolve_rss(monitor.peak, reported_rusage, parent_floor)
+    max_rss = resolve_rss(monitor.peak, reported_rusage, parent_floor, from_helper)
+
+    if report_r is not None:
+        os.close(report_r)
 
     result = RunResult(
         RunStatus.OK, exit_code, term_signal, wall_ms, cpu_ms, max_rss
