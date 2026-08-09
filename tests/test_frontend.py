@@ -49,6 +49,16 @@ def test_version_watch_suite():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
+def test_dmoj_table_suite():
+    """Run tests/test_dmoj_table.js and surface its output on failure."""
+    result = subprocess.run(
+        ["node", str(Path(__file__).parent / "test_dmoj_table.js")],
+        capture_output=True, text=True, cwd=ROOT,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
 def test_every_script_parses():
     for script in sorted(WEB.glob("*.js")):
         result = subprocess.run(
@@ -152,3 +162,17 @@ class TestVersionFilesStayFresh:
         assert "dismiss" not in banner.lower()
         assert "Refresh" in banner, "the one action offered should still be there"
         assert "bannerDismissed" not in app
+
+
+def test_the_dmoj_table_disclaims_a_conversion():
+    """The two judges score unrelated things. Presenting the table without
+    saying so invites people to 'convert' a rating that does not travel."""
+    app = (WEB / "app.js").read_text()
+    block = app[app.index("function dmojTable("):]
+    block = block[:block.index("\n}")]
+    # Source wrapping splits phrases across lines, so compare on the text as
+    # a reader would see it rather than as it is typed.
+    flat = " ".join(block.split()).lower()
+    assert "unrelated" in flat
+    assert "no conversion between them" in flat
+    assert "do not treat it as a formula" in flat

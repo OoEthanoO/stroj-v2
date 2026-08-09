@@ -113,6 +113,67 @@ const limitRows = (limits) => Object.entries(limits).map(([id, l]) => `
       ? `<button class="small" data-clear-limit="${esc(id)}">Clear</button>` : ''}</td>
   </tr>`).join('');
 
+/* A rough orientation aid for solvers who came from DMOJ.
+ *
+ * There is deliberately no conversion formula. The two judges score unrelated
+ * things — DMOJ points are a difficulty rating, stroj points feed a decayed
+ * ranking — and pretending otherwise would invite people to "convert" a rating
+ * that was never meant to travel. These are difficulty bands that happen to
+ * line up, nothing more. */
+const DMOJ_BANDS = [
+  { dmoj: '1 – 3', from: 1, to: 50,
+    gist: 'read the input, apply a formula' },
+  { dmoj: '5 – 7', from: 51, to: 150,
+    gist: 'one standard technique, applied directly' },
+  { dmoj: '10 – 15', from: 151, to: 300,
+    gist: 'a technique plus a step that is not obvious' },
+  { dmoj: '17 – 25', from: 301, to: 600,
+    gist: 'several ideas combined' },
+  { dmoj: '30 +', from: 601, to: Infinity,
+    gist: 'olympiad territory' },
+];
+
+/** Which band a stroj point value sits in, or null if it is out of range. */
+function dmojBand(points) {
+  if (!Number.isFinite(points) || points < 1) return null;
+  return DMOJ_BANDS.find((b) => points >= b.from && points <= b.to) || null;
+}
+
+/** The table, with each band showing whichever problems currently sit in it. */
+function dmojTable(problems) {
+  const rows = DMOJ_BANDS.map((band) => {
+    // Filled from the live problem list, so it can never drift out of date the
+    // way a hand-written example would.
+    const here = (problems || [])
+      .filter((p) => dmojBand(p.points) === band)
+      .sort((a, b) => a.points - b.points)
+      .map((p) => `<a href="#/problem/${encodeURIComponent(p.slug)}">${esc(p.title)}</a>`)
+      .join(', ');
+    const range = band.to === Infinity ? `${band.from}+` : `${band.from} – ${band.to}`;
+    return `<tr>
+      <td class="mono">${esc(band.dmoj)}</td>
+      <td class="mono">${esc(range)}</td>
+      <td class="muted small">${esc(band.gist)}</td>
+      <td class="wide small">${here || '<span class="muted">—</span>'}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <details class="card dmoj-card">
+      <summary>Coming from DMOJ?</summary>
+      <p class="muted small">The two judges are unrelated and there is no
+        conversion between them — DMOJ points rate a problem's difficulty, while
+        stroj points feed a ranking that discounts your easier solves. This is
+        only a rough sense of which difficulties tend to land where, for people
+        used to reading DMOJ numbers. Do not treat it as a formula.</p>
+      <div class="table-wrap"><table class="dmoj-table">
+        <thead><tr><th>DMOJ</th><th>stroj</th><th>Roughly</th>
+          <th>Here right now</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+    </details>`;
+}
+
 const pointsPill = (points) => `<span class="points-pill">${Number(points) || 0}</span>`;
 
 const typePills = (types) => ((types || []).length
@@ -467,7 +528,8 @@ async function viewProblems() {
     <div class="table-wrap"><table>
       <thead><tr><th>Problem</th><th>Types</th><th class="num">Points</th><th>Author</th><th class="num">Time</th><th class="num">Memory</th><th>Checker</th></tr></thead>
       <tbody id="p-rows"></tbody>
-    </table></div>`);
+    </table></div>
+    ${dmojTable(problems)}`);
 
   const apply = () => {
     const q = $('#f-q').value.trim().toLowerCase();

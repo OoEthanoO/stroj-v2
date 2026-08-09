@@ -503,3 +503,12 @@ math.math-display {
 }
 .updating h1 { margin: 0 0 10px; }
 .updating p { margin: 0 0 6px; color: var(--muted); }
+
+/* Reference material, not part of the task on the page — collapsed by default
+   and quieter than the problem list it sits under. */
+.dmoj-card { margin-top: 22px; }
+.dmoj-card > summary { color: var(--muted); font-size: 14px; }
+.dmoj-table th, .dmoj-table td { text-align: left; vertical-align: baseline; }
+/* Only the problem list wraps and soaks up the spare width; the three columns
+   before it are short and fixed, so they should not be squeezed to fit. */
+.dmoj-table th:last-child, .dmoj-table td:last-child { width: 100%; white-space: normal; }
