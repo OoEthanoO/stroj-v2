@@ -244,6 +244,12 @@ td.wide { white-space: normal; }
   padding: 1px 7px; border-radius: 5px;
 }
 
+/* ---------- stream ---------- */
+
+.post h2 { font-size: 20px; margin: 0 0 2px; }
+.post-meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.post .statement > :last-child { margin-bottom: 0; }
+
 /* ---------- statement ---------- */
 
 .statement { line-height: 1.65; }

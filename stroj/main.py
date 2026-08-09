@@ -15,6 +15,7 @@ from .api import (
     routes_admin,
     routes_auth,
     routes_contests,
+    routes_posts,
     routes_problems,
     routes_submissions,
     routes_users,
@@ -92,6 +93,7 @@ app.include_router(routes_auth.router)
 app.include_router(routes_problems.router)
 app.include_router(routes_submissions.router)
 app.include_router(routes_contests.router)
+app.include_router(routes_posts.router)
 app.include_router(routes_users.router)
 app.include_router(routes_admin.router)
 

@@ -99,6 +99,21 @@ class ContestPatch(BaseModel):
     freeze_minutes: int | None = Field(default=None, ge=0, le=1440)
 
 
+class PostBody(BaseModel):
+    slug: str
+    title: str = Field(min_length=1, max_length=200)
+    body: str = ""
+    pinned: bool = False
+    published: bool = True
+
+
+class PostPatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    body: str | None = None
+    pinned: bool | None = None
+    published: bool | None = None
+
+
 class ContestProblemsBody(BaseModel):
     #: ``[{"slug": "a-plus-b", "label": "A"}, ...]`` — labels are assigned in
     #: order when omitted.
@@ -427,6 +442,61 @@ def _label_for(position: int) -> str:
 def delete_contest(slug: str):
     contest = get_contest(slug)
     db.execute("DELETE FROM contests WHERE id = ?", (contest["id"],))
+    return {"deleted": slug}
+
+
+def _post_or_404(slug: str) -> sqlite3.Row:
+    row = db.one("SELECT * FROM posts WHERE slug = ?", (slug,))
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such post.")
+    return row
+
+
+@router.post("/posts")
+def create_post(body: PostBody, request: Request):
+    _check_slug(body.slug)
+    now = db.utcnow()
+    try:
+        post_id = db.insert(
+            "INSERT INTO posts (slug, title, body, author_id, pinned, published,"
+            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                body.slug,
+                body.title,
+                body.body,
+                require_admin(request)["id"],
+                int(body.pinned),
+                int(body.published),
+                now,
+                now,
+            ),
+        )
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="That slug is taken.") from None
+    return {"id": post_id, "slug": body.slug}
+
+
+@router.patch("/posts/{slug}")
+def update_post(slug: str, body: PostPatch):
+    post = _post_or_404(slug)
+    fields = body.model_dump(exclude_none=True)
+    if not fields:
+        return {"updated": 0, "slug": slug}
+    for key in ("pinned", "published"):
+        if key in fields:
+            fields[key] = int(fields[key])
+    fields["updated_at"] = db.utcnow()
+    assignments = ", ".join(f"{k} = ?" for k in fields)
+    db.execute(
+        f"UPDATE posts SET {assignments} WHERE id = ?", (*fields.values(), post["id"])
+    )
+    return {"updated": len(fields), "slug": slug}
+
+
+@router.delete("/posts/{slug}")
+def delete_post(slug: str):
+    post = _post_or_404(slug)
+    db.execute("DELETE FROM posts WHERE id = ?", (post["id"],))
     return {"deleted": slug}
 
 

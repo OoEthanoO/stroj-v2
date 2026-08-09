@@ -17,6 +17,20 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
+-- Front-page announcements, written by admins.
+CREATE TABLE IF NOT EXISTS posts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug       TEXT    NOT NULL UNIQUE,
+    title      TEXT    NOT NULL,
+    body       TEXT    NOT NULL DEFAULT '',   -- markdown
+    author_id  INTEGER          REFERENCES users(id) ON DELETE SET NULL,
+    pinned     INTEGER NOT NULL DEFAULT 0,    -- 1 = held at the top of the stream
+    published  INTEGER NOT NULL DEFAULT 1,    -- 0 = draft, visible to admins only
+    created_at TEXT    NOT NULL,
+    updated_at TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_posts_feed ON posts(pinned DESC, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS problems (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     slug            TEXT    NOT NULL UNIQUE,

@@ -982,3 +982,56 @@ class TestLastAdminIsProtected:
 
     def test_unknown_user_is_a_404(self, admin_client):
         assert admin_client.post("/api/admin/users/ghost/role?role=admin").status_code == 404
+
+
+class TestPosts:
+    def make_post(self, admin_client, slug="hello", **overrides):
+        body = {"slug": slug, "title": "Hello", "body": "# Hi\n\nWelcome.", **overrides}
+        response = admin_client.post("/api/admin/posts", json=body)
+        assert response.status_code == 200, response.text
+        return slug
+
+    def test_posting_and_reading(self, client, admin_client):
+        self.make_post(admin_client)
+        admin_client.post("/api/auth/logout")
+        posts = client.get("/api/posts").json()["posts"]
+        assert [p["slug"] for p in posts] == ["hello"]
+        assert posts[0]["author"] == "admin"
+        assert client.get("/api/posts/hello").json()["body"] == "# Hi\n\nWelcome."
+
+    def test_users_cannot_post(self, client):
+        register(client)
+        assert client.post(
+            "/api/admin/posts", json={"slug": "sneaky", "title": "x"}).status_code == 403
+
+    def test_drafts_are_admin_only(self, client, admin_client):
+        self.make_post(admin_client, slug="draft", published=False)
+        assert len(admin_client.get("/api/posts").json()["posts"]) == 1
+        admin_client.post("/api/auth/logout")
+        assert client.get("/api/posts").json()["posts"] == []
+        assert client.get("/api/posts/draft").status_code == 404
+
+    def test_pinned_posts_come_first(self, admin_client):
+        self.make_post(admin_client, slug="older")
+        self.make_post(admin_client, slug="newer")
+        admin_client.patch("/api/admin/posts/older", json={"pinned": True})
+        posts = admin_client.get("/api/posts").json()["posts"]
+        assert [p["slug"] for p in posts] == ["older", "newer"]
+
+    def test_editing_stamps_updated_at(self, admin_client):
+        self.make_post(admin_client)
+        before = admin_client.get("/api/posts/hello").json()
+        admin_client.patch("/api/admin/posts/hello", json={"title": "Hello again"})
+        after = admin_client.get("/api/posts/hello").json()
+        assert after["title"] == "Hello again"
+        assert after["updated_at"] > before["created_at"]
+
+    def test_deleting(self, admin_client):
+        self.make_post(admin_client)
+        assert admin_client.delete("/api/admin/posts/hello").status_code == 200
+        assert admin_client.get("/api/posts/hello").status_code == 404
+
+    def test_duplicate_slug_conflicts(self, admin_client):
+        self.make_post(admin_client)
+        assert admin_client.post(
+            "/api/admin/posts", json={"slug": "hello", "title": "x"}).status_code == 409

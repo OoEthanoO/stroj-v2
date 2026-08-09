@@ -266,6 +266,59 @@ function setView(html, { wide = false } = {}) {
   main.innerHTML = html;
 }
 
+/** Wire a Markdown textarea to a live preview, rendered by the same function
+ *  that publishes it, with Tab inserting spaces instead of leaving the field. */
+function markdownEditor(editor, preview) {
+  const render = () => { preview.innerHTML = markdown(editor.value); };
+  render();
+  editor.oninput = render;
+  editor.onkeydown = (event) => {
+    if (event.key !== 'Tab') return;
+    event.preventDefault();
+    const { selectionStart: a, selectionEnd: b, value } = editor;
+    editor.value = value.slice(0, a) + '    ' + value.slice(b);
+    editor.selectionStart = editor.selectionEnd = a + 4;
+    render();
+  };
+}
+
+/* ---- stream ---- */
+
+function postCard(p) {
+  return `
+    <article class="card post">
+      <h2><a href="#/post/${encodeURIComponent(p.slug)}">${esc(p.title)}</a></h2>
+      <div class="post-meta small muted">
+        ${userLink(p.author, p.author_role)}
+        <span title="${esc(absolute(p.created_at))}">posted ${esc(relative(p.created_at))}</span>
+        ${p.updated_at !== p.created_at ? '<span>· edited</span>' : ''}
+        ${p.pinned ? '<span class="pill">pinned</span>' : ''}
+        ${p.published ? '' : '<span class="pill">draft</span>'}
+        ${state.user && state.user.is_admin
+          ? `<a class="pill" href="#/admin/post/${encodeURIComponent(p.slug)}">edit</a>` : ''}
+      </div>
+      <div class="statement">${markdown(p.body)}</div>
+    </article>`;
+}
+
+async function viewHome() {
+  const { posts } = await api('/api/posts');
+  setView(`
+    <div class="page-head">
+      <h1>stroj</h1>
+      <span class="muted small">news and announcements</span>
+    </div>
+    ${posts.length
+      ? posts.map(postCard).join('')
+      : `<div class="empty">Nothing posted yet.${state.user && state.user.is_admin
+          ? ' Write one from the <a href="#/admin">admin page</a>.' : ''}</div>`}`);
+}
+
+async function viewPost(slug) {
+  const p = await api(`/api/posts/${encodeURIComponent(slug)}`);
+  setView(`<div class="page-head"><a href="#/home">← Stream</a></div>${postCard(p)}`);
+}
+
 /* ---- problems ---- */
 
 async function viewProblems() {
@@ -1001,20 +1054,7 @@ async function viewAdminProblem(slug) {
     </div>`, { wide: true });
 
   const editor = $('#e-statement');
-  // Render through the same function the solver page uses, so what an author
-  // sees here is exactly what gets published.
-  const renderPreview = () => { $('#e-preview').innerHTML = markdown(editor.value); };
-  renderPreview();
-  editor.oninput = renderPreview;
-  editor.onkeydown = (event) => {
-    if (event.key === 'Tab') {
-      event.preventDefault();
-      const { selectionStart: a, selectionEnd: b, value } = editor;
-      editor.value = value.slice(0, a) + '    ' + value.slice(b);
-      editor.selectionStart = editor.selectionEnd = a + 4;
-      renderPreview();
-    }
-  };
+  markdownEditor(editor, $('#e-preview'));
 
   $('#e-save').onclick = async () => {
     const button = $('#e-save');
@@ -1047,6 +1087,78 @@ async function viewAdminProblem(slug) {
   };
 }
 
+/* ---- admin: edit one post ---- */
+
+async function viewAdminPost(slug) {
+  if (!state.user || !state.user.is_admin) {
+    setView('<div class="empty">Admins only.</div>');
+    return;
+  }
+  const p = await api(`/api/posts/${encodeURIComponent(slug)}`);
+
+  setView(`
+    <div class="page-head">
+      <a href="#/admin">← Admin</a>
+      <div class="spacer"></div>
+      <a class="pill" href="#/post/${encodeURIComponent(slug)}">view in stream</a>
+    </div>
+    <h1 style="margin-bottom:4px">Edit post</h1>
+    <p class="muted small mono" style="margin-top:0">${esc(slug)}</p>
+
+    <div class="card">
+      <div class="row">
+        <label style="flex:3;min-width:240px">Title <input id="e-title" value="${esc(p.title)}"></label>
+        <label class="row" style="gap:6px"><input type="checkbox" id="e-pinned" style="width:auto"
+          ${p.pinned ? 'checked' : ''}> pinned</label>
+        <label class="row" style="gap:6px"><input type="checkbox" id="e-published" style="width:auto"
+          ${p.published ? 'checked' : ''}> published</label>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div>
+        <h2 style="margin-top:0">Body (Markdown)</h2>
+        <textarea id="e-body" class="code" style="min-height:420px"
+          spellcheck="false">${esc(p.body)}</textarea>
+      </div>
+      <div>
+        <h2 style="margin-top:0">Preview</h2>
+        <div class="card statement" id="e-preview" style="min-height:420px"></div>
+      </div>
+    </div>
+
+    <div class="row end" style="margin-top:14px">
+      <span class="muted small spacer" id="e-status"></span>
+      <button id="e-save" class="primary">Save changes</button>
+    </div>`, { wide: true });
+
+  markdownEditor($('#e-body'), $('#e-preview'));
+
+  $('#e-save').onclick = async () => {
+    const button = $('#e-save');
+    button.disabled = true;
+    $('#e-status').textContent = 'Saving…';
+    try {
+      await api(`/api/admin/posts/${encodeURIComponent(slug)}`, {
+        method: 'PATCH',
+        body: {
+          title: $('#e-title').value.trim(),
+          body: $('#e-body').value,
+          pinned: $('#e-pinned').checked,
+          published: $('#e-published').checked,
+        },
+      });
+      $('#e-status').textContent = 'Saved.';
+      toast('Post updated.', 'good');
+    } catch (err) {
+      $('#e-status').textContent = '';
+      toast(err.message, 'bad');
+    } finally {
+      button.disabled = false;
+    }
+  };
+}
+
 /* ---- admin ---- */
 
 async function viewAdmin() {
@@ -1054,9 +1166,26 @@ async function viewAdmin() {
     setView('<div class="empty">Admins only.</div>');
     return;
   }
-  const [{ problems }, { contests }, { users }] = await Promise.all([
+  const [{ problems }, { contests }, { users }, { posts }] = await Promise.all([
     api('/api/problems'), api('/api/contests'), api('/api/admin/users'),
+    api('/api/posts?limit=100'),
   ]);
+
+  const postRows = posts.map((p) => `
+    <tr>
+      <td class="wide"><a href="#/post/${encodeURIComponent(p.slug)}">${esc(p.title)}</a></td>
+      <td class="mono small muted">${esc(p.slug)}</td>
+      <td><span class="pill">${p.published ? 'published' : 'draft'}</span>
+        ${p.pinned ? '<span class="pill">pinned</span>' : ''}</td>
+      <td class="muted small">${esc(relative(p.created_at))}</td>
+      <td>
+        <div class="row">
+          <a class="btn small" href="#/admin/post/${encodeURIComponent(p.slug)}">Edit</a>
+          <button class="small" data-pin="${esc(p.slug)}" data-pinned="${p.pinned ? 1 : 0}">${p.pinned ? 'Unpin' : 'Pin'}</button>
+          <button class="small danger" data-delete-post="${esc(p.slug)}">Delete</button>
+        </div>
+      </td>
+    </tr>`).join('');
 
   const problemRows = problems.map((p) => `
     <tr>
@@ -1127,6 +1256,30 @@ async function viewAdmin() {
 
   setView(`
     <div class="page-head"><h1>Admin</h1></div>
+
+    <details class="admin-section card">
+      <summary>New post</summary>
+      <div class="row">
+        <label style="flex:2;min-width:220px">Title <input id="n-title" placeholder="Round 2 results"></label>
+        <label style="flex:2;min-width:200px">Slug <input id="n-slug" placeholder="round-2-results"></label>
+        <label class="row" style="gap:6px"><input type="checkbox" id="n-pinned" style="width:auto"> pinned</label>
+        <label class="row" style="gap:6px"><input type="checkbox" id="n-published" checked style="width:auto"> published</label>
+      </div>
+      <div class="grid-2">
+        <label>Body (Markdown)
+          <textarea id="n-body" class="code" style="min-height:220px"></textarea></label>
+        <div>
+          <label>Preview</label>
+          <div class="card statement" id="n-preview" style="min-height:220px"></div>
+        </div>
+      </div>
+      <div class="row end"><button class="primary" id="create-post">Publish</button></div>
+    </details>
+
+    <h2>Posts</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Title</th><th>Slug</th><th>State</th><th>Posted</th><th>Actions</th></tr></thead>
+      <tbody>${postRows || '<tr><td colspan="5" class="muted">None yet.</td></tr>'}</tbody></table></div>
 
     <details class="admin-section card" open>
       <summary>New problem</summary>
@@ -1218,6 +1371,51 @@ async function viewAdmin() {
   const guard = (fn) => async (...args) => {
     try { await fn(...args); } catch (err) { toast(err.message, 'bad'); }
   };
+
+  markdownEditor($('#n-body'), $('#n-preview'));
+
+  // The slug is the post's permalink; keep it following the title until an
+  // author types one by hand.
+  $('#n-title').oninput = () => {
+    if ($('#n-slug').dataset.touched) return;
+    $('#n-slug').value = $('#n-title').value.toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64);
+  };
+  $('#n-slug').oninput = () => { $('#n-slug').dataset.touched = '1'; };
+
+  $('#create-post').onclick = guard(async () => {
+    await api('/api/admin/posts', {
+      method: 'POST',
+      body: {
+        slug: $('#n-slug').value.trim(),
+        title: $('#n-title').value.trim(),
+        body: $('#n-body').value,
+        pinned: $('#n-pinned').checked,
+        published: $('#n-published').checked,
+      },
+    });
+    toast('Posted.', 'good');
+    route();
+  });
+
+  $$('[data-pin]').forEach((button) => {
+    button.onclick = guard(async () => {
+      await api(`/api/admin/posts/${encodeURIComponent(button.dataset.pin)}`, {
+        method: 'PATCH', body: { pinned: button.dataset.pinned !== '1' },
+      });
+      route();
+    });
+  });
+
+  $$('[data-delete-post]').forEach((button) => {
+    button.onclick = guard(async () => {
+      const slug = button.dataset.deletePost;
+      if (!confirm(`Delete post "${slug}"?`)) return;
+      await api(`/api/admin/posts/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+      toast('Deleted.');
+      route();
+    });
+  });
 
   // Validated archive, held in the browser until the problem exists to attach
   // it to. Null means either nothing chosen or the last check failed.
@@ -1469,7 +1667,7 @@ async function viewAdmin() {
 
 async function route() {
   clearTimers();
-  const raw = location.hash.slice(1) || '/problems';
+  const raw = location.hash.slice(1) || '/home';
   const [path, queryString] = raw.split('?');
   const params = new URLSearchParams(queryString || '');
   const parts = path.split('/').filter(Boolean);
@@ -1481,6 +1679,8 @@ async function route() {
 
   try {
     switch (parts[0]) {
+      case 'home': await viewHome(); break;
+      case 'post': await viewPost(decodeURIComponent(parts[1] || '')); break;
       case 'problems': await viewProblems(); break;
       case 'problem': await viewProblem(decodeURIComponent(parts[1] || ''), params); break;
       case 'submissions': await viewSubmissions(params); break;
@@ -1494,9 +1694,10 @@ async function route() {
       case 'user': await viewUser(decodeURIComponent(parts[1] || '')); break;
       case 'admin':
         if (parts[1] === 'problem' && parts[2]) await viewAdminProblem(decodeURIComponent(parts[2]));
+        else if (parts[1] === 'post' && parts[2]) await viewAdminPost(decodeURIComponent(parts[2]));
         else await viewAdmin();
         break;
-      default: location.hash = '#/problems';
+      default: location.hash = '#/home';
     }
   } catch (err) {
     if (err.status === 401) setView(requireSignIn('You need to sign in to see this.'));
