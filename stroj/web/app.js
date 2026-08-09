@@ -223,7 +223,7 @@ function memory(kb) {
 
 /* ------------------------------------------------------- tiny markdown */
 
-function inlineMarkdown(text) {
+function inlineMarkdown(text, mentions) {
   const codes = [];
   let out = text.replace(/`([^`]+)`/g, (_, code) => {
     codes.push(code);
@@ -246,20 +246,40 @@ function inlineMarkdown(text) {
     .replace(/(^|[^\\$])\$(?!\s)([^$\n]*[^\s$])\$(?!\d)/g,
              (_, before, src) => before + hold(src, false));
 
+  // `@name` becomes the same styled link the name gets anywhere else, but only
+  // for names the server confirmed exist — an unknown one stays plain text
+  // rather than a link to nobody. Held behind a sentinel like the others so
+  // the emphasis rules cannot chew through the markup.
+  if (mentions) {
+    out = out.replace(/(^|[^\w.@-])@([A-Za-z0-9_.-]{3,32})/g, (whole, before, raw) => {
+      // A trailing dot or dash is sentence punctuation, not part of the name.
+      let name = raw;
+      let trailing = '';
+      while (name.length > 3 && /[.-]$/.test(name)) {
+        trailing = name.slice(-1) + trailing;
+        name = name.slice(0, -1);
+      }
+      const role = mentions[name];
+      if (role === undefined) return whole;
+      maths.push(userLink(name, role));
+      return `${before}\u0002${maths.length - 1}\u0002${trailing}`;
+    });
+  }
+
   out = out
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
     .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" rel="noopener noreferrer">$1</a>')
     .replace(/\\\$/g, '$');
   return out
-    .replace(/\u0001(\d+)\u0001/g, (_, i) => maths[i])
+    .replace(/[\u0001\u0002](\d+)[\u0001\u0002]/g, (_, i) => maths[i])
     .replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[i]}</code>`);
 }
 
 /** A deliberately small Markdown subset: headings, lists, code, emphasis. */
-function markdown(source) {
+function markdown(source, mentions) {
   // Strip NULs so statement text can never forge a code-span sentinel.
-  const lines = esc((source || '').replace(/[\u0000\u0001]/g, ''))
+  const lines = esc((source || '').replace(/[\u0000\u0001\u0002]/g, ''))
     .replace(/\r\n/g, '\n').split('\n');
   const html = [];
   let paragraph = [];
@@ -268,7 +288,7 @@ function markdown(source) {
 
   const flushParagraph = () => {
     if (paragraph.length) {
-      html.push(`<p>${inlineMarkdown(paragraph.join(' '))}</p>`);
+      html.push(`<p>${inlineMarkdown(paragraph.join(' '), mentions)}</p>`);
       paragraph = [];
     }
   };
@@ -300,7 +320,7 @@ function markdown(source) {
     if (heading) {
       flushParagraph(); flushList();
       const level = Math.min(heading[1].length + 1, 4);
-      html.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
+      html.push(`<h${level}>${inlineMarkdown(heading[2], mentions)}</h${level}>`);
       continue;
     }
     const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
@@ -309,7 +329,7 @@ function markdown(source) {
       flushParagraph();
       const want = bullet ? 'ul' : 'ol';
       if (list !== want) { flushList(); html.push(`<${want}>`); list = want; }
-      html.push(`<li>${inlineMarkdown((bullet || numbered)[1])}</li>`);
+      html.push(`<li>${inlineMarkdown((bullet || numbered)[1], mentions)}</li>`);
       continue;
     }
     if (!line.trim()) { flushParagraph(); flushList(); continue; }
@@ -507,7 +527,7 @@ async function viewProblems() {
       </td>
       <td class="small">${typePills(p.types)}</td>
       <td class="num">${pointsPill(p.points)}</td>
-      <td class="small">${p.author ? userLink(p.author) : '<span class="muted">—</span>'}</td>
+      <td class="small">${userLink(p.author, p.author_role)}</td>
       <td class="num">${p.time_limit_ms} ms</td>
       <td class="num">${p.memory_limit_mb} MiB</td>
       <td class="small muted">${esc(p.checker)}${p.partial ? ' · partial' : ''}</td>
@@ -575,7 +595,7 @@ async function viewProblem(slug, params) {
     </div>
     <div class="row small muted" style="margin-bottom:18px">
       <span class="points-pill">${problem.points} points</span>
-      ${problem.author ? `<span class="pill">by ${userLink(problem.author)}</span>` : ''}
+      ${problem.author ? `<span class="pill">by ${userLink(problem.author, problem.author_role)}</span>` : ''}
       ${(problem.types || []).map((t) => `<span class="pill">${esc(t)}</span>`).join('')}
       <span class="pill">${problem.time_limit_ms} ms</span>
       <span class="pill">${problem.memory_limit_mb} MiB</span>
@@ -587,6 +607,7 @@ async function viewProblem(slug, params) {
     <div class="grid-2">
       <div>
         <div class="card"><div class="statement">${markdown(problem.statement)}</div></div>
+        ${samples ? `<div class="card"><h2 style="margin-top:0">Samples</h2>${samples}</div>` : ''}
         ${(problem.subtasks || []).length ? `
           <div class="card">
             <h2 style="margin-top:0">Subtasks</h2>
@@ -604,7 +625,6 @@ async function viewProblem(slug, params) {
             <p class="muted small">No subtasks, so you earn the share of tests you
               pass — 10 of 20 tests earns half of the ${problem.points} points.</p>
           </div>` : '')}
-        ${samples ? `<div class="card"><h2 style="margin-top:0">Samples</h2>${samples}</div>` : ''}
       </div>
       <div>
         <div class="card">
@@ -1218,7 +1238,7 @@ async function viewUser(username) {
           ${u.editable ? '<button class="small" id="edit-bio">Edit</button>' : ''}
         </div>
         <div class="statement" id="bio-view">${u.bio.trim()
-          ? markdown(u.bio)
+          ? markdown(u.bio, u.mentions || {})
           : '<p class="muted small">Nothing here yet.</p>'}</div>
         <div id="bio-edit" hidden>
           <textarea id="bio-text" class="code" style="min-height:160px">${esc(u.bio)}</textarea>
@@ -2109,6 +2129,10 @@ const PAGE_COMMIT = (() => {
 })();
 
 let blockedByUpdate = false;
+/* Set once boot has waited out the whole grace period on a silent judge. From
+   then on the "no judge connected" diagnostic is the more useful screen, so
+   the watcher must stop covering it every time it polls. */
+let bootGaveUp = false;
 
 async function fetchJson(url) {
   try {
@@ -2136,6 +2160,11 @@ function showUpdating(detail) {
 /* Deliberately not dismissible. The warning is about a real hazard — this tab
    may call an endpoint that has changed shape — and that hazard does not go
    away when the notice is closed, so neither should the notice. */
+function hideUpdating() {
+  blockedByUpdate = false;
+  $('#updating').hidden = true;
+}
+
 function showUpdateBanner() {
   $('#update-banner').hidden = false;
 }
@@ -2143,39 +2172,54 @@ function showUpdateBanner() {
 /**
  * What the three commits mean, as one decision.
  *
- *   'unknown'  nothing to compare — say nothing
- *   'updating' the halves disagree; the site must not be used
- *   'stale'    the halves agree, but this tab predates them
- *   'current'  nothing to do
+ *   'unknown'      nothing to compare — say nothing, carry on
+ *   'backend-down' the site is deployed but the judge is not answering
+ *   'updating'     both answer, and they disagree
+ *   'stale'        they agree, but this tab predates them
+ *   'current'      nothing to do
+ *
+ * `backend-down` is deliberately separate from `unknown`. Folding them
+ * together let a mid-restart judge read as "nothing to compare", so the site
+ * loaded and then failed every call — which is the "no judge connected" page
+ * appearing during a routine update.
  */
 function versionState(page, frontend, backend) {
-  // A self-hosted judge serving its own files has no version.json, and a dev
-  // checkout is never stamped. Warning about a mismatch that was never
-  // measured would be worse than staying quiet.
-  if (!frontend || !backend) return 'unknown';
+  // No version.json at all: a self-hosted judge serving its own files, or a
+  // dev checkout that was never stamped. There is genuinely nothing to check.
+  if (!frontend) return 'unknown';
+  // The site is deployed, so version.json answered — a judge that does not is
+  // restarting, or missing.
+  if (!backend) return 'backend-down';
   if (frontend !== backend) return 'updating';
   if (page && page !== frontend) return 'stale';
   return 'current';
 }
 
+/** Poll once and act. Returns the verdict so boot can decide whether to load. */
 async function checkVersions() {
   const { frontend, backend } = await deployedCommits();
   const verdict = versionState(PAGE_COMMIT, frontend, backend);
 
   if (verdict === 'updating') {
     showUpdating(`frontend ${frontend.slice(0, 7)} · backend ${backend.slice(0, 7)}`);
-    return;
+    return verdict;
   }
-  if (verdict === 'unknown') return;
+  if (verdict === 'backend-down') {
+    if (!bootGaveUp) showUpdating('waiting for the judge to answer');
+    return verdict;
+  }
+  if (verdict === 'unknown') return verdict;
 
-  // Back in agreement. Reload rather than resuming in place: this tab is very
+  // Back in agreement — either from a mismatch, or from a judge that has
+  // finally answered. Reload rather than resuming in place: this tab is very
   // likely running the frontend from before the update, and drafts are saved
   // to localStorage on every keystroke, so nothing is lost by doing so.
-  if (blockedByUpdate) {
+  if (blockedByUpdate || bootGaveUp) {
     location.reload();
-    return;
+    return verdict;
   }
   if (verdict === 'stale') showUpdateBanner();
+  return verdict;
 }
 
 function startVersionWatch() {
@@ -2187,23 +2231,66 @@ function startVersionWatch() {
 
 /* ------------------------------------------------------------------- boot */
 
+/* How long to keep waiting for a judge that is not answering before deciding
+ * it is not coming back. A container restart is seconds; anything past this is
+ * a deployment problem, and the operator needs to see that instead. */
+const BOOT_WAIT_MS = 45000;
+const BOOT_RETRY_MS = 1500;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function boot() {
   startVersionWatch();
-  await checkVersions().catch(() => {});
-  // A mismatch means the site does not load. The watcher above brings it back.
-  if (blockedByUpdate) return;
 
-  try {
-    const [me, langs, config, version] = await Promise.all([
-      api('/api/auth/me'), api('/api/languages'), api('/api/config'),
-      api('/api/version').catch(() => null),
-    ]);
-    state.user = me.user;
-    state.languages = langs.languages;
-    state.defaultLanguage = langs.default;
-    state.config = config;
-    state.version = version;
-  } catch (err) {
+  // The page must not appear until the judge behind it is actually answering.
+  // Rendering first and discovering that afterwards is what put a "no judge
+  // connected" screen in front of people during a routine update.
+  const deadline = Date.now() + BOOT_WAIT_MS;
+  let lastError = null;
+  let loaded = false;
+
+  for (;;) {
+    const verdict = await checkVersions().catch(() => 'unknown');
+
+    // Both halves answer but disagree: never load, and never time out either.
+    // The watcher reloads the tab once they converge.
+    if (verdict === 'updating') return;
+
+    if (verdict === 'backend-down') {
+      if (Date.now() >= deadline) break;
+      await sleep(BOOT_RETRY_MS);
+      continue;
+    }
+
+    try {
+      const [me, langs, config, version] = await Promise.all([
+        api('/api/auth/me'), api('/api/languages'), api('/api/config'),
+        api('/api/version').catch(() => null),
+      ]);
+      state.user = me.user;
+      state.languages = langs.languages;
+      state.defaultLanguage = langs.default;
+      state.config = config;
+      state.version = version;
+      loaded = true;
+      break;
+    } catch (err) {
+      // The judge answered /api/version a moment ago and has gone away since,
+      // or one call lost the race with a restart. Same situation — wait.
+      lastError = err;
+      if (Date.now() >= deadline) break;
+      showUpdating('waiting for the judge to answer');
+      await sleep(BOOT_RETRY_MS);
+    }
+  }
+
+  if (!loaded) {
+    // Still not answering after the whole grace period. This is no longer a
+    // rollout, so show the diagnostic instead of waiting forever — and stop
+    // the watcher from painting over it on its next poll.
+    bootGaveUp = true;
+    hideUpdating();
+    const err = lastError || new Error('the judge did not respond');
     // The static frontend can be deployed before the judge backend exists, so
     // say which half is missing instead of showing a bare fetch error.
     setView(`

@@ -1369,3 +1369,100 @@ class TestJudgeOutputIsAdminOnly:
         rows = client.get("/api/submissions").json()["submissions"]
         assert rows and all("message" not in r for r in rows)
         assert sid == rows[0]["id"]
+
+
+class TestAuthorCarriesItsRole:
+    """A name styled as an admin on one page and plain on another reads as two
+    different people, so the role travels with the name everywhere."""
+
+    def test_the_list_reports_an_admin_author(self, admin_client):
+        make_problem(admin_client)          # authored by `admin`
+        row = admin_client.get("/api/problems").json()["problems"][0]
+        assert row["author"] == "admin"
+        assert row["author_role"] == "admin"
+
+    def test_the_detail_reports_it_too(self, admin_client):
+        make_problem(admin_client)
+        detail = admin_client.get("/api/problems/a-plus-b").json()
+        assert detail["author"] == "admin" and detail["author_role"] == "admin"
+
+    def test_a_plain_author_is_marked_plain(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "writer")
+        client.post("/api/auth/logout")
+        admin_client.post("/api/auth/login",
+                          json={"username": "admin", "password": "test-admin-password"})
+        make_problem(admin_client, author="writer")
+        row = admin_client.get("/api/problems").json()["problems"][0]
+        assert row["author"] == "writer" and row["author_role"] == "user"
+
+    def test_an_unattributed_problem_reports_neither(self, admin_client):
+        make_problem(admin_client)
+        db.execute("UPDATE problems SET author_id = NULL WHERE slug = 'a-plus-b'")
+        row = admin_client.get("/api/problems").json()["problems"][0]
+        assert row["author"] is None and row["author_role"] is None
+
+    def test_a_dangling_author_id_reports_neither(self, isolated_data):
+        """On a database created from schema.sql the foreign key forbids this,
+        but the migrated `problems.author_id` has no REFERENCES clause — SQLite
+        cannot add one to an existing table — so a live database can hold an id
+        whose user is gone. Resolving it must not raise."""
+        from stroj.api.deps import _author_of
+        assert _author_of({"author_id": 99999}) == (None, None)
+        assert _author_of({"author_id": None}) == (None, None)
+        assert _author_of({}) == (None, None)
+
+
+class TestBioMentions:
+    """`@name` in a bio should render as the same styled link the name gets
+    anywhere else — which means the server has to say who actually exists."""
+
+    def set_bio(self, client, text):
+        assert client.patch("/api/users/me", json={"bio": text}).status_code == 200
+
+    def test_a_mention_reports_the_role(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "writer2")
+        self.set_bio(client, "coached by @admin, thanks")
+        data = client.get("/api/users/writer2").json()
+        assert data["mentions"] == {"admin": "admin"}
+
+    def test_a_plain_user_is_marked_plain(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "friend2")
+        client.post("/api/auth/logout")
+        register(client, "writer3")
+        self.set_bio(client, "solving with @friend2")
+        assert client.get("/api/users/writer3").json()["mentions"] == {"friend2": "user"}
+
+    def test_an_unknown_name_is_not_reported(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "writer4")
+        self.set_bio(client, "hello @nobodyhere")
+        assert client.get("/api/users/writer4").json()["mentions"] == {}
+
+    def test_an_email_address_is_not_a_mention(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "writer5")
+        self.set_bio(client, "reach me at someone@admin more text")
+        assert client.get("/api/users/writer5").json()["mentions"] == {}
+
+    def test_trailing_punctuation_is_not_part_of_the_name(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "writer6")
+        self.set_bio(client, "thanks @admin.")
+        assert client.get("/api/users/writer6").json()["mentions"] == {"admin": "admin"}
+
+    def test_several_mentions_resolve_in_one_query(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "pal")
+        client.post("/api/auth/logout")
+        register(client, "writer7")
+        self.set_bio(client, "@admin and @pal and @admin again")
+        mentions = client.get("/api/users/writer7").json()["mentions"]
+        assert mentions == {"admin": "admin", "pal": "user"}
+
+    def test_an_empty_bio_resolves_nothing(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "writer8")
+        assert client.get("/api/users/writer8").json()["mentions"] == {}

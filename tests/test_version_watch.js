@@ -39,13 +39,22 @@ check('mismatch beats stale', versionState('cccccccccccccccc', A, B), 'updating'
 check('everything current', versionState(A, A, A), 'current');
 check('tab is behind an agreeing pair', versionState(A, B, B), 'stale');
 
-// Nothing measurable: a dev checkout, or a judge serving its own files with no
-// version.json. Silence beats a warning we cannot justify.
+// No version.json at all: a dev checkout, or a judge serving its own files.
+// There is genuinely nothing to check, so say nothing.
 check('no frontend version', versionState(A, null, A), 'unknown');
-check('no backend version', versionState(A, A, null), 'unknown');
-check('neither', versionState(A, null, null), 'unknown');
+check('neither half answers', versionState(A, null, null), 'unknown');
+
+// But a site that *is* deployed, with a judge that will not answer, is a
+// different thing entirely — it is mid-restart. Reporting that as 'unknown'
+// let the site load and then fail every call, which is how a routine update
+// put a "no judge connected" page in front of people.
+check('deployed site, silent judge', versionState(A, A, null), 'backend-down');
+check('stale tab, silent judge', versionState(B, A, null), 'backend-down');
+
 check('unstamped page, halves agree', versionState(null, A, A), 'current');
 check('unstamped page, halves disagree', versionState(null, A, B), 'updating');
+// A judge that is answering is never 'backend-down', whatever else is wrong.
+check('mismatch is not backend-down', versionState(A, A, B), 'updating');
 
 console.log(`${checks - failures}/${checks} checks passed`);
 process.exit(failures ? 1 : 0);

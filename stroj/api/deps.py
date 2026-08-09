@@ -70,13 +70,18 @@ def user_public(user: sqlite3.Row | None) -> dict | None:
     }
 
 
-def _author_of(problem) -> str | None:
-    """Username of whoever wrote the problem, if it is still attributed."""
+def _author_of(problem) -> tuple[str | None, str | None]:
+    """``(username, role)`` of whoever wrote the problem, if still attributed.
+
+    The role travels with the name so an admin author renders the same way
+    everywhere — a name styled one way on their profile and another in a table
+    reads as two different people.
+    """
     author_id = problem["author_id"] if "author_id" in problem.keys() else None
     if not author_id:
-        return None
-    row = db.one("SELECT username FROM users WHERE id = ?", (author_id,))
-    return row["username"] if row else None
+        return None, None
+    row = db.one("SELECT username, role FROM users WHERE id = ?", (author_id,))
+    return (row["username"], row["role"]) if row else (None, None)
 
 
 def problem_types(problem_id: int) -> list[str]:
@@ -90,6 +95,7 @@ def problem_types(problem_id: int) -> list[str]:
 
 
 def problem_summary(problem: sqlite3.Row, user: sqlite3.Row | None = None) -> dict:
+    author_name, author_role = _author_of(problem)
     data = {
         "slug": problem["slug"],
         "title": problem["title"],
@@ -99,7 +105,8 @@ def problem_summary(problem: sqlite3.Row, user: sqlite3.Row | None = None) -> di
         "partial": bool(problem["partial"]),
         "visible": bool(problem["visible"]),
         "points": problem["points"],
-        "author": _author_of(problem),
+        "author": author_name,
+        "author_role": author_role,
         "types": problem_types(problem["id"]),
     }
     if user is not None:

@@ -59,6 +59,16 @@ def test_dmoj_table_suite():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
+def test_mentions_suite():
+    """Run tests/test_mentions.js and surface its output on failure."""
+    result = subprocess.run(
+        ["node", str(Path(__file__).parent / "test_mentions.js")],
+        capture_output=True, text=True, cwd=ROOT,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
 def test_every_script_parses():
     for script in sorted(WEB.glob("*.js")):
         result = subprocess.run(
@@ -176,3 +186,78 @@ def test_the_dmoj_table_disclaims_a_conversion():
     assert "unrelated" in flat
     assert "no conversion between them" in flat
     assert "do not treat it as a formula" in flat
+
+
+class TestBootWaitsForALiveJudge:
+    """Refreshing during an update must never land on a half-dead page. The
+    site loading and *then* discovering the judge is gone is exactly the
+    'no judge connected' screen appearing during a routine deploy."""
+
+    def app(self) -> str:
+        return (WEB / "app.js").read_text()
+
+    def boot(self) -> str:
+        src = self.app()
+        return src[src.index("async function boot()"):]
+
+    def test_backend_down_is_its_own_state(self):
+        """Folded into 'unknown', a restarting judge reads as 'nothing to
+        compare' and the site loads anyway."""
+        src = self.app()
+        state = src[src.index("function versionState("):]
+        state = state[:state.index("\n}")]
+        assert "'backend-down'" in state
+        # The old rule; if it comes back, so does the bug.
+        assert "if (!frontend || !backend) return 'unknown'" not in state
+
+    def test_boot_retries_rather_than_rendering(self):
+        boot = self.boot()
+        assert "backend-down" in boot, "boot must recognise a silent judge"
+        assert "BOOT_RETRY_MS" in boot and "sleep(" in boot
+
+    def test_boot_gives_up_eventually(self):
+        """A judge that never comes back is a deployment problem, and the
+        operator needs the diagnostic — not an indefinite waiting screen."""
+        boot = self.boot()
+        assert "deadline" in boot
+        assert "No judge backend connected" in boot
+
+    def test_a_mismatch_never_times_out(self):
+        """Unlike a silent judge, a mismatched pair is two live halves that
+        disagree. That resolves on its own, so waiting is correct."""
+        boot = self.boot()
+        head = boot[:boot.index("backend-down")]
+        assert "'updating'" in head and "return;" in head
+
+    def test_the_data_load_is_inside_the_retry(self):
+        """The judge can go away between answering /api/version and answering
+        the rest, so the load itself has to be retried, not just the gate."""
+        boot = self.boot()
+        loop = boot[boot.index("for (;;)"):]
+        assert "api('/api/auth/me')" in loop
+        assert "lastError" in loop
+
+    def test_showing_the_screen_can_be_undone(self):
+        assert "function hideUpdating(" in self.app()
+
+    def test_the_watcher_stops_covering_the_diagnostic(self):
+        """Once boot gives up, the background poll must not paint the waiting
+        screen back over the diagnostic every 20 seconds — that flip-flops
+        between two screens forever and hides the one that is useful."""
+        app = self.app()
+        assert "bootGaveUp" in app
+        check = app[app.index("async function checkVersions("):]
+        check = check[:check.index("\nfunction ")]
+        assert "if (!bootGaveUp) showUpdating(" in check
+        # ...but a judge that does come back must still be picked up.
+        assert "blockedByUpdate || bootGaveUp" in check
+
+
+def test_samples_come_before_subtasks_on_a_problem_page():
+    """Samples are what a solver checks their understanding against, so they
+    should not sit below the scoring breakdown."""
+    app = (WEB / "app.js").read_text()
+    page = app[app.index("async function viewProblem("):]
+    page = page[:page.index("Submit</h2>")]
+    assert page.index("Samples</h2>") < page.index("Subtasks</h2>")
+    assert page.index("Samples</h2>") < page.index("Partial scoring</h2>")

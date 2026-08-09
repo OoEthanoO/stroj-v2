@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
@@ -11,6 +13,32 @@ from .deps import current_user, require_user, user_public
 router = APIRouter(prefix="/api", tags=["users"])
 
 MAX_BIO_BYTES = 4000
+
+#: `@name` in a bio. The character class matches the username rule in `auth`,
+#: and a trailing `.` or `-` is excluded so "@ann." links "ann" and keeps the
+#: full stop as punctuation.
+MENTION_RE = re.compile(r"(?<![\w.-])@([A-Za-z0-9_.-]{3,32})")
+
+
+def mentioned_users(text: str) -> dict[str, str]:
+    """Usernames a bio refers to, mapped to their role.
+
+    Resolved here rather than in the browser so a mention renders with the same
+    styling as the name anywhere else — and so a misspelt name stays plain text
+    instead of becoming a link to nobody.
+    """
+    names = {m.group(1).rstrip(".-") for m in MENTION_RE.finditer(text or "")}
+    names = {n for n in names if len(n) >= 3}
+    if not names:
+        return {}
+    placeholders = ", ".join("?" * len(names))
+    return {
+        row["username"]: row["role"]
+        for row in db.query(
+            f"SELECT username, role FROM users WHERE username IN ({placeholders})",
+            tuple(sorted(names)),
+        )
+    }
 
 
 class BioBody(BaseModel):
@@ -51,6 +79,7 @@ def profile(username: str, request: Request):
         "role": row["role"],
         "is_admin": row["role"] == "admin",
         "bio": row["bio"],
+        "mentions": mentioned_users(row["bio"]),
         "created_at": row["created_at"],
         "editable": viewer is not None and viewer["id"] == row["id"],
         "score": round(scoring.user_score(row["id"]), 1),
