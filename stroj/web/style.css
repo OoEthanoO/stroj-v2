@@ -468,3 +468,13 @@ math.math-display {
 }
 /* Fractions and roots inside a table cell must not inherit its nowrap. */
 .statement math { white-space: normal; }
+
+/* Every cell here holds a fixed-width input, so a right-aligned `.num` header
+   would sit at the far edge of a column its content never reaches — the label
+   ends up nowhere near the field it names. Left-align throughout. */
+.limits-table th, .limits-table td { text-align: left; }
+/* Then stop the columns sprawling: an auto-layout table shares its spare width
+   between every column, which pushes each field away from its own heading. A
+   token width collapses these to their content and hands the slack to the
+   first column. */
+.limits-table th:not(:first-child), .limits-table td:not(:first-child) { width: 1px; }

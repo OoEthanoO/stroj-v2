@@ -1241,9 +1241,9 @@ async function viewAdminProblem(slug) {
         solution in each language — the gap between runtimes depends on the
         problem, not just the language. Clear a row to fall back to the base
         limit above, scaled by that language's multiplier.</p>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Language</th><th class="num">Time (ms)</th>
-          <th class="num">Memory (MiB)</th><th>Source</th><th></th></tr></thead>
+      <div class="table-wrap"><table class="limits-table">
+        <thead><tr><th>Language</th><th>Time (ms)</th>
+          <th>Memory (MiB)</th><th>Source</th><th></th></tr></thead>
         <tbody>${Object.entries(limits).map(([id, l]) => `
           <tr>
             <td class="wide">${esc(l.name)}</td>
