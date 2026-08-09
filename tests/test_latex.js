@@ -88,6 +88,40 @@ const matrix = renderMath('\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}', tr
 check('matrix has two rows', (matrix.match(/<mtr>/g) || []).length === 2, matrix);
 check('matrix has four cells', (matrix.match(/<mtd>/g) || []).length === 4, matrix);
 
+/* ----------------------------------------------------------------- spacing */
+
+// The spacing commands are punctuation after a backslash, so they reach the
+// parser as escapes rather than named commands. Emitted literally, `\!` shows
+// a factorial and changes what the formula says.
+has('thin space is a space', '200\\,000', '<mspace');
+lacks('thin space is not a comma', '200\\,000', '<mo>,</mo>');
+has('negative thin space is a space', 'a\\!b', '<mspace');
+lacks('negative thin space is not a factorial', 'a\\!b', '<mo>!</mo>');
+has('backslash-space is a space', 'a\\ b', '<mspace');
+has('quad still works', 'a \\quad b', 'width="1em"');
+// A real factorial and a real percent must survive all of that.
+has('factorial is preserved', 'n!', '<mo>!</mo>');
+has('percent is preserved', '50\\%', '<mo>%</mo>');
+
+/* ------------------------------------------------------------------ signs */
+
+// A binary minus is spaced on both sides, so `[1, 2, -3]` reads as a
+// subtraction unless the sign is recognised as unary from what precedes it.
+has('sign after a comma is unary', '[1, 2, -3]', 'form="prefix"');
+has('sign at the start is unary', '-10^9', 'form="prefix"');
+has('sign after a relation is unary', 'x = -y', 'form="prefix"');
+lacks('sign between operands stays binary', 'a - b', 'form="prefix"');
+lacks('sign after a closing paren stays binary', '(a+b) - c', 'form="prefix"');
+lacks('sign after a number stays binary', 'n - 1', 'form="prefix"');
+// An ellipsis is an ordinary atom, not an operator: `\cdots + a_j` adds.
+lacks('sign after an ellipsis stays binary', 'a_i + \\cdots + a_j', 'form="prefix"');
+lacks('sign after infinity stays binary', '\\infty - 1', 'form="prefix"');
+lacks('sign after a closing floor stays binary', '\\lfloor x \\rfloor - 1', 'form="prefix"');
+has('sign after a big operator is unary', '\\sum -a_i', 'form="prefix"');
+// Math sets a minus sign, not a hyphen.
+has('minus is a real minus sign', 'a - b', '\u2212');
+lacks('minus is not an ascii hyphen', 'a - b', '<mo>-</mo>');
+
 /* ------------------------------------------------- escaping and injection */
 
 // Statement text reaches the renderer already HTML-escaped, and the result is

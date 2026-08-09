@@ -61,6 +61,16 @@ const MATH_SYMBOLS = {
   triangle: '△', square: '□', diamond: '⋄', bowtie: '⋈',
 };
 
+/* Symbols from the table above that stand for a *value* rather than an
+   operation — TeX's "ordinary" atoms, plus the closing delimiters. A sign
+   following one of these is binary: `\cdots + a_j` subtracts nothing. */
+const MATH_ORDINARY = new Set([
+  'dots', 'ldots', 'cdots', 'vdots', 'ddots', 'infty', 'partial', 'nabla',
+  'angle', 'aleph', 'hbar', 'ell', 'Re', 'Im', 'wp', 'prime', 'degree',
+  'triangle', 'square', 'diamond', 'emptyset', 'varnothing', 'checkmark',
+  'rfloor', 'rceil', 'rangle', 'rbrace', 'rbrack', 'vert', 'Vert',
+]);
+
 /** Operators that take limits above and below when set as display math. */
 const MATH_BIG = {
   sum: '∑', prod: '∏', coprod: '∐', int: '∫', iint: '∬', iiint: '∭',
@@ -409,8 +419,30 @@ function mathParse(tokens, display) {
     pos += 1;
     if (tok.t === 'num') return `<mn>${tok.v}</mn>`;
     if (tok.t === 'ident') return `<mi>${tok.v}</mi>`;
+
+    // A sign is unary when nothing, an opening delimiter, a separator or
+    // another operator precedes it. Left as a binary operator it gets spacing
+    // on both sides, and `[1, 2, -3]` reads as a subtraction.
+    if (tok.t === 'op' && (tok.v === '-' || tok.v === '+')) {
+      const prev = tokens[pos - 2];
+      const unary = !prev
+        || prev.t === '{' || prev.t === '&' || prev.t === '_' || prev.t === '^'
+        || (prev.t === 'op' && !')]}'.includes(prev.v))
+        || (prev.t === 'cmd' && !MATH_ORDINARY.has(prev.v)
+            && !!(MATH_SYMBOLS[prev.v] || MATH_BIG[prev.v]));
+      const glyph = tok.v === '-' ? '−' : '+';
+      return unary
+        ? `<mo form="prefix" lspace="0em" rspace="0em">${glyph}</mo>`
+        : `<mo>${glyph}</mo>`;
+    }
     if (tok.t === 'esc') {
       if (tok.v === '\\') return '<mspace linebreak="newline"></mspace>';
+      // The spacing commands are punctuation after a backslash, so they arrive
+      // here rather than as named commands. Emitting them literally is not a
+      // cosmetic slip: `a \! b` would render a factorial.
+      if (MATH_SPACING[tok.v] !== undefined) {
+        return `<mspace width="${MATH_SPACING[tok.v]}"></mspace>`;
+      }
       return `<mo>${mathEscape(tok.v)}</mo>`;
     }
     if (tok.t === 'cmd') return command(tok);
