@@ -134,17 +134,37 @@ function inlineMarkdown(text) {
     codes.push(code);
     return `\u0000${codes.length - 1}\u0000`;
   });
+
+  // Math comes out next, before the emphasis rules run: `$a_1$` and `$a*b$`
+  // are full of characters markdown would otherwise read as formatting.
+  // Extracting after code spans keeps `` `$x$` `` literal, which is how you
+  // write about the syntax itself. A lone `\$` stays a dollar sign.
+  const maths = [];
+  const hold = (src, display) => {
+    maths.push(renderMath(src, display));
+    return `\u0001${maths.length - 1}\u0001`;
+  };
+  // No space just inside the delimiters, and no digit just after the closing
+  // one — otherwise "costs $5 and $10" reads as one math span.
+  out = out
+    .replace(/\$\$([^$]+)\$\$/g, (_, src) => hold(src, true))
+    .replace(/(^|[^\\$])\$(?!\s)([^$\n]*[^\s$])\$(?!\d)/g,
+             (_, before, src) => before + hold(src, false));
+
   out = out
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
-    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" rel="noopener noreferrer">$1</a>');
-  return out.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[i]}</code>`);
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" rel="noopener noreferrer">$1</a>')
+    .replace(/\\\$/g, '$');
+  return out
+    .replace(/\u0001(\d+)\u0001/g, (_, i) => maths[i])
+    .replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[i]}</code>`);
 }
 
 /** A deliberately small Markdown subset: headings, lists, code, emphasis. */
 function markdown(source) {
   // Strip NULs so statement text can never forge a code-span sentinel.
-  const lines = esc((source || '').replace(/\u0000/g, ''))
+  const lines = esc((source || '').replace(/[\u0000\u0001]/g, ''))
     .replace(/\r\n/g, '\n').split('\n');
   const html = [];
   let paragraph = [];
@@ -161,12 +181,24 @@ function markdown(source) {
     if (list) { html.push(`</${list}>`); list = null; }
   };
 
+  let mathBlock = null;
+
   for (const line of lines) {
     if (fence !== null) {
       if (/^\s*```/.test(line)) { html.push(`<pre><code>${fence.join('\n')}</code></pre>`); fence = null; }
       else fence.push(line);
       continue;
     }
+    // A `$$` on its own line opens display math, which may run over several
+    // lines and must not end up inside a <p>.
+    if (mathBlock !== null) {
+      if (/^\s*\$\$\s*$/.test(line)) {
+        html.push(renderMath(mathBlock.join(' '), true));
+        mathBlock = null;
+      } else mathBlock.push(line);
+      continue;
+    }
+    if (/^\s*\$\$\s*$/.test(line)) { flushParagraph(); flushList(); mathBlock = []; continue; }
     if (/^\s*```/.test(line)) { flushParagraph(); flushList(); fence = []; continue; }
 
     const heading = line.match(/^(#{1,4})\s+(.*)$/);
@@ -190,6 +222,7 @@ function markdown(source) {
     paragraph.push(line.trim());
   }
   if (fence !== null) html.push(`<pre><code>${fence.join('\n')}</code></pre>`);
+  if (mathBlock !== null) html.push(renderMath(mathBlock.join(' '), true));
   flushParagraph();
   flushList();
   return html.join('\n');

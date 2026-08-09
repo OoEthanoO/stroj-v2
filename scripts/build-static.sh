@@ -11,7 +11,7 @@ rm -rf public
 mkdir -p public/static
 
 cp stroj/web/index.html public/index.html
-cp stroj/web/style.css stroj/web/app.js public/static/
+cp stroj/web/style.css stroj/web/latex.js stroj/web/app.js public/static/
 
 # Stamp the build so the deployed frontend can say which commit it is. Vercel
 # supplies the SHA it built; fall back to the local checkout when run by hand.

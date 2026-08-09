@@ -443,3 +443,26 @@ tr.subtask-head td {
 .editor-row > td { background: var(--surface-2); padding: 16px 14px; white-space: normal; }
 .editor-row label { margin-bottom: 10px; }
 .editor-row .row.end { margin-top: 4px; }
+
+/* ---------- math ---------- */
+
+/* MathML inherits the surrounding font size, which makes inline math sit a
+   little small against the statement's body text. */
+math { font-size: 1.06em; }
+
+/* `display: block` alone would replace the element's *inner* display type —
+   `math` — with `flow`, and every fraction, root and sum would collapse into a
+   vertical stack of ordinary boxes. The two-value form keeps MathML layout
+   while making the box block-level; `fit-content` plus auto margins is then
+   what centres it, since text-align does not apply to a math box. */
+math.math-display {
+  display: block math;
+  width: fit-content;
+  max-width: 100%;
+  margin: 14px auto;
+  /* A derivation wider than the column scrolls itself rather than the page. */
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+/* Fractions and roots inside a table cell must not inherit its nowrap. */
+.statement math { white-space: normal; }
