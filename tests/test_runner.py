@@ -297,3 +297,40 @@ def test_a_clean_allocation_failure_still_reads_as_memory(make_tests):
     hog = "x = bytearray(200 * 1024 * 1024)\nprint(len(x))"
     outcome = runner.judge(hog, "python3", tight, make_tests(AB_TESTS))
     assert outcome.verdict == runner.MLE, f"expected MLE, got {outcome.message}"
+
+
+def test_a_cancelled_run_stops_and_reports_aborted(make_tests):
+    """Requested before judging starts, so nothing should execute."""
+    import threading
+    abort = threading.Event()
+    abort.set()
+    outcome = runner.judge("print(1)", "python3", PROBLEM, make_tests(AB_TESTS),
+                           abort=abort)
+    assert outcome.verdict == runner.AB
+    assert outcome.score == 0
+
+
+def test_cancelling_mid_run_beats_the_time_limit(make_tests):
+    """A submission that never finishes must die when asked, not when its time
+    limit expires on every remaining test."""
+    import threading, time
+    abort = threading.Event()
+    threading.Timer(1.0, abort.set).start()
+    slow = ProblemSpec(time_limit_ms=30000, memory_limit_mb=256)
+
+    started = time.monotonic()
+    outcome = runner.judge("\nwhile True: pass", "python3", slow,
+                           make_tests(AB_TESTS), abort=abort)
+    elapsed = time.monotonic() - started
+
+    assert outcome.verdict == runner.AB, outcome.message
+    # Two tests at 30 s each if the request were ignored.
+    assert elapsed < 15, f"took {elapsed:.1f}s"
+
+
+def test_an_untouched_event_changes_nothing(make_tests):
+    import threading
+    correct = "a,b=map(int,input().split())\nprint(a+b)"
+    outcome = runner.judge(correct, "python3", PROBLEM, make_tests(AB_TESTS),
+                           abort=threading.Event())
+    assert outcome.verdict == runner.AC

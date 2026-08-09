@@ -41,6 +41,9 @@ POLL_INTERVAL_S = 0.02
 #: otherwise be reaped between two slow samples and report no memory at all.
 FAST_SAMPLE_WINDOW_S = 0.05
 
+#: How often the abort watcher looks for a cancellation request.
+ABORT_POLL_S = 0.02
+
 # Start from `allow default` and subtract: a deny-by-default profile breaks
 # clang, the JVM and CPython in a dozen small ways that are not worth chasing
 # for a local judge. What actually matters is that submissions cannot reach the
@@ -68,6 +71,7 @@ class RunStatus(str, Enum):
     OUTPUT = "OUTPUT"
     RUNTIME = "RUNTIME"
     INTERNAL = "INTERNAL"
+    ABORTED = "ABORTED"
 
 
 @dataclass
@@ -371,6 +375,7 @@ def run(
     extra_write_dirs: tuple[str, ...] = (),
     env: dict[str, str] | None = None,
     run_as: tuple[int, int] | None = None,
+    abort: "threading.Event | None" = None,
 ) -> RunResult:
     """Execute ``argv`` in ``cwd`` under the given limits and report how it went.
 
@@ -478,6 +483,25 @@ def run(
 
     timer = threading.Timer(wall_limit_s, _watchdog)
     timer.start()
+
+    # Cancelling has to reach the child, not just the loop around it: a
+    # submission spinning in an empty loop would otherwise hold a worker for a
+    # full time limit on every test that is left.
+    aborted = threading.Event()
+    finished = threading.Event()
+
+    def _abort_watch() -> None:
+        while not finished.is_set():
+            if abort.is_set():
+                aborted.set()
+                _killpg(pid)
+                return
+            finished.wait(ABORT_POLL_S)
+
+    watcher = None
+    if abort is not None:
+        watcher = threading.Thread(target=_abort_watch, daemon=True)
+        watcher.start()
     # Always sample, even with no limit to enforce: it is the only measurement
     # that reflects the submission rather than the judge that launched it.
     monitor = _MemoryMonitor(pid, memory_limit_bytes, exec_target)
@@ -487,6 +511,9 @@ def run(
     finally:
         timer.cancel()
         monitor.stop()
+        finished.set()
+        if watcher is not None:
+            watcher.join(timeout=1.0)
     wall_ms = int((time.monotonic() - start) * 1000)
     # Sweep up anything the submission spawned and left behind.
     _killpg(pid)
@@ -518,7 +545,10 @@ def run(
         RunStatus.OK, exit_code, term_signal, wall_ms, cpu_ms, max_rss
     )
 
-    if monitor.exceeded.is_set():
+    if aborted.is_set():
+        result.status = RunStatus.ABORTED
+        result.detail = "cancelled"
+    elif monitor.exceeded.is_set():
         result.status = RunStatus.MEMORY
         result.detail = "memory limit exceeded"
     elif timed_out.is_set() or term_signal == signal.SIGXCPU:

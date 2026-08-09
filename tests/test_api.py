@@ -1116,3 +1116,173 @@ class TestSchemaReachesExistingDatabases:
         db.execute("DROP TABLE posts")
         db.init_db()
         assert db.one("SELECT 1 FROM users WHERE username = 'keeper'") is not None
+
+
+class TestAbortingSubmissions:
+    """A submission still queued is settled in the database; one already
+    running has to be told to stop, and the worker has to notice."""
+
+    def queued(self, client, admin_client, source="print(1)"):
+        make_problem(admin_client)
+        admin_client.post("/api/auth/logout")
+        register(client, "runner1")
+        response = client.post("/api/submissions", json={
+            "problem": "a-plus-b", "language": "python3", "source": source})
+        return response.json()["id"]
+
+    def verdict(self, submission_id):
+        return db.one("SELECT verdict FROM submissions WHERE id = ?",
+                      (submission_id,))["verdict"]
+
+    def test_owner_can_abort_their_own(self, client, admin_client):
+        sid = self.queued(client, admin_client)
+        response = client.post(f"/api/submissions/{sid}/abort")
+        assert response.status_code == 200, response.text
+        assert response.json()["stopped"] == "queued"
+        assert self.verdict(sid) == "AB"
+
+    def test_an_aborted_submission_is_never_judged(self, client, admin_client):
+        sid = self.queued(client, admin_client)
+        client.post(f"/api/submissions/{sid}/abort")
+        # The worker only claims PENDING rows, so there is nothing left to take.
+        assert worker.drain() == 0
+        assert self.verdict(sid) == "AB"
+
+    def test_someone_else_cannot_abort_it(self, client, admin_client):
+        sid = self.queued(client, admin_client)
+        client.post("/api/auth/logout")
+        register(client, "meddler")
+        assert client.post(f"/api/submissions/{sid}/abort").status_code == 403
+        assert self.verdict(sid) == "PENDING"
+
+    def test_an_admin_can_abort_anyones(self, client, admin_client):
+        sid = self.queued(client, admin_client)
+        client.post("/api/auth/logout")
+        admin_client.post("/api/auth/login",
+                          json={"username": "admin", "password": "test-admin-password"})
+        assert admin_client.post(f"/api/submissions/{sid}/abort").status_code == 200
+        assert self.verdict(sid) == "AB"
+
+    def test_anonymous_cannot_abort(self, client, admin_client):
+        sid = self.queued(client, admin_client)
+        client.post("/api/auth/logout")
+        assert client.post(f"/api/submissions/{sid}/abort").status_code == 401
+
+    def test_a_finished_submission_cannot_be_aborted(self, client, admin_client):
+        sid = self.queued(client, admin_client,
+                          source="a,b=map(int,input().split())\nprint(a+b)")
+        worker.drain()
+        assert self.verdict(sid) == "AC"
+        response = client.post(f"/api/submissions/{sid}/abort")
+        assert response.status_code == 409
+        assert self.verdict(sid) == "AC"
+
+    def test_unknown_submission_is_a_404(self, client, admin_client):
+        self.queued(client, admin_client)
+        assert client.post("/api/submissions/999999/abort").status_code == 404
+
+    def test_it_earns_nothing(self, client, admin_client):
+        sid = self.queued(client, admin_client)
+        client.post(f"/api/submissions/{sid}/abort")
+        row = db.one("SELECT earned_percent, score FROM submissions WHERE id = ?", (sid,))
+        assert row["earned_percent"] == 0 and row["score"] == 0
+
+    def test_the_page_reports_it(self, client, admin_client):
+        sid = self.queued(client, admin_client)
+        client.post(f"/api/submissions/{sid}/abort")
+        data = client.get(f"/api/submissions/{sid}").json()
+        assert data["verdict"] == "AB"
+        assert data["verdict_name"] == "Aborted"
+
+
+class TestPerLanguageLimits:
+    """A fixed multiplier assumes a ratio between runtimes that is really a
+    property of the problem. On a loop-heavy problem the measured gap can be
+    28x where the multiplier assumes 3x, which fails a correct solution."""
+
+    def test_defaults_are_the_derived_limits(self, admin_client):
+        make_problem(admin_client, time_limit_ms=1000, memory_limit_mb=256)
+        limits = admin_client.get("/api/admin/problems/a-plus-b/limits").json()["limits"]
+        assert limits["cpp"]["time_limit_ms"] == 1000
+        assert limits["python3"]["time_limit_ms"] == 3200   # 1000 * 3.0 + 200
+        assert all(not l["measured"] for l in limits.values())
+
+    def test_setting_one_language_leaves_the_others_derived(self, admin_client):
+        make_problem(admin_client, time_limit_ms=1000)
+        admin_client.put("/api/admin/problems/a-plus-b/limits", json={
+            "limits": {"python3": {"time_limit_ms": 6500, "memory_limit_mb": 256}}})
+        limits = admin_client.get("/api/admin/problems/a-plus-b/limits").json()["limits"]
+        assert limits["python3"] == {
+            "name": "Python 3", "time_limit_ms": 6500,
+            "memory_limit_mb": 256, "measured": True}
+        assert limits["cpp"]["time_limit_ms"] == 1000 and not limits["cpp"]["measured"]
+
+    def test_clearing_returns_a_language_to_the_fallback(self, admin_client):
+        make_problem(admin_client, time_limit_ms=1000)
+        admin_client.put("/api/admin/problems/a-plus-b/limits", json={
+            "limits": {"python3": {"time_limit_ms": 6500, "memory_limit_mb": 256}}})
+        admin_client.put("/api/admin/problems/a-plus-b/limits",
+                         json={"limits": {"python3": None}})
+        limits = admin_client.get("/api/admin/problems/a-plus-b/limits").json()["limits"]
+        assert limits["python3"]["time_limit_ms"] == 3200
+        assert not limits["python3"]["measured"]
+
+    def test_the_public_page_shows_what_will_be_enforced(self, client, admin_client):
+        make_problem(admin_client, time_limit_ms=1000)
+        admin_client.put("/api/admin/problems/a-plus-b/limits", json={
+            "limits": {"python3": {"time_limit_ms": 6500, "memory_limit_mb": 512}}})
+        limits = client.get("/api/problems/a-plus-b").json()["limits"]
+        assert limits["python3"]["time_limit_ms"] == 6500
+        assert limits["python3"]["memory_limit_mb"] == 512
+        assert limits["python3"]["measured"] is True
+
+    def test_the_judge_enforces_the_override(self, admin_client):
+        """The number shown has to be the number applied, or the page lies."""
+        from stroj.judge.runner import ProblemSpec
+        from stroj.judge import languages, worker
+        make_problem(admin_client, time_limit_ms=1000)
+        admin_client.put("/api/admin/problems/a-plus-b/limits", json={
+            "limits": {"python3": {"time_limit_ms": 6500, "memory_limit_mb": 512}}})
+
+        row = db.one("SELECT * FROM problems WHERE slug = 'a-plus-b'")
+        spec = ProblemSpec.from_row(row, worker.load_limits(row["id"]))
+        assert spec.limits_for(languages.get("python3")) == (6500, 512)
+        # Untouched languages keep the derived value.
+        assert spec.limits_for(languages.get("cpp")) == (1000, 256)
+
+    @pytest.mark.parametrize("bad", [
+        {"time_limit_ms": 50, "memory_limit_mb": 256},        # under the floor
+        {"time_limit_ms": 999999, "memory_limit_mb": 256},    # over the ceiling
+        {"time_limit_ms": 1000, "memory_limit_mb": 8},        # under the floor
+        {"time_limit_ms": 1000},                              # incomplete
+    ])
+    def test_out_of_range_values_are_refused(self, admin_client, bad):
+        make_problem(admin_client)
+        response = admin_client.put("/api/admin/problems/a-plus-b/limits",
+                                    json={"limits": {"python3": bad}})
+        assert response.status_code == 400
+        stored = db.one("SELECT COUNT(*) AS n FROM problem_limits")["n"]
+        assert stored == 0, "a rejected request must not write anything"
+
+    def test_unknown_language_is_refused(self, admin_client):
+        make_problem(admin_client)
+        response = admin_client.put("/api/admin/problems/a-plus-b/limits",
+                                    json={"limits": {"cobol": {"time_limit_ms": 1000,
+                                                               "memory_limit_mb": 256}}})
+        assert response.status_code == 400
+        assert "cobol" in response.json()["detail"]
+
+    def test_requires_admin(self, client, admin_client):
+        make_problem(admin_client)
+        admin_client.post("/api/auth/logout")
+        register(client, "nosy2")
+        assert client.get("/api/admin/problems/a-plus-b/limits").status_code == 403
+        assert client.put("/api/admin/problems/a-plus-b/limits",
+                          json={"limits": {}}).status_code == 403
+
+    def test_limits_die_with_the_problem(self, admin_client, isolated_data):
+        make_problem(admin_client)
+        admin_client.put("/api/admin/problems/a-plus-b/limits", json={
+            "limits": {"cpp": {"time_limit_ms": 200, "memory_limit_mb": 256}}})
+        admin_client.delete("/api/admin/problems/a-plus-b")
+        assert db.one("SELECT COUNT(*) AS n FROM problem_limits")["n"] == 0

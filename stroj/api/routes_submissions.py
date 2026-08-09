@@ -7,8 +7,8 @@ from pydantic import BaseModel, Field
 
 from .. import __version__, config, contest as contest_mod, db
 from ..ratelimit import RateLimiter
-from ..judge import languages, worker
-from ..judge.runner import JUDGING, PENDING, VERDICT_NAMES, validate_source
+from ..judge import cancel, languages, worker
+from ..judge.runner import AB, JUDGING, PENDING, VERDICT_NAMES, validate_source
 from ..judge.sandbox import (
     isolation_mode,
     privilege_drop_target,
@@ -173,6 +173,44 @@ def list_submissions(
 
     rows = db.query(sql, tuple(params))
     return {"submissions": [submission_public(r, user) for r in rows]}
+
+
+@router.post("/submissions/{submission_id}/abort")
+def abort_submission(submission_id: int, request: Request):
+    """Stop a submission that is queued or already running.
+
+    Yours to cancel, or anyone's if you are an admin — a runaway submission
+    holds a judge worker, so an organiser has to be able to clear it during a
+    contest without waiting out its time limit on every remaining test.
+    """
+    user = require_user(request)
+    row = db.one("SELECT id, user_id, verdict FROM submissions WHERE id = ?",
+                 (submission_id,))
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such submission.")
+    if row["user_id"] != user["id"] and not is_admin(user):
+        raise HTTPException(status_code=403, detail="That is not your submission.")
+    if row["verdict"] not in (PENDING, JUDGING):
+        raise HTTPException(
+            status_code=409,
+            detail=f"That submission has already finished ({row['verdict']}).",
+        )
+
+    # Ask first, then try to settle it in the queue. Doing it in this order
+    # closes the race with a worker claiming the row in between: either the
+    # UPDATE wins and no worker ever starts it, or the worker started and picks
+    # up the request that is already waiting for it.
+    cancel.request(submission_id)
+    claimed_first = db.execute(
+        "UPDATE submissions SET verdict = ?, message = 'Cancelled.', judged_at = ?"
+        " WHERE id = ? AND verdict = ?",
+        (AB, db.utcnow(), submission_id, PENDING),
+    ).rowcount
+    if claimed_first:
+        # It never started, so nothing is watching the event.
+        cancel.release(submission_id)
+        return {"id": submission_id, "verdict": AB, "stopped": "queued"}
+    return {"id": submission_id, "verdict": JUDGING, "stopped": "running"}
 
 
 @router.get("/submissions/{submission_id}")

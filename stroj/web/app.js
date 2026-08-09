@@ -69,6 +69,27 @@ function duration(ms) {
   return `${pad(Math.floor(total / 3600))}:${pad(Math.floor(total / 60) % 60)}:${pad(total % 60)}`;
 }
 
+/**
+ * Which section of a subtask-grouped test table is executing right now.
+ *
+ * A subtask problem awards partial credit, so every test runs, in order:
+ * samples first, then subtask 1, 2, … The test now running is therefore
+ * `done + 1` in that order, and it belongs to the first section not yet full.
+ * Returns 0 for the samples, a subtask index, or null once nothing is left.
+ */
+function runningSection(done, total, groups) {
+  const grouped = groups.reduce((n, g) => n + g.tests, 0);
+  let ahead = done;
+  const samples = Math.max(0, total - grouped);
+  if (ahead < samples) return 0;
+  ahead -= samples;
+  for (const group of groups) {
+    if (ahead < group.tests) return group.idx;
+    ahead -= group.tests;
+  }
+  return null;
+}
+
 const verdictBadge = (v, name) => `<span class="badge v-${esc(v)}">${esc(name || v)}</span>`;
 
 /** One renderer for every username in the app, so admins are marked
@@ -677,6 +698,8 @@ async function viewSubmission(id) {
     if (fingerprint === lastPainted) return s.verdict === 'PENDING' || s.verdict === 'JUDGING';
     lastPainted = fingerprint;
     const running = s.verdict === 'PENDING' || s.verdict === 'JUDGING';
+    const canAbort = running && state.user
+      && (state.user.is_admin || state.user.username === s.username);
 
     const done = (s.tests || []).length;
     const total = s.test_count || 0;
@@ -706,15 +729,30 @@ async function viewSubmission(id) {
     // that failed one group and passed another looks like noise as a flat list.
     const groups = s.subtasks || [];
     let tests;
+    let runningPlaced = false;
     if (groups.length) {
       const rows = [];
       const of = (n) => (s.tests || []).filter((t) => (t.subtask || 0) === n);
-
       const samples = of(0);
-      if (samples.length) {
+
+      // A subtask problem awards partial credit, so every test runs, in order:
+      // samples, then subtask 1, 2, … That makes the section now executing the
+      // first one that is not yet full. Appending the running row to the table
+      // instead would park it under the last subtask for the whole judge.
+      const runningIn = running ? runningSection(done, total, groups) : null;
+      const body = (mine, idx) => {
+        const out = mine.map(testRow);
+        if (runningIn === idx) { out.push(runningRow); runningPlaced = true; }
+        else if (!mine.length) {
+          out.push(`<tr><td colspan="6" class="muted small">not reached</td></tr>`);
+        }
+        return out;
+      };
+
+      if (samples.length || runningIn === 0) {
         rows.push(`<tr class="subtask-head"><td colspan="6">Samples
           <span class="muted small">— not scored</span></td></tr>`);
-        rows.push(...samples.map(testRow));
+        rows.push(...body(samples, 0));
       }
 
       for (const group of groups) {
@@ -731,8 +769,7 @@ async function viewSubmission(id) {
         rows.push(`<tr class="subtask-head"><td colspan="5">Subtask ${group.idx}
             <span class="muted small">— worth ${group.percent}%</span></td>
           <td class="num">${status}</td></tr>`);
-        rows.push(...(mine.length ? mine.map(testRow)
-          : [`<tr><td colspan="6" class="muted small">not reached</td></tr>`]));
+        rows.push(...body(mine, group.idx));
       }
       tests = rows.join('');
     } else {
@@ -744,6 +781,7 @@ async function viewSubmission(id) {
         <h1>Submission #${s.id}</h1>
         ${verdictBadge(s.verdict, s.verdict_name)}
         <div class="spacer"></div>
+        ${canAbort ? '<button class="small danger" id="abort-submission">Abort</button>' : ''}
         <a class="pill" href="#/problem/${encodeURIComponent(s.problem_slug)}">${esc(s.problem_title)}</a>
       </div>
 
@@ -765,13 +803,28 @@ async function viewSubmission(id) {
       ${tests || running ? `<h2>Tests ${progress}</h2><div class="table-wrap"><table>
           <thead><tr><th class="num">#</th><th>Verdict</th><th class="num">Time</th>
             <th class="num">Memory</th><th class="num">Points</th><th>Detail</th></tr></thead>
-          <tbody>${tests}${runningRow}</tbody></table></div>` : ''}
+          <tbody>${tests}${runningPlaced ? '' : runningRow}</tbody></table></div>` : ''}
 
       ${s.source !== undefined
         ? `<h2>Source</h2><pre class="source">${esc(s.source)}</pre>`
         : '<p class="muted small">Source is only visible to its author.</p>'}
     `, { wide: true });
 
+    if (canAbort) {
+      const button = $('#abort-submission');
+      button.onclick = async () => {
+        if (!confirm(`Abort submission #${s.id}? It will not be judged.`)) return;
+        button.disabled = true;
+        try {
+          await api(`/api/submissions/${s.id}/abort`, { method: 'POST' });
+          toast('Aborting…');
+          lastPainted = null;   // force the next poll to repaint
+        } catch (err) {
+          toast(err.message, 'bad');
+          button.disabled = false;
+        }
+      };
+    }
     return running;
   };
 
@@ -1143,8 +1196,9 @@ async function viewAdminProblem(slug) {
   }
   // The list comes along for the type vocabulary: chips offer what other
   // problems already use, so authors reuse a type instead of coining one.
-  const [p, { problems }] = await Promise.all([
+  const [p, { problems }, { limits }] = await Promise.all([
     api(`/api/problems/${encodeURIComponent(slug)}`), api('/api/problems'),
+    api(`/api/admin/problems/${encodeURIComponent(slug)}/limits`),
   ]);
   const allTypes = [...new Set(problems.flatMap((x) => x.types).concat(p.types))].sort();
   const checkerOption = (value, label) =>
@@ -1179,6 +1233,30 @@ async function viewAdminProblem(slug) {
           <input id="e-author" value="${esc(p.author || '')}" placeholder="(unattributed)"></label>
       </div>
       <label>Types ${typeChips('e-types', allTypes, p.types, true)}</label>
+    </div>
+
+    <details class="card" id="e-limits-card"${Object.values(limits).some((l) => l.measured) ? ' open' : ''}>
+      <summary>Per-language limits</summary>
+      <p class="muted small">Set these from a measured run of the intended
+        solution in each language — the gap between runtimes depends on the
+        problem, not just the language. Clear a row to fall back to the base
+        limit above, scaled by that language's multiplier.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Language</th><th class="num">Time (ms)</th>
+          <th class="num">Memory (MiB)</th><th>Source</th><th></th></tr></thead>
+        <tbody>${Object.entries(limits).map(([id, l]) => `
+          <tr>
+            <td class="wide">${esc(l.name)}</td>
+            <td><input class="lim" data-lang="${esc(id)}" data-f="time" type="number"
+                  min="100" max="60000" value="${l.time_limit_ms}" style="width:110px"></td>
+            <td><input class="lim" data-lang="${esc(id)}" data-f="memory" type="number"
+                  min="16" max="4096" value="${l.memory_limit_mb}" style="width:110px"></td>
+            <td><span class="pill" data-source="${esc(id)}">${l.measured ? 'measured' : 'derived'}</span></td>
+            <td>${l.measured
+              ? `<button class="small" data-clear-limit="${esc(id)}">Clear</button>` : ''}</td>
+          </tr>`).join('')}</tbody>
+      </table></div>
+      <div class="row end"><button class="small primary" id="e-save-limits">Save limits</button></div>
       <div class="row">
         <label class="row" style="gap:6px"><input type="checkbox" id="e-partial" style="width:auto"
           ${p.partial ? 'checked' : ''}> partial scoring</label>
@@ -1205,6 +1283,52 @@ async function viewAdminProblem(slug) {
     </div>`, { wide: true });
 
   bindTypeChips('e-types');
+
+  // Only the rows an author actually touches are sent, so opening the editor
+  // and saving does not silently pin every language to its derived value.
+  const touched = new Set();
+  $$('.lim').forEach((input) => {
+    input.oninput = () => touched.add(input.dataset.lang);
+  });
+
+  $('#e-save-limits').onclick = async () => {
+    const button = $('#e-save-limits');
+    button.disabled = true;
+    try {
+      const body = {};
+      for (const lang of touched) {
+        const field = (f) => $(`.lim[data-lang="${CSS.escape(lang)}"][data-f="${f}"]`);
+        body[lang] = {
+          time_limit_ms: Number(field('time').value),
+          memory_limit_mb: Number(field('memory').value),
+        };
+      }
+      if (!Object.keys(body).length) { toast('Nothing changed.'); return; }
+      await api(`/api/admin/problems/${encodeURIComponent(slug)}/limits`, {
+        method: 'PUT', body: { limits: body },
+      });
+      toast(`Set limits for ${Object.keys(body).length} language(s).`, 'good');
+      route();
+    } catch (err) {
+      toast(err.message, 'bad');
+    } finally {
+      button.disabled = false;
+    }
+  };
+
+  $$('[data-clear-limit]').forEach((button) => {
+    button.onclick = async () => {
+      const lang = button.dataset.clearLimit;
+      try {
+        await api(`/api/admin/problems/${encodeURIComponent(slug)}/limits`, {
+          method: 'PUT', body: { limits: { [lang]: null } },
+        });
+        toast(`${lang} back to the derived limit.`);
+        route();
+      } catch (err) { toast(err.message, 'bad'); }
+    };
+  });
+
   const editor = $('#e-statement');
   markdownEditor(editor, $('#e-preview'));
 

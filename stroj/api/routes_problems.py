@@ -8,6 +8,9 @@ from fastapi import APIRouter, Request
 
 from .. import db
 from ..judge import languages
+from ..judge.runner import ProblemSpec
+# One loader, in the layer that owns a problem's judging inputs.
+from ..judge.worker import load_limits as problem_limits
 from .deps import current_user, get_problem, is_admin, problem_summary
 
 router = APIRouter(prefix="/api", tags=["problems"])
@@ -69,12 +72,15 @@ def get_problem_detail(slug: str, request: Request):
     data["test_count"] = db.one(
         "SELECT COUNT(*) AS n FROM testcases WHERE problem_id = ?", (problem["id"],)
     )["n"]
+    # What each language actually gets, override or fallback — this is the
+    # number a solver is judged against, so it is the number to show them.
+    spec = ProblemSpec.from_row(problem, problem_limits(problem["id"]))
+    overrides = spec.limits
     data["limits"] = {
         lang.id: {
-            "time_limit_ms": lang.effective_time_limit_ms(problem["time_limit_ms"]),
-            "memory_limit_mb": lang.effective_memory_limit_mb(
-                problem["memory_limit_mb"]
-            ),
+            "time_limit_ms": spec.limits_for(lang)[0],
+            "memory_limit_mb": spec.limits_for(lang)[1],
+            "measured": lang.id in overrides,
         }
         for lang in languages.LANGUAGES.values()
     }

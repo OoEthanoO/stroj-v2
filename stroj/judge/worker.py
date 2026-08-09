@@ -12,8 +12,8 @@ import logging
 import threading
 
 from .. import config, db
-from . import runner
-from .runner import JUDGING, PENDING, IE, JudgeOutcome, ProblemSpec, TestSpec
+from . import cancel, runner
+from .runner import AB, JUDGING, PENDING, IE, JudgeOutcome, ProblemSpec, TestSpec
 
 log = logging.getLogger("stroj.judge")
 
@@ -62,6 +62,18 @@ def load_tests(problem_id: int) -> list[TestSpec]:
         )
         for r in rows
     ]
+
+
+def load_limits(problem_id: int) -> dict[str, tuple[int, int]]:
+    """Per-language limits an author set from measured runs, if any."""
+    return {
+        r["language"]: (r["time_limit_ms"], r["memory_limit_mb"])
+        for r in db.query(
+            "SELECT language, time_limit_ms, memory_limit_mb FROM problem_limits"
+            " WHERE problem_id = ?",
+            (problem_id,),
+        )
+    }
 
 
 def load_subtasks(problem_id: int) -> dict[int, int]:
@@ -168,26 +180,33 @@ def judge_submission(submission_id: int) -> JudgeOutcome:
 
     problem = db.one("SELECT * FROM problems WHERE id = ?", (sub["problem_id"],))
     earned = 0
-    if problem is None:
-        outcome = JudgeOutcome(IE, message="problem no longer exists")
-    else:
-        tests = load_tests(problem["id"])
-        subtasks = load_subtasks(problem["id"])
-        outcome = runner.judge(
-            sub["source"],
-            sub["language"],
-            ProblemSpec.from_row(problem),
-            tests,
-            on_test=lambda test: publish_test(submission_id, test),
-        )
-        # A compile error never ran anything, so it earns nothing regardless of
-        # how the problem is scored.
-        if outcome.verdict != runner.CE:
-            earned = runner.earned_percent(
-                tests, outcome.tests, subtasks, bool(problem["partial"])
+    # Registering before judging starts means a request that arrived while this
+    # submission was being claimed is honoured rather than lost.
+    abort = cancel.register(submission_id)
+    try:
+        if problem is None:
+            outcome = JudgeOutcome(IE, message="problem no longer exists")
+        else:
+            tests = load_tests(problem["id"])
+            subtasks = load_subtasks(problem["id"])
+            outcome = runner.judge(
+                sub["source"],
+                sub["language"],
+                ProblemSpec.from_row(problem, load_limits(problem["id"])),
+                tests,
+                on_test=lambda test: publish_test(submission_id, test),
+                abort=abort,
             )
-    store_outcome(submission_id, outcome, earned)
-    return outcome
+            # A compile error never ran anything, and a cancelled run was never
+            # allowed to finish, so neither earns anything.
+            if outcome.verdict not in (runner.CE, AB):
+                earned = runner.earned_percent(
+                    tests, outcome.tests, subtasks, bool(problem["partial"])
+                )
+        store_outcome(submission_id, outcome, earned)
+        return outcome
+    finally:
+        cancel.release(submission_id)
 
 
 def drain() -> int:

@@ -78,6 +78,18 @@ CREATE TABLE IF NOT EXISTS problem_types (
     PRIMARY KEY (problem_id, type)
 );
 
+-- Per-language limits, set by the problem setter from measured runs of the
+-- intended solutions. A language with no row here falls back to the base limit
+-- scaled by that language's multiplier, which is only ever a guess: the real
+-- gap between runtimes is a property of the problem, not of the language.
+CREATE TABLE IF NOT EXISTS problem_limits (
+    problem_id      INTEGER NOT NULL REFERENCES problems(id) ON DELETE CASCADE,
+    language        TEXT    NOT NULL,
+    time_limit_ms   INTEGER NOT NULL,
+    memory_limit_mb INTEGER NOT NULL,
+    PRIMARY KEY (problem_id, language)
+);
+
 CREATE TABLE IF NOT EXISTS contests (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     slug        TEXT    NOT NULL UNIQUE,

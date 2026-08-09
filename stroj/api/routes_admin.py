@@ -17,7 +17,7 @@ from fastapi import (
 from pydantic import BaseModel, Field
 
 from .. import db, testdata
-from ..judge import checkers, worker
+from ..judge import checkers, languages, worker
 from ..judge.runner import PENDING
 from .deps import get_contest, require_admin
 
@@ -75,6 +75,13 @@ class ProblemPatch(BaseModel):
     points: int | None = Field(default=None, ge=1, le=10000)
     author: str | None = None
     types: list[str] | None = None
+
+
+class LimitsBody(BaseModel):
+    #: ``{"python3": {"time_limit_ms": 6500, "memory_limit_mb": 256}, ...}``.
+    #: A language left out keeps the scaled fallback; an explicit null clears
+    #: its override and returns it to the fallback.
+    limits: dict[str, dict | None]
 
 
 class TestsBody(BaseModel):
@@ -257,6 +264,91 @@ def delete_problem(slug: str):
     db.execute("DELETE FROM problems WHERE id = ?", (problem["id"],))
     testdata.delete_testdata(slug)
     return {"deleted": slug}
+
+
+@router.get("/problems/{slug}/limits")
+def get_limits(slug: str):
+    """Every language's limit, and whether it was set or merely derived."""
+    problem = _problem_or_404(slug)
+    stored = {
+        r["language"]: r
+        for r in db.query(
+            "SELECT language, time_limit_ms, memory_limit_mb FROM problem_limits"
+            " WHERE problem_id = ?",
+            (problem["id"],),
+        )
+    }
+    out = {}
+    for lang in languages.LANGUAGES.values():
+        row = stored.get(lang.id)
+        out[lang.id] = {
+            "name": lang.name,
+            "time_limit_ms": row["time_limit_ms"] if row
+            else lang.effective_time_limit_ms(problem["time_limit_ms"]),
+            "memory_limit_mb": row["memory_limit_mb"] if row
+            else lang.effective_memory_limit_mb(problem["memory_limit_mb"]),
+            "measured": row is not None,
+        }
+    return {"slug": slug, "limits": out}
+
+
+@router.put("/problems/{slug}/limits")
+def set_limits(slug: str, body: LimitsBody):
+    """Replace the per-language limits.
+
+    Set from a measured run of the intended solution in each language, which is
+    the only thing that knows how far apart the runtimes really are on *this*
+    problem — a fixed multiplier assumes a ratio that a problem heavy in
+    interpreted-loop work will blow straight through.
+    """
+    problem = _problem_or_404(slug)
+    unknown = sorted(set(body.limits) - set(languages.LANGUAGES))
+    if unknown:
+        raise HTTPException(
+            status_code=400, detail=f"Unknown language(s): {', '.join(unknown)}"
+        )
+
+    writes, clears = [], []
+    for lang_id, values in body.limits.items():
+        if values is None:
+            clears.append(lang_id)
+            continue
+        try:
+            time_ms = int(values["time_limit_ms"])
+            memory_mb = int(values["memory_limit_mb"])
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{lang_id} needs both time_limit_ms and memory_limit_mb.",
+            ) from None
+        # The same bounds the base limits use, so a per-language value cannot
+        # smuggle in something the problem form would have refused.
+        if not 100 <= time_ms <= 60_000:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{lang_id}: time limit must be 100-60000 ms.")
+        if not 16 <= memory_mb <= 4096:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{lang_id}: memory limit must be 16-4096 MiB.")
+        writes.append((problem["id"], lang_id, time_ms, memory_mb))
+
+    with db.transaction() as conn:
+        for lang_id in clears:
+            conn.execute(
+                "DELETE FROM problem_limits WHERE problem_id = ? AND language = ?",
+                (problem["id"], lang_id),
+            )
+        conn.executemany(
+            "INSERT INTO problem_limits"
+            " (problem_id, language, time_limit_ms, memory_limit_mb)"
+            " VALUES (?, ?, ?, ?)"
+            " ON CONFLICT (problem_id, language) DO UPDATE SET"
+            "   time_limit_ms = excluded.time_limit_ms,"
+            "   memory_limit_mb = excluded.memory_limit_mb",
+            writes,
+        )
+    return {"set": len(writes), "cleared": len(clears)}
 
 
 @router.get("/problems/{slug}/tests")

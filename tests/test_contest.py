@@ -337,3 +337,27 @@ class TestIoiUsesEarnedPercent:
         row = board["board"]("icpc")["rows"][0]
         assert row["solved"] == 0
         assert row["cells"]["A"]["attempts"] == 1
+
+
+class TestAbortedSubmissionsOnTheScoreboard:
+    """Aborting must not be a way to take back a submission.
+
+    If a cancelled attempt did not count, a contestant could submit, think
+    better of it, abort, and pay no penalty — so an aborted attempt counts
+    exactly like a rejected one.
+    """
+
+    def test_it_counts_as_an_icpc_attempt(self, fixtures):
+        fixtures["submit"]("ann", "A", "AB", minute=5)
+        fixtures["submit"]("ann", "A", "AC", minute=20)
+        cell = fixtures["board"]()["rows"][0]["cells"]["A"]
+        assert cell["solved"] is True
+        assert cell["attempts"] == 2
+        # 20 minutes to solve, plus one 20-minute penalty for the aborted try.
+        assert cell["penalty"] == 40
+
+    def test_it_earns_nothing_under_ioi(self, fixtures):
+        fixtures["submit"]("ann", "A", "AB", minute=5)
+        cell = fixtures["board"]("ioi")["rows"][0]["cells"]["A"]
+        assert cell["score"] == 0
+        assert cell["solved"] is False

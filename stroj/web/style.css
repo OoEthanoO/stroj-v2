@@ -262,7 +262,9 @@ td.wide { white-space: normal; }
 .v-AC { background: var(--ok-bg); color: var(--ok); }
 .v-WA, .v-RE, .v-IE { background: var(--bad-bg); color: var(--bad); }
 .v-TLE, .v-MLE, .v-OLE { background: var(--warn-bg); color: var(--warn); }
-.v-CE { background: var(--neutral-bg); color: var(--neutral); }
+/* Aborted is neutral, like a compile error: the submission was never given a
+   chance to be right or wrong, so colouring it as a failure would misreport it. */
+.v-CE, .v-AB { background: var(--neutral-bg); color: var(--neutral); }
 .v-PENDING, .v-JUDGING { background: var(--info-bg); color: var(--info); }
 .v-JUDGING { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .55; } }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import shutil
 import tempfile
 from collections.abc import Callable
@@ -25,6 +26,7 @@ RE = "RE"          # runtime error
 CE = "CE"          # compile error
 OLE = "OLE"        # output limit exceeded
 IE = "IE"          # internal error — the judge's fault, not the submission's
+AB = "AB"          # aborted — cancelled by the submitter or an admin
 
 VERDICT_NAMES = {
     PENDING: "Pending",
@@ -37,6 +39,7 @@ VERDICT_NAMES = {
     CE: "Compile Error",
     OLE: "Output Limit Exceeded",
     IE: "Internal Error",
+    AB: "Aborted",
 }
 
 # Never load more than this much of a program's stdout into memory to compare.
@@ -93,15 +96,33 @@ class ProblemSpec:
     checker: str = "token"
     float_eps: float = 1e-6
     partial: bool = False
+    #: language id -> (time_limit_ms, memory_limit_mb), set from measured runs.
+    #: A language absent here falls back to the scaled base limit.
+    limits: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     @classmethod
-    def from_row(cls, row) -> "ProblemSpec":
+    def from_row(cls, row, limits: dict[str, tuple[int, int]] | None = None) -> "ProblemSpec":
         return cls(
             time_limit_ms=row["time_limit_ms"],
             memory_limit_mb=row["memory_limit_mb"],
             checker=row["checker"],
             float_eps=row["float_eps"],
             partial=bool(row["partial"]),
+            limits=dict(limits or {}),
+        )
+
+    def limits_for(self, lang: "languages.Language") -> tuple[int, int]:
+        """The time and memory this language actually gets on this problem.
+
+        An explicit limit wins outright — it was measured against the intended
+        solution in that language, which is a better answer than any multiplier.
+        """
+        override = self.limits.get(lang.id)
+        if override is not None:
+            return override
+        return (
+            lang.effective_time_limit_ms(self.time_limit_ms),
+            lang.effective_memory_limit_mb(self.memory_limit_mb),
         )
 
 
@@ -203,6 +224,7 @@ def _compile(
     box: Path,
     use_sandbox: bool,
     run_as: tuple[int, int] | None = None,
+    abort: "threading.Event | None" = None,
 ) -> tuple[bool, str]:
     argv = lang.compile_argv()
     if argv is None:
@@ -226,9 +248,12 @@ def _compile(
         # The compiler is fed attacker-controlled source, so it is untrusted
         # too and runs under the same reduced account.
         run_as=run_as,
+        abort=abort,
     )
     if result.status is RunStatus.OK:
         return True, ""
+    if result.status is RunStatus.ABORTED:
+        return False, "\x00cancelled"
 
     diagnostics, _ = _read_clipped(stderr_path, config.MESSAGE_CLIP_BYTES)
     if not diagnostics.strip():
@@ -247,9 +272,9 @@ def _run_one_test(
     box: Path,
     use_sandbox: bool,
     run_as: tuple[int, int] | None = None,
+    abort: "threading.Event | None" = None,
 ) -> TestOutcome:
-    time_limit_ms = lang.effective_time_limit_ms(problem.time_limit_ms)
-    memory_limit_mb = lang.effective_memory_limit_mb(problem.memory_limit_mb)
+    time_limit_ms, memory_limit_mb = problem.limits_for(lang)
     limit_s = time_limit_ms / 1000.0
 
     out_path = box / "stdout.txt"
@@ -272,6 +297,7 @@ def _run_one_test(
         output_limit_bytes=config.OUTPUT_LIMIT_BYTES,
         use_sandbox=use_sandbox,
         run_as=run_as,
+        abort=abort,
     )
 
     memory_kb = result.memory_kb
@@ -282,6 +308,8 @@ def _run_one_test(
         points = test.points if verdict == AC else 0
         return TestOutcome(test.idx, verdict, time_ms, memory_kb, points, message)
 
+    if result.status is RunStatus.ABORTED:
+        return outcome(AB, "cancelled")
     if result.status is RunStatus.INTERNAL:
         return outcome(IE, result.detail)
     if result.status is RunStatus.TIMEOUT or time_ms > time_limit_ms:
@@ -314,6 +342,20 @@ def _run_one_test(
     return outcome(AC)
 
 
+def _cancelled(outcome: "JudgeOutcome") -> "JudgeOutcome":
+    """Report a run that was stopped part-way.
+
+    The tests that did finish are kept: they are real results, and a solver who
+    cancelled after watching three tests fail should still see those three.
+    Scores are cleared, because a partial run must never look like a partial
+    score — that is what `earned_percent` would otherwise read.
+    """
+    outcome.verdict = AB
+    outcome.score = 0
+    outcome.message = "Cancelled."
+    return outcome
+
+
 def judge(
     source: str,
     language_id: str,
@@ -323,6 +365,7 @@ def judge(
     use_sandbox: bool | None = None,
     work_dir: Path | None = None,
     on_test: Callable[[TestOutcome], None] | None = None,
+    abort: "threading.Event | None" = None,
 ) -> JudgeOutcome:
     """Judge one submission. Never raises — internal failures become ``IE``.
 
@@ -361,8 +404,13 @@ def judge(
         (box / lang.source_file).write_text(source, encoding="utf-8")
         _hand_box_to_runner(box, run_as)
 
-        ok, diagnostics = _compile(lang, box, use_sandbox, run_as)
+        if abort is not None and abort.is_set():
+            return JudgeOutcome(AB, max_score=max_score, message="Cancelled.")
+
+        ok, diagnostics = _compile(lang, box, use_sandbox, run_as, abort)
         if not ok:
+            if diagnostics == "\x00cancelled":
+                return JudgeOutcome(AB, max_score=max_score, message="Cancelled.")
             return JudgeOutcome(CE, max_score=max_score, message=diagnostics)
         # The compiler just created new files (the binary, __pycache__, class
         # files) owned by the runner already — but re-assert, since a language
@@ -371,7 +419,16 @@ def judge(
 
         outcome = JudgeOutcome(AC, max_score=max_score)
         for test in tests:
-            test_result = _run_one_test(lang, problem, test, box, use_sandbox, run_as)
+            # Checked before each test as well as inside the sandbox, so a
+            # request that lands between tests is not held until the next one
+            # finishes.
+            if abort is not None and abort.is_set():
+                return _cancelled(outcome)
+            test_result = _run_one_test(
+                lang, problem, test, box, use_sandbox, run_as, abort
+            )
+            if test_result.verdict == AB:
+                return _cancelled(outcome)
             outcome.tests.append(test_result)
             outcome.score += test_result.points
             outcome.time_ms = max(outcome.time_ms, test_result.time_ms)
