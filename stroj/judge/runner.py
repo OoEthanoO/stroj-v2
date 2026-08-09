@@ -348,6 +348,10 @@ def _run_one_test(
         use_sandbox=use_sandbox,
         run_as=run_as,
         abort=abort,
+        # Only here. Compiling is not the submission running, and the warm-up
+        # is thrown away — measuring either is pointless, and putting an extra
+        # process in front of the compiler broke every language that has one.
+        measure=True,
     )
 
     memory_kb = result.memory_kb

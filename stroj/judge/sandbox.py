@@ -340,9 +340,17 @@ def measure_helper() -> str | None:
 
             target = config.DATA_DIR / "bin" / "stroj-measure"
             if target.exists() and target.stat().st_mtime >= _MEASURE_SOURCE.stat().st_mtime:
+                os.chmod(target.parent, 0o755)
+                os.chmod(target, 0o755)
                 _measure_path = str(target)
                 return _measure_path
             target.parent.mkdir(parents=True, exist_ok=True)
+            # The judge runs with a 0077 umask so the data directory stays
+            # private, which would leave this at 0700 and owned by root — and
+            # the submission has already dropped to the runner account by the
+            # time it tries to exec it. The wrapper is a build artefact with
+            # nothing to hide, so open it up explicitly.
+            os.chmod(target.parent, 0o755)
             for compiler in ("cc", "gcc", "clang"):
                 if shutil.which(compiler) is None:
                     continue
@@ -496,6 +504,7 @@ def run(
     env: dict[str, str] | None = None,
     run_as: tuple[int, int] | None = None,
     abort: "threading.Event | None" = None,
+    measure: bool = False,
 ) -> RunResult:
     """Execute ``argv`` in ``cwd`` under the given limits and report how it went.
 
@@ -547,7 +556,7 @@ def run(
     # there is nothing for a wrapper to fix and enforcement stays with sampling.
     helper = (
         measure_helper()
-        if sys.platform == "linux" and address_space_rlimit
+        if measure and sys.platform == "linux" and address_space_rlimit
         else None
     )
     report_r = report_w = None

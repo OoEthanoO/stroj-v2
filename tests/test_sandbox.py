@@ -10,6 +10,7 @@ import sys
 
 import pytest
 
+from stroj.judge import runner as runner_module
 from stroj.judge import sandbox
 from stroj.judge.sandbox import RunStatus
 
@@ -390,3 +391,44 @@ class TestTheMeasuringWrapper:
         monkeypatch.setattr(sandbox, "_MEASURE_SOURCE",
                             pathlib.Path("/nonexistent/measure.c"))
         assert sandbox.measure_helper() is None
+
+
+class TestTheWrapperStaysOutOfTheWay:
+    """It broke every language with a compile step in production: the compiler
+    also runs through `sandbox.run`, so the wrapper was put in front of *it*,
+    and Java was the only language that worked — precisely because it opts out
+    of RLIMIT_AS and so was never wrapped."""
+
+    def test_it_is_off_unless_asked_for(self):
+        import inspect
+        signature = inspect.signature(sandbox.run)
+        assert signature.parameters["measure"].default is False
+
+    def test_only_the_scored_run_asks_for_it(self):
+        """Not compiling, and not the warm-up, whose result is discarded."""
+        source = pathlib.Path(runner_module.__file__).read_text()
+        assert source.count("measure=True") == 1
+        after = source[source.index("measure=True"):]
+        # It belongs to the per-test run, so `_run_one_test` must enclose it.
+        before = source[:source.index("measure=True")]
+        assert before.rindex("def _run_one_test(") > before.rindex("def _compile(")
+        assert "def " not in after[:after.index(")")]
+
+    @pytest.mark.skipif(shutil.which("cc") is None, reason="needs a C compiler")
+    def test_the_runner_account_can_reach_it(self, monkeypatch, tmp_path):
+        """The judge runs with a 0077 umask so its data stays private, which
+        left the wrapper at 0700 and owned by root — unreachable once the
+        submission had dropped to the runner account."""
+        from stroj import config
+        monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(sandbox, "_measure_path", False)
+        previous = os.umask(0o077)
+        try:
+            built = sandbox.measure_helper()
+        finally:
+            os.umask(previous)
+        assert built, "the wrapper should still build"
+
+        binary = pathlib.Path(built)
+        assert binary.stat().st_mode & 0o005, "others cannot execute the wrapper"
+        assert binary.parent.stat().st_mode & 0o005, "others cannot enter its directory"
