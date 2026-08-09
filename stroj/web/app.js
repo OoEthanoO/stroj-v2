@@ -808,11 +808,18 @@ async function viewScoreboard(slug) {
   every(1000, () => $$('.countdown').forEach(updateCountdown));
 }
 
-/* ---- leaderboard ---- */
+/* ---- users ---- */
 
-async function viewLeaderboard() {
+async function viewUsers() {
   const board = await api('/api/leaderboard');
-  const rows = board.standings.map((s) => {
+  const total = board.standings.length;
+  const columns = [['rank', '#', ''], ['username', 'Who', ''], ['score', 'Score', 'num'],
+                   ['solved', 'Solved', 'num'], ['hardest', 'Hardest', 'num']];
+  // Numeric columns read best largest-first, so they start descending; rank and
+  // username start ascending. Re-clicking the active column flips it.
+  let sort = { key: 'rank', dir: 1 };
+
+  const row = (s) => {
     const me = state.user && state.user.username === s.username;
     return `<tr${me ? ' style="outline:2px solid var(--accent);outline-offset:-2px"' : ''}>
       <td class="rank">${s.rank}</td>
@@ -821,31 +828,65 @@ async function viewLeaderboard() {
       <td class="num muted">${s.solved}</td>
       <td class="num">${pointsPill(s.hardest)}</td>
     </tr>`;
-  }).join('');
+  };
 
   setView(`
-    <div class="page-head"><h1>Leaderboard</h1>
-      <span class="muted small">${board.standings.length} ranked</span></div>
+    <div class="page-head"><h1>Users</h1>
+      <span class="info" tabindex="0" role="note" aria-label="How the score works">i
+        <span class="info-pop">
+          <p>Solved problems are sorted hardest first, and the <em>k</em>-th one counts
+            for <code>points × ${board.decay}<sup>k</sup></code> — so the hardest solve
+            counts in full, the tenth about ${Math.round(Math.pow(board.decay, 9) * 100)}%,
+            and the fiftieth about ${Math.round(Math.pow(board.decay, 49) * 100)}%.</p>
+          <p>Grinding a difficulty tier has a ceiling: repeating <code>p</code>-point
+            problems forever converges to <code>${Math.round(1 / (1 - board.decay))} × p</code>.
+            The only way past it is a harder problem, which lands near the front and
+            counts nearly in full.</p>
+        </span></span>
+      <div class="spacer"></div>
+      ${total ? '<input id="user-search" class="search" type="search" placeholder="Search users" autocomplete="off">' : ''}
+      <span class="muted small" id="user-count">${total} ranked</span></div>
 
-    ${board.standings.length
+    ${total
       ? `<div class="table-wrap"><table>
-           <thead><tr><th class="num">#</th><th>Who</th><th class="num">Score</th>
-             <th class="num">Solved</th><th class="num">Hardest</th></tr></thead>
-           <tbody>${rows}</tbody></table></div>`
-      : '<div class="empty">Nobody has solved anything yet.</div>'}
+           <thead><tr>${columns.map(([key, label, cls]) =>
+             `<th class="${cls} sort" data-key="${key}">${label}<span class="arrow"></span></th>`).join('')}</tr></thead>
+           <tbody id="user-rows"></tbody></table></div>
+         <div class="empty" id="user-nomatch" hidden style="margin-top:18px">No user matches that.</div>`
+      : '<div class="empty">Nobody has solved anything yet.</div>'}`);
 
-    <div class="card" style="margin-top:18px">
-      <h2 style="margin-top:0">How the score works</h2>
-      <p class="muted small">Your solved problems are sorted hardest first, and the
-        <em>k</em>-th one counts for <code>points × ${board.decay}<sup>k</sup></code>.
-        So your hardest solve counts in full, the tenth counts about
-        ${Math.round(Math.pow(board.decay, 9) * 100)}%, and the fiftieth about
-        ${Math.round(Math.pow(board.decay, 49) * 100)}%.</p>
-      <p class="muted small">Grinding a difficulty tier has a ceiling — repeating
-        <code>p</code>-point problems forever converges to
-        <code>${Math.round(1 / (1 - board.decay))} × p</code>. The only way past it is
-        a harder problem, which lands near the front and counts nearly in full.</p>
-    </div>`);
+  if (!total) return;
+  const search = $('#user-search');
+
+  const render = () => {
+    const q = search.value.trim().toLowerCase();
+    const shown = board.standings
+      .filter((s) => s.username.toLowerCase().includes(q))
+      .sort((a, b) => sort.dir * (sort.key === 'username'
+        ? a.username.localeCompare(b.username)
+        : a[sort.key] - b[sort.key] || a.username.localeCompare(b.username)));
+
+    $('#user-rows').innerHTML = shown.map(row).join('');
+    $('#user-count').textContent = q ? `${shown.length} of ${total}` : `${total} ranked`;
+    $('#user-nomatch').hidden = shown.length > 0;
+    $$('th.sort').forEach((th) => {
+      const active = th.dataset.key === sort.key;
+      th.classList.toggle('active', active);
+      $('.arrow', th).textContent = active ? (sort.dir > 0 ? '↑' : '↓') : '';
+    });
+  };
+
+  search.oninput = render;
+  $$('th.sort').forEach((th) => {
+    th.onclick = () => {
+      const key = th.dataset.key;
+      sort = sort.key === key
+        ? { key, dir: -sort.dir }
+        : { key, dir: key === 'rank' || key === 'username' ? 1 : -1 };
+      render();
+    };
+  });
+  render();
 }
 
 /* ---- user profile ---- */
@@ -1476,7 +1517,7 @@ async function route() {
 
   // Detail routes are singular ("#/problem/x"); highlight their list nav entry.
   const section = { problem: 'problems', contest: 'contests', submission: 'submissions',
-                    user: 'leaderboard' }[parts[0]] || parts[0];
+                    user: 'users' }[parts[0]] || parts[0];
   $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === section));
 
   try {
@@ -1490,7 +1531,7 @@ async function route() {
         if (parts[2] === 'scoreboard') await viewScoreboard(decodeURIComponent(parts[1]));
         else await viewContest(decodeURIComponent(parts[1] || ''));
         break;
-      case 'leaderboard': await viewLeaderboard(); break;
+      case 'users': await viewUsers(); break;
       case 'user': await viewUser(decodeURIComponent(parts[1] || '')); break;
       case 'admin':
         if (parts[1] === 'problem' && parts[2]) await viewAdminProblem(decodeURIComponent(parts[2]));

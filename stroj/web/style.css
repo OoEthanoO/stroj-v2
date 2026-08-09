@@ -194,6 +194,31 @@ textarea.code {
   overflow-x: auto;
 }
 .error { color: var(--bad); font-size: 13px; }
+input.search { width: 220px; }
+
+.info {
+  position: relative; align-self: center;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 1px solid var(--border); color: var(--muted);
+  font-size: 12px; font-weight: 600; line-height: 1; cursor: help;
+}
+.info:hover, .info:focus { color: var(--text); border-color: var(--muted); }
+.info-pop {
+  position: absolute; top: calc(100% + 8px); left: -10px; z-index: 20;
+  width: min(360px, 78vw); padding: 12px 14px; cursor: auto;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  color: var(--muted); font-size: 13px; font-weight: 400; line-height: 1.55;
+  visibility: hidden; opacity: 0; transition: opacity .12s;
+}
+.info:hover .info-pop, .info:focus .info-pop { visibility: visible; opacity: 1; }
+.info-pop p { margin: 0 0 8px; }
+.info-pop p:last-child { margin: 0; }
+
+th.sort { cursor: pointer; user-select: none; }
+th.sort:hover, th.sort.active { color: var(--text); }
+th.sort .arrow { margin-left: 4px; }
 
 /* ---------- tables ---------- */
 
