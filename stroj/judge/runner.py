@@ -292,17 +292,17 @@ def _warm_up(
     """
     if abort is not None and abort.is_set():
         return
-    limit = min(WARM_UP_LIMIT_S, lang.effective_time_limit_ms(problem.time_limit_ms) / 1000.0)
+    time_limit_ms, memory_limit_mb = problem.limits_for(lang)
+    limit = min(WARM_UP_LIMIT_S, time_limit_ms / 1000.0)
     try:
         run(
-            lang.run_argv(problem.memory_limit_mb),
+            lang.run_argv(memory_limit_mb),
             cwd=str(box),
             stdin_path=test.input_path,
             stdout_path=str(box / "warmup.out"),
             stderr_path=str(box / "warmup.err"),
             wall_limit_s=max(0.2, limit),
-            memory_limit_bytes=lang.effective_memory_limit_mb(
-                problem.memory_limit_mb) * 1024 * 1024,
+            memory_limit_bytes=memory_limit_mb * 1024 * 1024,
             address_space_rlimit=lang.limit_address_space,
             output_limit_bytes=config.OUTPUT_LIMIT_BYTES,
             use_sandbox=use_sandbox,
@@ -333,7 +333,11 @@ def _run_one_test(
         stale.unlink(missing_ok=True)
 
     result = run(
-        lang.run_argv(problem.memory_limit_mb),
+        # The resolved limit, not the base one: a runtime that caps its heap
+        # with a flag has to be told the ceiling it is actually being held to,
+        # or a per-language limit raises the allowance while leaving the heap
+        # sized for the base and the program dies well inside it.
+        lang.run_argv(memory_limit_mb),
         cwd=str(box),
         stdin_path=test.input_path,
         stdout_path=str(out_path),

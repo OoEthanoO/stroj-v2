@@ -1763,3 +1763,36 @@ class TestTheSubmissionListRespectsALiveContest:
         client.post("/api/submissions", json={
             "problem": "a-plus-b", "language": "python3", "source": "print(1)"})
         assert "practiser" in self.names(client)
+
+
+class TestAPerLanguageLimitReachesTheRuntime:
+    """A runtime that caps its own heap with a flag — the JVM — is told the
+    ceiling through that flag. Sizing it from the base limit while enforcing
+    the per-language one means a raised allowance the program cannot use."""
+
+    def test_the_jvm_heap_follows_the_java_limit(self, admin_client):
+        from stroj.judge import languages, worker
+        from stroj.judge.runner import ProblemSpec
+        make_problem(admin_client, memory_limit_mb=64)
+        admin_client.put("/api/admin/problems/a-plus-b/limits", json={
+            "limits": {"java": {"time_limit_ms": 2000, "memory_limit_mb": 512}}})
+
+        row = db.one("SELECT * FROM problems WHERE slug = 'a-plus-b'")
+        spec = ProblemSpec.from_row(row, worker.load_limits(row["id"]))
+        java = languages.get("java")
+        _, resolved_mb = spec.limits_for(java)
+        assert resolved_mb == 512
+
+        argv = java.run_argv(resolved_mb)
+        assert any("-Xmx512m" == part for part in argv), argv
+        # ...and the base must not be what reaches it.
+        assert not any("-Xmx64m" == part for part in argv), argv
+
+    def test_the_source_uses_the_resolved_value(self):
+        """Guard the wiring itself: the base limit is in scope right beside it
+        and is the easy thing to reach for."""
+        import pathlib
+        from stroj.judge import runner
+        source = pathlib.Path(runner.__file__).read_text()
+        assert "lang.run_argv(problem.memory_limit_mb)" not in source
+        assert "lang.run_argv(memory_limit_mb)" in source
