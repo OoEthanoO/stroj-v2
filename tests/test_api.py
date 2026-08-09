@@ -1413,56 +1413,75 @@ class TestAuthorCarriesItsRole:
         assert _author_of({}) == (None, None)
 
 
-class TestBioMentions:
-    """`@name` in a bio should render as the same styled link the name gets
-    anywhere else — which means the server has to say who actually exists."""
+class TestMentionRoster:
+    """`@name` has to render identically in a bio, a post, a statement and in
+    the live preview of each. The previews have no server round trip to attach
+    a resolved map to, so the whole roster is sent once and reused."""
 
-    def set_bio(self, client, text):
-        assert client.patch("/api/users/me", json={"bio": text}).status_code == 200
-
-    def test_a_mention_reports_the_role(self, client, admin_client):
+    def test_it_lists_every_user_with_their_role(self, client, admin_client):
         admin_client.post("/api/auth/logout")
-        register(client, "writer2")
-        self.set_bio(client, "coached by @admin, thanks")
-        data = client.get("/api/users/writer2").json()
-        assert data["mentions"] == {"admin": "admin"}
+        register(client, "plainuser")
+        users = client.get("/api/mentions").json()["users"]
+        assert users["admin"] == "admin"
+        assert users["plainuser"] == "user"
 
-    def test_a_plain_user_is_marked_plain(self, client, admin_client):
+    def test_it_is_readable_without_signing_in(self, client, admin_client):
+        """Statements and posts are public, so their mentions must render for
+        a signed-out reader too."""
         admin_client.post("/api/auth/logout")
-        register(client, "friend2")
+        response = client.get("/api/mentions")
+        assert response.status_code == 200
+        assert "admin" in response.json()["users"]
+
+    def test_a_new_user_appears(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        before = client.get("/api/mentions").json()["users"]
+        register(client, "latecomer")
+        after = client.get("/api/mentions").json()["users"]
+        assert "latecomer" not in before and after["latecomer"] == "user"
+
+    def test_a_promotion_is_reflected(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "risingstar")
         client.post("/api/auth/logout")
-        register(client, "writer3")
-        self.set_bio(client, "solving with @friend2")
-        assert client.get("/api/users/writer3").json()["mentions"] == {"friend2": "user"}
+        admin_client.post("/api/auth/login",
+                          json={"username": "admin", "password": "test-admin-password"})
+        admin_client.post("/api/admin/users/risingstar/role?role=admin")
+        assert admin_client.get("/api/mentions").json()["users"]["risingstar"] == "admin"
 
-    def test_an_unknown_name_is_not_reported(self, client, admin_client):
+    def test_the_profile_no_longer_carries_its_own_map(self, client, admin_client):
+        """Two sources of truth for the same thing is how they drift apart."""
         admin_client.post("/api/auth/logout")
-        register(client, "writer4")
-        self.set_bio(client, "hello @nobodyhere")
-        assert client.get("/api/users/writer4").json()["mentions"] == {}
+        register(client, "writer9")
+        assert "mentions" not in client.get("/api/users/writer9").json()
 
-    def test_an_email_address_is_not_a_mention(self, client, admin_client):
-        admin_client.post("/api/auth/logout")
-        register(client, "writer5")
-        self.set_bio(client, "reach me at someone@admin more text")
-        assert client.get("/api/users/writer5").json()["mentions"] == {}
 
-    def test_trailing_punctuation_is_not_part_of_the_name(self, client, admin_client):
-        admin_client.post("/api/auth/logout")
-        register(client, "writer6")
-        self.set_bio(client, "thanks @admin.")
-        assert client.get("/api/users/writer6").json()["mentions"] == {"admin": "admin"}
+class TestBioSaving:
+    """`PATCH /api/users/me` takes its bio in the request body. With the model
+    missing, `from __future__ import annotations` leaves the annotation a lazy
+    string, so the module still imports and FastAPI quietly demotes it to a
+    query parameter — every save then 422s at runtime with nothing at import
+    time to warn you."""
 
-    def test_several_mentions_resolve_in_one_query(self, client, admin_client):
+    def test_a_bio_can_be_saved_and_read_back(self, client, admin_client):
         admin_client.post("/api/auth/logout")
-        register(client, "pal")
-        client.post("/api/auth/logout")
-        register(client, "writer7")
-        self.set_bio(client, "@admin and @pal and @admin again")
-        mentions = client.get("/api/users/writer7").json()["mentions"]
-        assert mentions == {"admin": "admin", "pal": "user"}
+        register(client, "biosaver")
+        response = client.patch("/api/users/me", json={"bio": "hello @admin"})
+        assert response.status_code == 200, response.text
+        assert client.get("/api/users/biosaver").json()["bio"] == "hello @admin"
 
-    def test_an_empty_bio_resolves_nothing(self, client, admin_client):
+    def test_the_bio_arrives_in_the_body_not_the_query(self, client, admin_client):
         admin_client.post("/api/auth/logout")
-        register(client, "writer8")
-        assert client.get("/api/users/writer8").json()["mentions"] == {}
+        register(client, "biosaver2")
+        # A query-parameter endpoint would accept this and ignore the body.
+        assert client.patch("/api/users/me").status_code == 422
+
+    def test_an_oversized_bio_is_refused(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "biosaver3")
+        big = "x" * 4001
+        assert client.patch("/api/users/me", json={"bio": big}).status_code == 422
+
+    def test_saving_requires_signing_in(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        assert client.patch("/api/users/me", json={"bio": "hi"}).status_code == 401

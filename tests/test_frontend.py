@@ -261,3 +261,40 @@ def test_samples_come_before_subtasks_on_a_problem_page():
     page = page[:page.index("Submit</h2>")]
     assert page.index("Samples</h2>") < page.index("Subtasks</h2>")
     assert page.index("Samples</h2>") < page.index("Partial scoring</h2>")
+
+
+class TestMentionsRenderEverywhere:
+    """A `@name` should behave the same in a bio, a post, a statement and in
+    the live preview of each. That only holds if every render path shares one
+    roster instead of each call site being wired up by hand."""
+
+    def app(self) -> str:
+        return (WEB / "app.js").read_text()
+
+    def test_markdown_falls_back_to_the_roster(self):
+        app = self.app()
+        assert "function markdown(source, mentions = mentionRoster)" in app
+
+    def test_no_render_site_passes_its_own_map(self):
+        """A call site with a hand-rolled map is one that will fall behind."""
+        app = self.app()
+        calls = re.findall(r"markdown\((?!source)([^)]*)\)", app)
+        # `markdown(x)` is fine; `markdown(x, somethingElse)` is the smell.
+        with_map = [c for c in calls if "," in c and "mentions = mentionRoster" not in c]
+        assert not with_map, f"these pass their own mention map: {with_map}"
+
+    def test_the_roster_is_loaded_at_boot(self):
+        boot = self.app()
+        boot = boot[boot.index("async function boot()"):]
+        assert "/api/mentions" in boot
+        # A roster that fails to load must not stop the site coming up.
+        assert "api('/api/mentions').catch(" in boot
+
+    def test_saving_a_bio_re_renders_with_mentions(self):
+        """The bug this fixes: the saved bio was rendered with no map, so a new
+        mention only appeared after navigating away and back."""
+        app = self.app()
+        save = app[app.index("$('#bio-save').onclick"):]
+        save = save[:save.index("};")]
+        assert "markdown(saved.bio)" in save
+        assert "u.mentions" not in save

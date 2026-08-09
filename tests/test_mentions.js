@@ -24,6 +24,9 @@ const { renderMath } = require(path.join(__dirname, '..', 'stroj', 'web', 'latex
 // Bare declarations would not escape eval's own scope under 'use strict', so
 // evaluate each as an expression. Defined in dependency order: the later ones
 // close over the earlier ones.
+// markdown() falls back to this when no map is passed, which is how every
+// surface — posts, statements, previews — picks mentions up for free.
+let mentionRoster = {};
 const userLink = eval(`(${grab('userLink')})`);
 const inlineMarkdown = eval(`(${grab('inlineMarkdown')})`);
 const markdown = eval(`(${grab('markdown')})`);
@@ -34,6 +37,7 @@ function check(name, condition, detail) {
   if (!condition) { failures += 1; console.error(`FAIL  ${name}\n      ${detail}`); }
 }
 const KNOWN = { ann: 'admin', bob: 'user', 'dot.name': 'user' };
+mentionRoster = KNOWN;
 const render = (text, mentions = KNOWN) => markdown(text, mentions);
 const has = (name, text, needle) => {
   const out = render(text);
@@ -71,9 +75,18 @@ has('italic still works beside a mention', '@ann and *i*', '<em>i</em>');
 has('a mention inside a list item', '- see @ann', '<li>');
 has('math still renders beside a mention', '@ann knows $x^2$', '<msup>');
 
-// Without a map — every other caller of markdown() — nothing changes.
-check('no map means no linking',
+// Every other caller passes nothing and still gets mentions, which is what
+// makes a post, a statement and a bio behave the same way.
+check('the roster is used when no map is passed',
+  markdown('hello @ann').includes('user-link user-admin'), markdown('hello @ann'));
+// An explicit map still wins, and an empty one disables linking outright.
+check('an explicit empty map disables linking',
+  !markdown('hello @ann', {}).includes('<a'), markdown('hello @ann', {}));
+// Before the roster loads there is simply nothing to link against.
+mentionRoster = {};
+check('an empty roster links nothing',
   !markdown('hello @ann').includes('<a'), markdown('hello @ann'));
+mentionRoster = KNOWN;
 
 // The rendered bio is written with innerHTML, so a crafted name must not
 // escape. Names are validated server-side, but never rely on that alone.

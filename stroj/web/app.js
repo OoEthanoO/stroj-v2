@@ -277,7 +277,13 @@ function inlineMarkdown(text, mentions) {
 }
 
 /** A deliberately small Markdown subset: headings, lists, code, emphasis. */
-function markdown(source, mentions) {
+/* Every username on the judge, so `@name` renders the same way in a statement,
+ * a post, a bio, and in the live preview of each — which has no server round
+ * trip to attach a resolved map to. Loaded once at boot; empty until then, and
+ * an empty roster simply means no mention is linked. */
+let mentionRoster = {};
+
+function markdown(source, mentions = mentionRoster) {
   // Strip NULs so statement text can never forge a code-span sentinel.
   const lines = esc((source || '').replace(/[\u0000\u0001\u0002]/g, ''))
     .replace(/\r\n/g, '\n').split('\n');
@@ -1238,7 +1244,7 @@ async function viewUser(username) {
           ${u.editable ? '<button class="small" id="edit-bio">Edit</button>' : ''}
         </div>
         <div class="statement" id="bio-view">${u.bio.trim()
-          ? markdown(u.bio, u.mentions || {})
+          ? markdown(u.bio)
           : '<p class="muted small">Nothing here yet.</p>'}</div>
         <div id="bio-edit" hidden>
           <textarea id="bio-text" class="code" style="min-height:160px">${esc(u.bio)}</textarea>
@@ -2263,10 +2269,12 @@ async function boot() {
     }
 
     try {
-      const [me, langs, config, version] = await Promise.all([
+      const [me, langs, config, version, roster] = await Promise.all([
         api('/api/auth/me'), api('/api/languages'), api('/api/config'),
         api('/api/version').catch(() => null),
+        api('/api/mentions').catch(() => null),
       ]);
+      mentionRoster = (roster && roster.users) || {};
       state.user = me.user;
       state.languages = langs.languages;
       state.defaultLanguage = langs.default;
