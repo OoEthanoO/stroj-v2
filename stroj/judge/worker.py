@@ -221,11 +221,36 @@ def drain() -> int:
 
 
 def requeue_stuck() -> int:
-    """Return submissions abandoned by a crashed worker to the queue."""
-    cursor = db.execute(
-        "UPDATE submissions SET verdict = ? WHERE verdict = ?", (PENDING, JUDGING)
-    )
-    return cursor.rowcount
+    """Return submissions abandoned by a stopped judge to the queue.
+
+    Called at startup, so this is what a submission that was mid-run when the
+    container went down for an update comes back as. It has to come back
+    *clean*: an interrupted run has already published some of its tests and
+    added their points to the row, and leaving those behind shows the submitter
+    a half-finished result sitting at "pending" that never resolves into what
+    they eventually get. Clear the partial run and let it be judged again from
+    the top.
+    """
+    with db.transaction() as conn:
+        stuck = [
+            row["id"] for row in conn.execute(
+                "SELECT id FROM submissions WHERE verdict = ?", (JUDGING,)
+            )
+        ]
+        if not stuck:
+            return 0
+        marks = ", ".join("?" * len(stuck))
+        conn.execute(
+            f"DELETE FROM submission_tests WHERE submission_id IN ({marks})",
+            tuple(stuck),
+        )
+        conn.execute(
+            f"UPDATE submissions SET verdict = ?, score = 0, time_ms = 0,"
+            f" memory_kb = 0, message = '', earned_percent = 0, judged_at = NULL"
+            f" WHERE id IN ({marks})",
+            (PENDING, *stuck),
+        )
+    return len(stuck)
 
 
 class JudgeWorker(threading.Thread):

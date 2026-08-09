@@ -1485,3 +1485,70 @@ class TestBioSaving:
     def test_saving_requires_signing_in(self, client, admin_client):
         admin_client.post("/api/auth/logout")
         assert client.patch("/api/users/me", json={"bio": "hi"}).status_code == 401
+
+
+class TestAnInterruptedJudgeRecovers:
+    """A patch mid-contest now deploys immediately, so a submission being
+    judged when the container goes down is an ordinary event rather than an
+    accident. It has to come back as if it had never started."""
+
+    def mid_judge(self, client, admin_client):
+        """A submission left exactly as a killed worker would leave it."""
+        make_problem(admin_client)
+        admin_client.post("/api/auth/logout")
+        register(client, "interrupted")
+        sid = client.post("/api/submissions", json={
+            "problem": "a-plus-b", "language": "python3",
+            "source": "a,b=map(int,input().split())\nprint(a+b)"}).json()["id"]
+        # Claimed, one test published, then the process dies.
+        db.execute("UPDATE submissions SET verdict = 'JUDGING', score = 1,"
+                   " time_ms = 42, memory_kb = 900, message = 'half done'"
+                   " WHERE id = ?", (sid,))
+        db.execute("INSERT INTO submission_tests"
+                   " (submission_id, idx, verdict, time_ms, memory_kb, points, message)"
+                   " VALUES (?, 1, 'AC', 42, 900, 1, '')", (sid,))
+        return sid
+
+    def test_it_goes_back_on_the_queue(self, client, admin_client):
+        sid = self.mid_judge(client, admin_client)
+        assert worker.requeue_stuck() == 1
+        assert db.one("SELECT verdict FROM submissions WHERE id = ?",
+                      (sid,))["verdict"] == "PENDING"
+
+    def test_the_partial_run_is_cleared(self, client, admin_client):
+        """Left behind, the submitter sees a half-finished result stuck at
+        'pending' that never becomes what they actually get."""
+        sid = self.mid_judge(client, admin_client)
+        worker.requeue_stuck()
+        row = db.one("SELECT score, time_ms, memory_kb, message, earned_percent,"
+                     " judged_at FROM submissions WHERE id = ?", (sid,))
+        assert row["score"] == 0 and row["time_ms"] == 0 and row["memory_kb"] == 0
+        assert row["message"] == "" and row["earned_percent"] == 0
+        assert row["judged_at"] is None
+        left = db.one("SELECT COUNT(*) AS n FROM submission_tests"
+                      " WHERE submission_id = ?", (sid,))["n"]
+        assert left == 0
+
+    def test_it_then_judges_normally(self, client, admin_client):
+        sid = self.mid_judge(client, admin_client)
+        worker.requeue_stuck()
+        assert worker.drain() == 1
+        detail = client.get(f"/api/submissions/{sid}").json()
+        assert detail["verdict"] == "AC"
+        assert detail["score"] == detail["max_score"]
+        assert len(detail["tests"]) == 2
+
+    def test_finished_submissions_are_untouched(self, client, admin_client):
+        make_problem(admin_client)
+        admin_client.post("/api/auth/logout")
+        register(client, "finished")
+        sid = client.post("/api/submissions", json={
+            "problem": "a-plus-b", "language": "python3",
+            "source": "a,b=map(int,input().split())\nprint(a+b)"}).json()["id"]
+        worker.drain()
+        before = dict(db.one("SELECT * FROM submissions WHERE id = ?", (sid,)))
+        assert worker.requeue_stuck() == 0
+        assert dict(db.one("SELECT * FROM submissions WHERE id = ?", (sid,))) == before
+
+    def test_nothing_stuck_is_a_no_op(self, admin_client):
+        assert worker.requeue_stuck() == 0

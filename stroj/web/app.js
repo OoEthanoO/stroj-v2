@@ -577,6 +577,48 @@ async function viewProblems() {
   apply();
 }
 
+/* Unsaved form state, kept across a reload.
+ *
+ * An update now forces a refresh rather than offering one, so anything a
+ * person has typed and not yet saved has to survive it. Every editor on the
+ * site registers its fields here; they are written on each keystroke and
+ * dropped once the form saves successfully.
+ */
+const FORM_DRAFT_PREFIX = 'stroj:form:';
+
+function keepDraft(name, fields) {
+  const key = FORM_DRAFT_PREFIX + name;
+
+  // Restore first, so a reload lands you back where you were.
+  let restored = false;
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) || 'null');
+    if (saved) {
+      for (const [id, el] of Object.entries(fields)) {
+        if (!el || saved[id] === undefined) continue;
+        if (el.type === 'checkbox') el.checked = saved[id];
+        else el.value = saved[id];
+        restored = true;
+      }
+    }
+  } catch { /* a corrupt draft is not worth failing the page over */ }
+
+  const snapshot = () => {
+    const data = {};
+    for (const [id, el] of Object.entries(fields)) {
+      if (!el) continue;
+      data[id] = el.type === 'checkbox' ? el.checked : el.value;
+    }
+    try { localStorage.setItem(key, JSON.stringify(data)); } catch { /* full */ }
+  };
+  for (const el of Object.values(fields)) {
+    if (!el) continue;
+    el.addEventListener('input', snapshot);
+    el.addEventListener('change', snapshot);
+  }
+  return { restored, clear: () => localStorage.removeItem(key), snapshot };
+}
+
 const draftKey = (slug, language) => `stroj:draft:${slug}:${language}`;
 
 async function viewProblem(slug, params) {
@@ -1275,6 +1317,10 @@ async function viewUser(username) {
   if (!u.editable) return;
   const view = $('#bio-view');
   const editor = $('#bio-edit');
+  const bioDraft = keepDraft(`bio:${u.username}`, { bio: $('#bio-text') });
+  // A restored draft means there was unsaved text; show the editor, not the
+  // rendered bio, or the work looks lost even though it is right there.
+  if (bioDraft.restored) { view.hidden = true; editor.hidden = false; }
   $('#edit-bio').onclick = () => { view.hidden = true; editor.hidden = false; };
   $('#bio-cancel').onclick = () => { view.hidden = false; editor.hidden = true; };
   $('#bio-save').onclick = async () => {
@@ -1286,6 +1332,7 @@ async function viewUser(username) {
         ? markdown(saved.bio)
         : '<p class="muted small">Nothing here yet.</p>';
       view.hidden = false; editor.hidden = true;
+      bioDraft.clear();
       toast('Profile updated.', 'good');
     } catch (err) { toast(err.message, 'bad'); }
   };
@@ -1381,6 +1428,13 @@ async function viewAdminProblem(slug) {
 
   bindTypeChips('e-types');
 
+  // A forced refresh must not cost an author their half-written statement.
+  const problemDraft = keepDraft(`problem:${slug}`, {
+    title: $('#e-title'), tl: $('#e-tl'), ml: $('#e-ml'), checker: $('#e-checker'),
+    eps: $('#e-eps'), points: $('#e-points'), author: $('#e-author'),
+    partial: $('#e-partial'), visible: $('#e-visible'), statement: $('#e-statement'),
+  });
+
   // Only the rows an author actually touches are sent, so opening the editor
   // and saving does not silently pin every language to its derived value.
   const touched = new Set();
@@ -1473,6 +1527,7 @@ async function viewAdminProblem(slug) {
         },
       });
       $('#e-status').textContent = 'Saved.';
+      problemDraft.clear();
       toast('Problem updated.', 'good');
     } catch (err) {
       $('#e-status').textContent = '';
@@ -1528,6 +1583,10 @@ async function viewAdminPost(slug) {
       <button id="e-save" class="primary">Save changes</button>
     </div>`, { wide: true });
 
+  const postDraft = keepDraft(`post:${slug}`, {
+    title: $('#e-title'), body: $('#e-body'),
+    pinned: $('#e-pinned'), published: $('#e-published'),
+  });
   markdownEditor($('#e-body'), $('#e-preview'));
 
   $('#e-save').onclick = async () => {
@@ -1545,6 +1604,7 @@ async function viewAdminPost(slug) {
         },
       });
       $('#e-status').textContent = 'Saved.';
+      postDraft.clear();
       toast('Post updated.', 'good');
     } catch (err) {
       $('#e-status').textContent = '';
@@ -1770,6 +1830,16 @@ async function viewAdmin() {
     try { await fn(...args); } catch (err) { toast(err.message, 'bad'); }
   };
 
+  const newPostDraft = keepDraft('new-post', {
+    title: $('#n-title'), slug: $('#n-slug'), body: $('#n-body'),
+    pinned: $('#n-pinned'), published: $('#n-published'),
+  });
+  const newProblemDraft = keepDraft('new-problem', {
+    slug: $('#p-slug'), title: $('#p-title'), points: $('#p-points'),
+    author: $('#p-author'), tl: $('#p-tl'), ml: $('#p-ml'),
+    checker: $('#p-checker'), eps: $('#p-eps'), partial: $('#p-partial'),
+    visible: $('#p-visible'), statement: $('#p-statement'),
+  });
   markdownEditor($('#n-body'), $('#n-preview'));
 
   // The slug is the post's permalink; keep it following the title until an
@@ -1792,6 +1862,7 @@ async function viewAdmin() {
         published: $('#n-published').checked,
       },
     });
+    newPostDraft.clear();
     toast('Posted.', 'good');
     route();
   });
@@ -1879,6 +1950,7 @@ async function viewAdmin() {
           `/api/admin/problems/${encodeURIComponent(slug)}/tests/upload`,
           { method: 'POST', form });
         toast(`Created with ${result.tests} test case(s).`, 'good');
+        newProblemDraft.clear();
       } catch (err) {
         // The archive passed inspection, so this is unexpected — but never
         // leave a testless problem behind because the second call failed.
@@ -1889,6 +1961,7 @@ async function viewAdmin() {
     } else {
       toast('Problem created — it needs test data before it can be judged.', 'good');
     }
+    newProblemDraft.clear();
     route();
   });
 
@@ -2160,7 +2233,6 @@ function showUpdating(detail) {
   blockedByUpdate = true;
   $('#updating-detail').textContent = detail;
   $('#updating').hidden = false;
-  $('#update-banner').hidden = true;
 }
 
 /* Deliberately not dismissible. The warning is about a real hazard — this tab
@@ -2171,8 +2243,21 @@ function hideUpdating() {
   $('#updating').hidden = true;
 }
 
-function showUpdateBanner() {
-  $('#update-banner').hidden = false;
+/* Reloading a tab that is merely behind, rather than asking it to.
+ *
+ * The banner this replaces left people running a page that could call an
+ * endpoint which had changed shape. Every editor now writes its draft on each
+ * keystroke, so a refresh costs nothing — and the one thing that must not
+ * happen is a loop, if a cached page keeps coming back stale. Reload at most
+ * once per target commit, and after that leave the tab alone.
+ */
+const RELOAD_MARK = 'stroj:reloaded-for';
+
+function refreshForUpdate(target) {
+  if (sessionStorage.getItem(RELOAD_MARK) === target) return false;
+  try { sessionStorage.setItem(RELOAD_MARK, target); } catch { /* private mode */ }
+  location.reload();
+  return true;
 }
 
 /**
@@ -2224,7 +2309,7 @@ async function checkVersions() {
     location.reload();
     return verdict;
   }
-  if (verdict === 'stale') showUpdateBanner();
+  if (verdict === 'stale') refreshForUpdate(frontend);
   return verdict;
 }
 
@@ -2232,7 +2317,6 @@ function startVersionWatch() {
   // Deliberately not registered with `every()`, which route() clears on every
   // navigation — this has to keep running for the life of the tab.
   setInterval(() => { checkVersions().catch(() => {}); }, VERSION_POLL_MS);
-  $('#update-refresh').onclick = () => location.reload();
 }
 
 /* ------------------------------------------------------------------- boot */

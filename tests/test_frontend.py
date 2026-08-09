@@ -162,16 +162,23 @@ class TestVersionFilesStayFresh:
     def test_the_build_emits_it(self):
         assert "version.json" in (ROOT / "scripts" / "build-static.sh").read_text()
 
-    def test_the_update_banner_cannot_be_dismissed(self):
-        """The warning describes a live hazard — this tab may call an endpoint
-        that has changed shape — so it must not be closable while it applies."""
+    def test_there_is_no_banner_to_ignore(self):
+        """An update forces a refresh rather than offering one, so a tab is
+        never left running a page whose endpoints may have changed shape."""
         html = (WEB / "index.html").read_text()
         app = (WEB / "app.js").read_text()
-        banner = html[html.index('id="update-banner"'):]
-        banner = banner[:banner.index("</div>")]
-        assert "dismiss" not in banner.lower()
-        assert "Refresh" in banner, "the one action offered should still be there"
-        assert "bannerDismissed" not in app
+        assert "update-banner" not in html and "update-banner" not in app
+        assert "showUpdateBanner" not in app
+        assert "refreshForUpdate(" in app
+
+    def test_the_forced_refresh_cannot_loop(self):
+        """If a cached page kept coming back stale, an unguarded reload would
+        spin forever and the site would be unusable."""
+        app = (WEB / "app.js").read_text()
+        fn = app[app.index("function refreshForUpdate("):]
+        fn = fn[:fn.index("\n}")]
+        assert "sessionStorage.getItem(RELOAD_MARK) === target" in fn
+        assert "return false" in fn
 
 
 def test_the_dmoj_table_disclaims_a_conversion():
@@ -298,3 +305,65 @@ class TestMentionsRenderEverywhere:
         save = save[:save.index("};")]
         assert "markdown(saved.bio)" in save
         assert "u.mentions" not in save
+
+
+class TestNothingIsLostAcrossAnUpdate:
+    """An update now forces a refresh instead of offering one, so every editor
+    has to survive being reloaded from under someone mid-sentence."""
+
+    def app(self) -> str:
+        return (WEB / "app.js").read_text()
+
+    def test_every_editor_keeps_a_draft(self):
+        app = self.app()
+        # Requiring the opening quote skips the function's own definition,
+        # and the character class has to allow the dash in `new-post`.
+        kept = re.findall(r"keepDraft\(\s*[`'\"]([\w:${}.\-]+)", app)
+        # The long-form surfaces: problem statement, post body, bio, and the
+        # two create forms that hold the same kind of text.
+        assert any("problem:" in k for k in kept), kept
+        assert any("post:" in k for k in kept), kept
+        assert any("bio:" in k for k in kept), kept
+        assert "new-post" in kept and "new-problem" in kept, kept
+
+    def test_a_draft_is_written_on_every_keystroke(self):
+        """Saving on blur would lose the sentence being typed when the reload
+        lands, which is exactly the moment this has to work."""
+        fn = self.app()
+        fn = fn[fn.index("function keepDraft("):]
+        fn = fn[:fn.index("\n}")]
+        assert "addEventListener('input'" in fn
+        assert "addEventListener('change'" in fn
+
+    def test_a_draft_is_dropped_once_it_saves(self):
+        """Otherwise the next visit restores work that is already committed."""
+        app = self.app()
+        assert app.count(".clear()") >= 5
+
+    def test_a_corrupt_draft_does_not_break_the_page(self):
+        fn = self.app()
+        fn = fn[fn.index("function keepDraft("):]
+        fn = fn[:fn.index("\n}")]
+        assert "catch" in fn
+
+    def test_solution_drafts_still_persist(self):
+        """These predate the change and are the most valuable of the lot."""
+        app = self.app()
+        assert "localStorage.setItem(draftKey(" in app
+
+
+class TestUpdatesAreNotDeferredForContests:
+    """A patch pushed mid-contest is almost always the fix for something
+    breaking that contest, so waiting until the contest ends is backwards."""
+
+    def script(self) -> str:
+        return (ROOT / "scripts" / "auto-update.sh").read_text()
+
+    def test_the_updater_no_longer_checks_for_a_live_contest(self):
+        body = self.script()
+        assert "deferring: a contest is running" not in body
+        assert "contest.RUNNING" not in body
+
+    def test_it_still_skips_when_already_current(self):
+        """Removing the deferral must not turn every poll into a redeploy."""
+        assert 'if [ "$deployed" = "$remote_rev" ]; then' in self.script()

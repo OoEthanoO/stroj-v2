@@ -145,26 +145,12 @@ if [ "$deployed" = "$remote_rev" ]; then
 fi
 log "running ${deployed:0:7}${deployed:+ }-> deploying ${remote_rev:0:7}"
 
-# A redeploy rebuilds the image and restarts the container. In-flight
-# submissions get requeued rather than lost, but the site is down for a minute
-# and verdicts stall — which is the worst possible time to do it. Wait.
-if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
-    if docker exec -i "$CONTAINER" python - <<'PY'
-import sys
-sys.path.insert(0, "/app")
-from stroj import contest, db
-
-rows = db.query("SELECT * FROM contests")
-running = [r for r in rows if contest.state_of(r) == contest.RUNNING]
-for row in running:
-    print(f"contest '{row['slug']}' is live until {row['ends_at']}")
-sys.exit(0 if running else 1)
-PY
-    then
-        log "deferring: a contest is running"
-        exit 0
-    fi
-fi
+# A redeploy used to be deferred while a contest was live. It no longer is: a
+# patch pushed mid-contest is almost always the fix for something breaking that
+# contest, so making it wait until the contest ends is exactly backwards. The
+# cost of restarting is bounded instead — in-flight submissions are requeued
+# and judged again, and the site refuses to load against a half-updated
+# backend rather than showing a broken one.
 
 # Carry the running container's configuration across the redeploy. Without
 # this, bootstrap would fall back to its defaults and silently flip
