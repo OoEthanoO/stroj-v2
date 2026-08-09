@@ -372,6 +372,19 @@ class TestAdminAuthoring:
         assert detail["time_limit_ms"] == 5000
         assert detail["visible"] is False
 
+    def test_types_are_normalised_and_replaced_wholesale(self, admin_client):
+        admin_client.post("/api/admin/problems", json={
+            "slug": "typed", "title": "Typed", "types": ["Graphs", " dp ", "graphs"]})
+        assert admin_client.get("/api/problems/typed").json()["types"] == ["dp", "graphs"]
+
+        admin_client.patch("/api/admin/problems/typed", json={"types": ["greedy"]})
+        assert admin_client.get("/api/problems/typed").json()["types"] == ["greedy"]
+
+    def test_bad_type_rejected(self, admin_client):
+        response = admin_client.post(
+            "/api/admin/problems", json={"slug": "typed", "title": "x", "types": ["d&p"]})
+        assert response.status_code == 400
+
     def test_deleting_takes_the_test_data_with_it(self, admin_client, isolated_data):
         make_problem(admin_client)
         directory = isolated_data / "problems" / "a-plus-b"
@@ -982,3 +995,124 @@ class TestLastAdminIsProtected:
 
     def test_unknown_user_is_a_404(self, admin_client):
         assert admin_client.post("/api/admin/users/ghost/role?role=admin").status_code == 404
+
+
+class TestPosts:
+    def make_post(self, admin_client, slug="hello", **overrides):
+        body = {"slug": slug, "title": "Hello", "body": "# Hi\n\nWelcome.", **overrides}
+        response = admin_client.post("/api/admin/posts", json=body)
+        assert response.status_code == 200, response.text
+        return slug
+
+    def test_posting_and_reading(self, client, admin_client):
+        self.make_post(admin_client)
+        admin_client.post("/api/auth/logout")
+        posts = client.get("/api/posts").json()["posts"]
+        assert [p["slug"] for p in posts] == ["hello"]
+        assert posts[0]["author"] == "admin"
+        assert client.get("/api/posts/hello").json()["body"] == "# Hi\n\nWelcome."
+
+    def test_users_cannot_post(self, client):
+        register(client)
+        assert client.post(
+            "/api/admin/posts", json={"slug": "sneaky", "title": "x"}).status_code == 403
+
+    def test_drafts_are_admin_only(self, client, admin_client):
+        self.make_post(admin_client, slug="draft", published=False)
+        assert len(admin_client.get("/api/posts").json()["posts"]) == 1
+        admin_client.post("/api/auth/logout")
+        assert client.get("/api/posts").json()["posts"] == []
+        assert client.get("/api/posts/draft").status_code == 404
+
+    def test_pinned_posts_come_first(self, admin_client):
+        self.make_post(admin_client, slug="older")
+        self.make_post(admin_client, slug="newer")
+        admin_client.patch("/api/admin/posts/older", json={"pinned": True})
+        posts = admin_client.get("/api/posts").json()["posts"]
+        assert [p["slug"] for p in posts] == ["older", "newer"]
+
+    def test_editing_stamps_updated_at(self, admin_client):
+        self.make_post(admin_client)
+        before = admin_client.get("/api/posts/hello").json()
+        admin_client.patch("/api/admin/posts/hello", json={"title": "Hello again"})
+        after = admin_client.get("/api/posts/hello").json()
+        assert after["title"] == "Hello again"
+        assert after["updated_at"] > before["created_at"]
+
+    def test_deleting(self, admin_client):
+        self.make_post(admin_client)
+        assert admin_client.delete("/api/admin/posts/hello").status_code == 200
+        assert admin_client.get("/api/posts/hello").status_code == 404
+
+    def test_duplicate_slug_conflicts(self, admin_client):
+        self.make_post(admin_client)
+        assert admin_client.post(
+            "/api/admin/posts", json={"slug": "hello", "title": "x"}).status_code == 409
+
+
+class TestPatchIsAllOrNothing:
+    """Types live in their own table, so they are written by a different
+    statement than the rest of a patch. Applying them before the request was
+    fully validated let a rejected patch still change the problem."""
+
+    def test_a_rejected_patch_leaves_types_alone(self, admin_client):
+        make_problem(admin_client, types=["implementation"])
+        response = admin_client.patch("/api/admin/problems/a-plus-b",
+                                      json={"types": ["sorting"], "checker": "nonsense"})
+        assert response.status_code == 400
+        assert admin_client.get("/api/problems/a-plus-b").json()["types"] == ["implementation"]
+
+    def test_an_unknown_author_also_leaves_types_alone(self, admin_client):
+        make_problem(admin_client, types=["implementation"])
+        response = admin_client.patch("/api/admin/problems/a-plus-b",
+                                      json={"types": ["sorting"], "author": "nobody-here"})
+        assert response.status_code == 404
+        assert admin_client.get("/api/problems/a-plus-b").json()["types"] == ["implementation"]
+
+    def test_a_bad_type_leaves_the_other_fields_alone(self, admin_client):
+        make_problem(admin_client, points=100)
+        response = admin_client.patch("/api/admin/problems/a-plus-b",
+                                      json={"types": ["d&p"], "points": 250})
+        assert response.status_code == 400
+        assert admin_client.get("/api/problems/a-plus-b").json()["points"] == 100
+
+    def test_a_types_only_patch_reports_that_it_changed_something(self, admin_client):
+        make_problem(admin_client)
+        response = admin_client.patch("/api/admin/problems/a-plus-b", json={"types": ["dp"]})
+        assert response.json()["updated"] == 1
+        assert admin_client.get("/api/problems/a-plus-b").json()["types"] == ["dp"]
+
+    def test_an_empty_patch_still_reports_nothing(self, admin_client):
+        make_problem(admin_client)
+        assert admin_client.patch("/api/admin/problems/a-plus-b", json={}).json()["updated"] == 0
+
+    def test_types_count_alongside_column_changes(self, admin_client):
+        make_problem(admin_client)
+        response = admin_client.patch("/api/admin/problems/a-plus-b",
+                                      json={"types": ["dp"], "points": 250})
+        assert response.json()["updated"] == 2
+
+
+class TestSchemaReachesExistingDatabases:
+    """New tables arrive through `CREATE TABLE IF NOT EXISTS` in schema.sql
+    rather than the `_ADDED_COLUMNS` list, which only retrofits columns. A
+    deploy against the live database depends on that actually working."""
+
+    def test_new_tables_appear_on_a_database_that_predates_them(self, isolated_data):
+        db.init_db()
+        db.execute("DROP TABLE posts")
+        db.execute("DROP TABLE problem_types")
+        names = lambda: {r["name"] for r in db.query(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert "posts" not in names() and "problem_types" not in names()
+
+        db.init_db()
+        assert {"posts", "problem_types"} <= names()
+
+    def test_existing_rows_survive_the_upgrade(self, isolated_data):
+        db.init_db()
+        db.insert("INSERT INTO users (username, password_hash, created_at)"
+                  " VALUES ('keeper', 'x', ?)", (db.utcnow(),))
+        db.execute("DROP TABLE posts")
+        db.init_db()
+        assert db.one("SELECT 1 FROM users WHERE username = 'keeper'") is not None

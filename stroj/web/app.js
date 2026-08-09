@@ -81,6 +81,46 @@ function userLink(username, role) {
 
 const pointsPill = (points) => `<span class="points-pill">${Number(points) || 0}</span>`;
 
+const typePills = (types) => ((types || []).length
+  ? types.map((t) => `<span class="pill">${esc(t)}</span>`).join(' ')
+  : '<span class="muted">—</span>');
+
+/* Multiselect of problem types, as toggleable chips. Assigning types and
+ * filtering by them are the same control; only authoring passes `creatable`,
+ * which adds a field for types nothing uses yet. */
+function typeChips(id, all, selected = [], creatable = false) {
+  const chip = (t) => `<button type="button" class="chip${selected.includes(t) ? ' on' : ''}"
+    data-type="${esc(t)}">${esc(t)}</button>`;
+  return `<div class="chips" id="${id}">${all.map(chip).join('')}
+    ${creatable ? '<input class="chip-add" placeholder="+ type">' : ''}</div>`;
+}
+
+const chosenTypes = (id) => $$(`#${id} .chip.on`).map((c) => c.dataset.type);
+
+function bindTypeChips(id, onChange = () => {}) {
+  const root = $(`#${id}`);
+  root.onclick = (event) => {
+    const chip = event.target.closest('.chip');
+    if (!chip) return;
+    chip.classList.toggle('on');
+    onChange();
+  };
+  const add = $('.chip-add', root);
+  if (!add) return;
+  add.onkeydown = (event) => {
+    if (event.key !== 'Enter' && event.key !== ',') return;
+    event.preventDefault();
+    const value = add.value.trim().toLowerCase();
+    add.value = '';
+    if (!value) return;
+    const existing = $$('.chip', root).find((c) => c.dataset.type === value);
+    if (existing) existing.classList.add('on');
+    else add.insertAdjacentHTML('beforebegin',
+      `<button type="button" class="chip on" data-type="${esc(value)}">${esc(value)}</button>`);
+    onChange();
+  };
+}
+
 function memory(kb) {
   if (!kb) return '—';
   return kb >= 1024 ? `${(kb / 1024).toFixed(1)} MiB` : `${kb} KiB`;
@@ -266,6 +306,59 @@ function setView(html, { wide = false } = {}) {
   main.innerHTML = html;
 }
 
+/** Wire a Markdown textarea to a live preview, rendered by the same function
+ *  that publishes it, with Tab inserting spaces instead of leaving the field. */
+function markdownEditor(editor, preview) {
+  const render = () => { preview.innerHTML = markdown(editor.value); };
+  render();
+  editor.oninput = render;
+  editor.onkeydown = (event) => {
+    if (event.key !== 'Tab') return;
+    event.preventDefault();
+    const { selectionStart: a, selectionEnd: b, value } = editor;
+    editor.value = value.slice(0, a) + '    ' + value.slice(b);
+    editor.selectionStart = editor.selectionEnd = a + 4;
+    render();
+  };
+}
+
+/* ---- stream ---- */
+
+function postCard(p) {
+  return `
+    <article class="card post">
+      <h2><a href="#/post/${encodeURIComponent(p.slug)}">${esc(p.title)}</a></h2>
+      <div class="post-meta small muted">
+        ${userLink(p.author, p.author_role)}
+        <span title="${esc(absolute(p.created_at))}">posted ${esc(relative(p.created_at))}</span>
+        ${p.updated_at !== p.created_at ? '<span>· edited</span>' : ''}
+        ${p.pinned ? '<span class="pill">pinned</span>' : ''}
+        ${p.published ? '' : '<span class="pill">draft</span>'}
+        ${state.user && state.user.is_admin
+          ? `<a class="pill" href="#/admin/post/${encodeURIComponent(p.slug)}">edit</a>` : ''}
+      </div>
+      <div class="statement">${markdown(p.body)}</div>
+    </article>`;
+}
+
+async function viewHome() {
+  const { posts } = await api('/api/posts');
+  setView(`
+    <div class="page-head">
+      <h1>stroj</h1>
+      <span class="muted small">news and announcements</span>
+    </div>
+    ${posts.length
+      ? posts.map(postCard).join('')
+      : `<div class="empty">Nothing posted yet.${state.user && state.user.is_admin
+          ? ' Write one from the <a href="#/admin">admin page</a>.' : ''}</div>`}`);
+}
+
+async function viewPost(slug) {
+  const p = await api(`/api/posts/${encodeURIComponent(slug)}`);
+  setView(`<div class="page-head"><a href="#/home">← Stream</a></div>${postCard(p)}`);
+}
+
 /* ---- problems ---- */
 
 async function viewProblems() {
@@ -277,26 +370,56 @@ async function viewProblems() {
         : 'Run <code class="mono">python -m stroj seed</code> to load the samples.'}</div>`);
     return;
   }
-  const rows = problems.map((p) => `
+  const row = (p) => `
     <tr>
       <td class="wide">
         ${state.user ? `<span class="dot ${esc(p.status)}" title="${esc(p.status)}"></span>` : ''}
         <a href="#/problem/${encodeURIComponent(p.slug)}">${esc(p.title)}</a>
         ${p.visible ? '' : ' <span class="pill">hidden</span>'}
       </td>
+      <td class="small">${typePills(p.types)}</td>
       <td class="num">${pointsPill(p.points)}</td>
       <td class="small">${p.author ? userLink(p.author) : '<span class="muted">—</span>'}</td>
       <td class="num">${p.time_limit_ms} ms</td>
       <td class="num">${p.memory_limit_mb} MiB</td>
       <td class="small muted">${esc(p.checker)}${p.partial ? ' · partial' : ''}</td>
-    </tr>`).join('');
+    </tr>`;
 
+  const types = [...new Set(problems.flatMap((p) => p.types))].sort();
   setView(`
-    <div class="page-head"><h1>Problems</h1><span class="muted small">${problems.length} total</span></div>
+    <div class="page-head"><h1>Problems</h1><span class="muted small" id="p-count"></span></div>
+    <div class="filters">
+      <div class="row">
+        <input id="f-q" type="search" placeholder="Search problems…" style="flex:2;min-width:180px">
+        <input id="f-min" type="number" min="0" placeholder="Min points" style="width:120px">
+        <input id="f-max" type="number" min="0" placeholder="Max points" style="width:120px">
+      </div>
+      ${types.length ? `<div class="row" style="margin-top:8px">
+        <span class="muted small">Types</span>${typeChips('f-types', types)}</div>` : ''}
+    </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Problem</th><th class="num">Points</th><th>Author</th><th class="num">Time</th><th class="num">Memory</th><th>Checker</th></tr></thead>
-      <tbody>${rows}</tbody>
+      <thead><tr><th>Problem</th><th>Types</th><th class="num">Points</th><th>Author</th><th class="num">Time</th><th class="num">Memory</th><th>Checker</th></tr></thead>
+      <tbody id="p-rows"></tbody>
     </table></div>`);
+
+  const apply = () => {
+    const q = $('#f-q').value.trim().toLowerCase();
+    // No type selected means no type filter; several mean any of them.
+    const chosen = types.length ? chosenTypes('f-types') : [];
+    const min = Number($('#f-min').value) || 0;
+    const max = Number($('#f-max').value) || Infinity;
+    const shown = problems.filter((p) =>
+      (!q || p.title.toLowerCase().includes(q) || p.slug.includes(q))
+      && (!chosen.length || chosen.some((t) => p.types.includes(t)))
+      && p.points >= min && p.points <= max);
+    $('#p-rows').innerHTML = shown.map(row).join('')
+      || '<tr><td colspan="7" class="muted">Nothing matches those filters.</td></tr>';
+    $('#p-count').textContent = shown.length === problems.length
+      ? `${problems.length} total` : `${shown.length} of ${problems.length}`;
+  };
+  $$('.filters input').forEach((el) => { el.oninput = apply; });
+  if (types.length) bindTypeChips('f-types', apply);
+  apply();
 }
 
 const draftKey = (slug, language) => `stroj:draft:${slug}:${language}`;
@@ -324,6 +447,7 @@ async function viewProblem(slug, params) {
     <div class="row small muted" style="margin-bottom:18px">
       <span class="points-pill">${problem.points} points</span>
       ${problem.author ? `<span class="pill">by ${userLink(problem.author)}</span>` : ''}
+      ${(problem.types || []).map((t) => `<span class="pill">${esc(t)}</span>`).join('')}
       <span class="pill">${problem.time_limit_ms} ms</span>
       <span class="pill">${problem.memory_limit_mb} MiB</span>
       <span class="pill">${esc(problem.checker)} checker</span>
@@ -808,11 +932,18 @@ async function viewScoreboard(slug) {
   every(1000, () => $$('.countdown').forEach(updateCountdown));
 }
 
-/* ---- leaderboard ---- */
+/* ---- users ---- */
 
-async function viewLeaderboard() {
+async function viewUsers() {
   const board = await api('/api/leaderboard');
-  const rows = board.standings.map((s) => {
+  const total = board.standings.length;
+  const columns = [['rank', '#', ''], ['username', 'Who', ''], ['score', 'Score', 'num'],
+                   ['solved', 'Solved', 'num'], ['hardest', 'Hardest', 'num']];
+  // Numeric columns read best largest-first, so they start descending; rank and
+  // username start ascending. Re-clicking the active column flips it.
+  let sort = { key: 'rank', dir: 1 };
+
+  const row = (s) => {
     const me = state.user && state.user.username === s.username;
     return `<tr${me ? ' style="outline:2px solid var(--accent);outline-offset:-2px"' : ''}>
       <td class="rank">${s.rank}</td>
@@ -821,31 +952,65 @@ async function viewLeaderboard() {
       <td class="num muted">${s.solved}</td>
       <td class="num">${pointsPill(s.hardest)}</td>
     </tr>`;
-  }).join('');
+  };
 
   setView(`
-    <div class="page-head"><h1>Leaderboard</h1>
-      <span class="muted small">${board.standings.length} ranked</span></div>
+    <div class="page-head"><h1>Users</h1>
+      <span class="info" tabindex="0" role="note" aria-label="How the score works">i
+        <span class="info-pop">
+          <p>Solved problems are sorted hardest first, and the <em>k</em>-th one counts
+            for <code>points × ${board.decay}<sup>k</sup></code> — so the hardest solve
+            counts in full, the tenth about ${Math.round(Math.pow(board.decay, 9) * 100)}%,
+            and the fiftieth about ${Math.round(Math.pow(board.decay, 49) * 100)}%.</p>
+          <p>Grinding a difficulty tier has a ceiling: repeating <code>p</code>-point
+            problems forever converges to <code>${Math.round(1 / (1 - board.decay))} × p</code>.
+            The only way past it is a harder problem, which lands near the front and
+            counts nearly in full.</p>
+        </span></span>
+      <div class="spacer"></div>
+      ${total ? '<input id="user-search" class="search" type="search" placeholder="Search users" autocomplete="off">' : ''}
+      <span class="muted small" id="user-count">${total} ranked</span></div>
 
-    ${board.standings.length
+    ${total
       ? `<div class="table-wrap"><table>
-           <thead><tr><th class="num">#</th><th>Who</th><th class="num">Score</th>
-             <th class="num">Solved</th><th class="num">Hardest</th></tr></thead>
-           <tbody>${rows}</tbody></table></div>`
-      : '<div class="empty">Nobody has solved anything yet.</div>'}
+           <thead><tr>${columns.map(([key, label, cls]) =>
+             `<th class="${cls} sort" data-key="${key}">${label}<span class="arrow"></span></th>`).join('')}</tr></thead>
+           <tbody id="user-rows"></tbody></table></div>
+         <div class="empty" id="user-nomatch" hidden style="margin-top:18px">No user matches that.</div>`
+      : '<div class="empty">Nobody has solved anything yet.</div>'}`);
 
-    <div class="card" style="margin-top:18px">
-      <h2 style="margin-top:0">How the score works</h2>
-      <p class="muted small">Your solved problems are sorted hardest first, and the
-        <em>k</em>-th one counts for <code>points × ${board.decay}<sup>k</sup></code>.
-        So your hardest solve counts in full, the tenth counts about
-        ${Math.round(Math.pow(board.decay, 9) * 100)}%, and the fiftieth about
-        ${Math.round(Math.pow(board.decay, 49) * 100)}%.</p>
-      <p class="muted small">Grinding a difficulty tier has a ceiling — repeating
-        <code>p</code>-point problems forever converges to
-        <code>${Math.round(1 / (1 - board.decay))} × p</code>. The only way past it is
-        a harder problem, which lands near the front and counts nearly in full.</p>
-    </div>`);
+  if (!total) return;
+  const search = $('#user-search');
+
+  const render = () => {
+    const q = search.value.trim().toLowerCase();
+    const shown = board.standings
+      .filter((s) => s.username.toLowerCase().includes(q))
+      .sort((a, b) => sort.dir * (sort.key === 'username'
+        ? a.username.localeCompare(b.username)
+        : a[sort.key] - b[sort.key] || a.username.localeCompare(b.username)));
+
+    $('#user-rows').innerHTML = shown.map(row).join('');
+    $('#user-count').textContent = q ? `${shown.length} of ${total}` : `${total} ranked`;
+    $('#user-nomatch').hidden = shown.length > 0;
+    $$('th.sort').forEach((th) => {
+      const active = th.dataset.key === sort.key;
+      th.classList.toggle('active', active);
+      $('.arrow', th).textContent = active ? (sort.dir > 0 ? '↑' : '↓') : '';
+    });
+  };
+
+  search.oninput = render;
+  $$('th.sort').forEach((th) => {
+    th.onclick = () => {
+      const key = th.dataset.key;
+      sort = sort.key === key
+        ? { key, dir: -sort.dir }
+        : { key, dir: key === 'rank' || key === 'username' ? 1 : -1 };
+      render();
+    };
+  });
+  render();
 }
 
 /* ---- user profile ---- */
@@ -943,7 +1108,12 @@ async function viewAdminProblem(slug) {
     setView('<div class="empty">Admins only.</div>');
     return;
   }
-  const p = await api(`/api/problems/${encodeURIComponent(slug)}`);
+  // The list comes along for the type vocabulary: chips offer what other
+  // problems already use, so authors reuse a type instead of coining one.
+  const [p, { problems }] = await Promise.all([
+    api(`/api/problems/${encodeURIComponent(slug)}`), api('/api/problems'),
+  ]);
+  const allTypes = [...new Set(problems.flatMap((x) => x.types).concat(p.types))].sort();
   const checkerOption = (value, label) =>
     `<option value="${value}" ${p.checker === value ? 'selected' : ''}>${label}</option>`;
 
@@ -975,6 +1145,7 @@ async function viewAdminProblem(slug) {
         <label style="flex:2;min-width:160px">Author
           <input id="e-author" value="${esc(p.author || '')}" placeholder="(unattributed)"></label>
       </div>
+      <label>Types ${typeChips('e-types', allTypes, p.types, true)}</label>
       <div class="row">
         <label class="row" style="gap:6px"><input type="checkbox" id="e-partial" style="width:auto"
           ${p.partial ? 'checked' : ''}> partial scoring</label>
@@ -1000,21 +1171,9 @@ async function viewAdminProblem(slug) {
       <button id="e-save" class="primary">Save changes</button>
     </div>`, { wide: true });
 
+  bindTypeChips('e-types');
   const editor = $('#e-statement');
-  // Render through the same function the solver page uses, so what an author
-  // sees here is exactly what gets published.
-  const renderPreview = () => { $('#e-preview').innerHTML = markdown(editor.value); };
-  renderPreview();
-  editor.oninput = renderPreview;
-  editor.onkeydown = (event) => {
-    if (event.key === 'Tab') {
-      event.preventDefault();
-      const { selectionStart: a, selectionEnd: b, value } = editor;
-      editor.value = value.slice(0, a) + '    ' + value.slice(b);
-      editor.selectionStart = editor.selectionEnd = a + 4;
-      renderPreview();
-    }
-  };
+  markdownEditor(editor, $('#e-preview'));
 
   $('#e-save').onclick = async () => {
     const button = $('#e-save');
@@ -1034,10 +1193,83 @@ async function viewAdminProblem(slug) {
           visible: $('#e-visible').checked,
           points: Number($('#e-points').value),
           author: $('#e-author').value.trim() || null,
+          types: chosenTypes('e-types'),
         },
       });
       $('#e-status').textContent = 'Saved.';
       toast('Problem updated.', 'good');
+    } catch (err) {
+      $('#e-status').textContent = '';
+      toast(err.message, 'bad');
+    } finally {
+      button.disabled = false;
+    }
+  };
+}
+
+/* ---- admin: edit one post ---- */
+
+async function viewAdminPost(slug) {
+  if (!state.user || !state.user.is_admin) {
+    setView('<div class="empty">Admins only.</div>');
+    return;
+  }
+  const p = await api(`/api/posts/${encodeURIComponent(slug)}`);
+
+  setView(`
+    <div class="page-head">
+      <a href="#/admin">← Admin</a>
+      <div class="spacer"></div>
+      <a class="pill" href="#/post/${encodeURIComponent(slug)}">view in stream</a>
+    </div>
+    <h1 style="margin-bottom:4px">Edit post</h1>
+    <p class="muted small mono" style="margin-top:0">${esc(slug)}</p>
+
+    <div class="card">
+      <div class="row">
+        <label style="flex:3;min-width:240px">Title <input id="e-title" value="${esc(p.title)}"></label>
+        <label class="row" style="gap:6px"><input type="checkbox" id="e-pinned" style="width:auto"
+          ${p.pinned ? 'checked' : ''}> pinned</label>
+        <label class="row" style="gap:6px"><input type="checkbox" id="e-published" style="width:auto"
+          ${p.published ? 'checked' : ''}> published</label>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div>
+        <h2 style="margin-top:0">Body (Markdown)</h2>
+        <textarea id="e-body" class="code" style="min-height:420px"
+          spellcheck="false">${esc(p.body)}</textarea>
+      </div>
+      <div>
+        <h2 style="margin-top:0">Preview</h2>
+        <div class="card statement" id="e-preview" style="min-height:420px"></div>
+      </div>
+    </div>
+
+    <div class="row end" style="margin-top:14px">
+      <span class="muted small spacer" id="e-status"></span>
+      <button id="e-save" class="primary">Save changes</button>
+    </div>`, { wide: true });
+
+  markdownEditor($('#e-body'), $('#e-preview'));
+
+  $('#e-save').onclick = async () => {
+    const button = $('#e-save');
+    button.disabled = true;
+    $('#e-status').textContent = 'Saving…';
+    try {
+      await api(`/api/admin/posts/${encodeURIComponent(slug)}`, {
+        method: 'PATCH',
+        body: {
+          title: $('#e-title').value.trim(),
+          body: $('#e-body').value,
+          pinned: $('#e-pinned').checked,
+          published: $('#e-published').checked,
+        },
+      });
+      $('#e-status').textContent = 'Saved.';
+      toast('Post updated.', 'good');
     } catch (err) {
       $('#e-status').textContent = '';
       toast(err.message, 'bad');
@@ -1054,9 +1286,27 @@ async function viewAdmin() {
     setView('<div class="empty">Admins only.</div>');
     return;
   }
-  const [{ problems }, { contests }, { users }] = await Promise.all([
+  const [{ problems }, { contests }, { users }, { posts }] = await Promise.all([
     api('/api/problems'), api('/api/contests'), api('/api/admin/users'),
+    api('/api/posts?limit=100'),
   ]);
+
+  const allTypes = [...new Set(problems.flatMap((p) => p.types))].sort();
+  const postRows = posts.map((p) => `
+    <tr>
+      <td class="wide"><a href="#/post/${encodeURIComponent(p.slug)}">${esc(p.title)}</a></td>
+      <td class="mono small muted">${esc(p.slug)}</td>
+      <td><span class="pill">${p.published ? 'published' : 'draft'}</span>
+        ${p.pinned ? '<span class="pill">pinned</span>' : ''}</td>
+      <td class="muted small">${esc(relative(p.created_at))}</td>
+      <td>
+        <div class="row">
+          <a class="btn small" href="#/admin/post/${encodeURIComponent(p.slug)}">Edit</a>
+          <button class="small" data-pin="${esc(p.slug)}" data-pinned="${p.pinned ? 1 : 0}">${p.pinned ? 'Unpin' : 'Pin'}</button>
+          <button class="small danger" data-delete-post="${esc(p.slug)}">Delete</button>
+        </div>
+      </td>
+    </tr>`).join('');
 
   const problemRows = problems.map((p) => `
     <tr>
@@ -1128,6 +1378,30 @@ async function viewAdmin() {
   setView(`
     <div class="page-head"><h1>Admin</h1></div>
 
+    <details class="admin-section card">
+      <summary>New post</summary>
+      <div class="row">
+        <label style="flex:2;min-width:220px">Title <input id="n-title" placeholder="Round 2 results"></label>
+        <label style="flex:2;min-width:200px">Slug <input id="n-slug" placeholder="round-2-results"></label>
+        <label class="row" style="gap:6px"><input type="checkbox" id="n-pinned" style="width:auto"> pinned</label>
+        <label class="row" style="gap:6px"><input type="checkbox" id="n-published" checked style="width:auto"> published</label>
+      </div>
+      <div class="grid-2">
+        <label>Body (Markdown)
+          <textarea id="n-body" class="code" style="min-height:220px"></textarea></label>
+        <div>
+          <label>Preview</label>
+          <div class="card statement" id="n-preview" style="min-height:220px"></div>
+        </div>
+      </div>
+      <div class="row end"><button class="primary" id="create-post">Publish</button></div>
+    </details>
+
+    <h2>Posts</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Title</th><th>Slug</th><th>State</th><th>Posted</th><th>Actions</th></tr></thead>
+      <tbody>${postRows || '<tr><td colspan="5" class="muted">None yet.</td></tr>'}</tbody></table></div>
+
     <details class="admin-section card" open>
       <summary>New problem</summary>
       <div class="grid-2">
@@ -1138,6 +1412,7 @@ async function viewAdmin() {
             <label style="flex:1">Points <input id="p-points" type="number" value="100" min="1" max="10000"></label>
             <label style="flex:2">Author <input id="p-author" placeholder="(you)"></label>
           </div>
+          <label>Types ${typeChips('p-types', allTypes, [], true)}</label>
           <div class="row">
             <label style="flex:1">Time limit (ms) <input id="p-tl" type="number" value="1000" min="100" max="60000"></label>
             <label style="flex:1">Memory (MiB) <input id="p-ml" type="number" value="256" min="16" max="4096"></label>
@@ -1219,6 +1494,51 @@ async function viewAdmin() {
     try { await fn(...args); } catch (err) { toast(err.message, 'bad'); }
   };
 
+  markdownEditor($('#n-body'), $('#n-preview'));
+
+  // The slug is the post's permalink; keep it following the title until an
+  // author types one by hand.
+  $('#n-title').oninput = () => {
+    if ($('#n-slug').dataset.touched) return;
+    $('#n-slug').value = $('#n-title').value.toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64);
+  };
+  $('#n-slug').oninput = () => { $('#n-slug').dataset.touched = '1'; };
+
+  $('#create-post').onclick = guard(async () => {
+    await api('/api/admin/posts', {
+      method: 'POST',
+      body: {
+        slug: $('#n-slug').value.trim(),
+        title: $('#n-title').value.trim(),
+        body: $('#n-body').value,
+        pinned: $('#n-pinned').checked,
+        published: $('#n-published').checked,
+      },
+    });
+    toast('Posted.', 'good');
+    route();
+  });
+
+  $$('[data-pin]').forEach((button) => {
+    button.onclick = guard(async () => {
+      await api(`/api/admin/posts/${encodeURIComponent(button.dataset.pin)}`, {
+        method: 'PATCH', body: { pinned: button.dataset.pinned !== '1' },
+      });
+      route();
+    });
+  });
+
+  $$('[data-delete-post]').forEach((button) => {
+    button.onclick = guard(async () => {
+      const slug = button.dataset.deletePost;
+      if (!confirm(`Delete post "${slug}"?`)) return;
+      await api(`/api/admin/posts/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+      toast('Deleted.');
+      route();
+    });
+  });
+
   // Validated archive, held in the browser until the problem exists to attach
   // it to. Null means either nothing chosen or the last check failed.
   let pendingTests = null;
@@ -1249,6 +1569,8 @@ async function viewAdmin() {
     }
   };
 
+  bindTypeChips('p-types');
+
   $('#create-problem').onclick = guard(async () => {
     const slug = $('#p-slug').value.trim();
     if ($('#p-tests').files.length && !pendingTests) {
@@ -1269,6 +1591,7 @@ async function viewAdmin() {
         visible: $('#p-visible').checked,
         points: Number($('#p-points').value),
         author: $('#p-author').value.trim() || null,
+        types: chosenTypes('p-types'),
       },
     });
 
@@ -1469,18 +1792,20 @@ async function viewAdmin() {
 
 async function route() {
   clearTimers();
-  const raw = location.hash.slice(1) || '/problems';
+  const raw = location.hash.slice(1) || '/home';
   const [path, queryString] = raw.split('?');
   const params = new URLSearchParams(queryString || '');
   const parts = path.split('/').filter(Boolean);
 
   // Detail routes are singular ("#/problem/x"); highlight their list nav entry.
   const section = { problem: 'problems', contest: 'contests', submission: 'submissions',
-                    user: 'leaderboard' }[parts[0]] || parts[0];
+                    user: 'users' }[parts[0]] || parts[0];
   $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === section));
 
   try {
     switch (parts[0]) {
+      case 'home': await viewHome(); break;
+      case 'post': await viewPost(decodeURIComponent(parts[1] || '')); break;
       case 'problems': await viewProblems(); break;
       case 'problem': await viewProblem(decodeURIComponent(parts[1] || ''), params); break;
       case 'submissions': await viewSubmissions(params); break;
@@ -1490,13 +1815,18 @@ async function route() {
         if (parts[2] === 'scoreboard') await viewScoreboard(decodeURIComponent(parts[1]));
         else await viewContest(decodeURIComponent(parts[1] || ''));
         break;
-      case 'leaderboard': await viewLeaderboard(); break;
+      case 'users': await viewUsers(); break;
+      // The page was called the leaderboard until it grew search and sorting.
+      // Links to it are already out there, and the default case would land
+      // them on the stream instead of the page they asked for.
+      case 'leaderboard': location.hash = '#/users'; break;
       case 'user': await viewUser(decodeURIComponent(parts[1] || '')); break;
       case 'admin':
         if (parts[1] === 'problem' && parts[2]) await viewAdminProblem(decodeURIComponent(parts[2]));
+        else if (parts[1] === 'post' && parts[2]) await viewAdminPost(decodeURIComponent(parts[2]));
         else await viewAdmin();
         break;
-      default: location.hash = '#/problems';
+      default: location.hash = '#/home';
     }
   } catch (err) {
     if (err.status === 401) setView(requireSignIn('You need to sign in to see this.'));

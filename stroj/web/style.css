@@ -194,6 +194,44 @@ textarea.code {
   overflow-x: auto;
 }
 .error { color: var(--bad); font-size: 13px; }
+input.search { width: 220px; }
+
+.info {
+  position: relative; align-self: center;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 1px solid var(--border); color: var(--muted);
+  font-size: 12px; font-weight: 600; line-height: 1; cursor: help;
+}
+.info:hover, .info:focus { color: var(--text); border-color: var(--muted); }
+.info-pop {
+  position: absolute; top: calc(100% + 8px); left: -10px; z-index: 20;
+  width: min(360px, 78vw); padding: 12px 14px; cursor: auto;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  color: var(--muted); font-size: 13px; font-weight: 400; line-height: 1.55;
+  visibility: hidden; opacity: 0; transition: opacity .12s;
+}
+.info:hover .info-pop, .info:focus .info-pop { visibility: visible; opacity: 1; }
+.info-pop p { margin: 0 0 8px; }
+.info-pop p:last-child { margin: 0; }
+
+th.sort { cursor: pointer; user-select: none; }
+th.sort:hover, th.sort.active { color: var(--text); }
+th.sort .arrow { margin-left: 4px; }
+.filters { margin-bottom: 14px; }
+.filters input { width: auto; }
+
+/* Chips are the multiselect: one per type, `.on` when picked. */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+label .chips { margin-top: 4px; }
+.chip {
+  font-family: var(--mono); font-size: 12px; font-weight: 400;
+  padding: 2px 8px; background: var(--surface-2); color: var(--muted);
+}
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chip.on:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+.chip-add { width: 100px; font-size: 12px; padding: 2px 8px; }
 
 /* ---------- tables ---------- */
 
@@ -243,6 +281,12 @@ td.wide { white-space: normal; }
   background: var(--surface-2); border: 1px solid var(--border);
   padding: 1px 7px; border-radius: 5px;
 }
+
+/* ---------- stream ---------- */
+
+.post h2 { font-size: 20px; margin: 0 0 2px; }
+.post-meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.post .statement > :last-child { margin-bottom: 0; }
 
 /* ---------- statement ---------- */
 

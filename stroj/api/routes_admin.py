@@ -24,6 +24,7 @@ from .deps import get_contest, require_admin
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
+TYPE_RE = re.compile(r"^[a-z0-9][a-z0-9 +/-]{0,31}$")
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
 
@@ -58,6 +59,8 @@ class ProblemBody(BaseModel):
     points: int = Field(default=100, ge=1, le=10000)
     #: Username to credit. Defaults to whoever creates the problem.
     author: str | None = None
+    #: Categories to file it under, e.g. ``["graphs", "dp"]``.
+    types: list[str] = []
 
 
 class ProblemPatch(BaseModel):
@@ -71,6 +74,7 @@ class ProblemPatch(BaseModel):
     visible: bool | None = None
     points: int | None = Field(default=None, ge=1, le=10000)
     author: str | None = None
+    types: list[str] | None = None
 
 
 class TestsBody(BaseModel):
@@ -99,6 +103,21 @@ class ContestPatch(BaseModel):
     freeze_minutes: int | None = Field(default=None, ge=0, le=1440)
 
 
+class PostBody(BaseModel):
+    slug: str
+    title: str = Field(min_length=1, max_length=200)
+    body: str = ""
+    pinned: bool = False
+    published: bool = True
+
+
+class PostPatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    body: str | None = None
+    pinned: bool | None = None
+    published: bool | None = None
+
+
 class ContestProblemsBody(BaseModel):
     #: ``[{"slug": "a-plus-b", "label": "A"}, ...]`` — labels are assigned in
     #: order when omitted.
@@ -115,11 +134,34 @@ def _author_id(username: str | None, fallback: sqlite3.Row) -> int | None:
     return row["id"]
 
 
+def _clean_types(types: list[str]) -> list[str]:
+    """Fold case and spacing so that 'Graphs' and 'graphs' filter as one type."""
+    cleaned = []
+    for raw in types:
+        value = " ".join(raw.lower().split())
+        if not value:
+            continue
+        if not TYPE_RE.match(value):
+            raise HTTPException(status_code=400, detail=f"Bad problem type: {raw}")
+        cleaned.append(value)
+    return cleaned
+
+
+def _set_types(problem_id: int, cleaned: list[str]) -> None:
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM problem_types WHERE problem_id = ?", (problem_id,))
+        conn.executemany(
+            "INSERT OR IGNORE INTO problem_types (problem_id, type) VALUES (?, ?)",
+            [(problem_id, t) for t in cleaned],
+        )
+
+
 @router.post("/problems")
 def create_problem(body: ProblemBody, request: Request):
     _check_slug(body.slug)
     if body.checker not in checkers.CHECKERS:
         raise HTTPException(status_code=400, detail=f"Unknown checker: {body.checker}")
+    types = _clean_types(body.types)
     author_id = _author_id(body.author, require_admin(request))
     try:
         problem_id = db.insert(
@@ -144,6 +186,7 @@ def create_problem(body: ProblemBody, request: Request):
         )
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="That slug is taken.") from None
+    _set_types(problem_id, types)
     return {"id": problem_id, "slug": body.slug}
 
 
@@ -151,13 +194,24 @@ def create_problem(body: ProblemBody, request: Request):
 def update_problem(slug: str, body: ProblemPatch, request: Request):
     problem = _problem_or_404(slug)
     fields = body.model_dump(exclude_none=True)
-    if not fields:
-        return {"updated": 0}
+    types = fields.pop("types", None)
+
+    # Validate everything before writing anything. Types live in their own
+    # table, so applying them first meant a patch that went on to be rejected
+    # still changed the problem — the admin sees an error and reasonably
+    # assumes nothing happened.
     if "checker" in fields and fields["checker"] not in checkers.CHECKERS:
         raise HTTPException(status_code=400, detail=f"Unknown checker: {fields['checker']}")
     if "author" in fields:
         # The column is author_id; the API speaks usernames.
         fields["author_id"] = _author_id(fields.pop("author"), require_admin(request))
+    cleaned_types = None if types is None else _clean_types(types)
+
+    if cleaned_types is not None:
+        _set_types(problem["id"], cleaned_types)
+    if not fields:
+        # `types` is a real change even though it touches no column here.
+        return {"updated": 0 if cleaned_types is None else 1}
     for key in ("partial", "visible"):
         if key in fields:
             fields[key] = int(fields[key])
@@ -166,7 +220,7 @@ def update_problem(slug: str, body: ProblemPatch, request: Request):
         f"UPDATE problems SET {assignments} WHERE id = ?",
         (*fields.values(), problem["id"]),
     )
-    return {"updated": len(fields)}
+    return {"updated": len(fields) + (0 if cleaned_types is None else 1)}
 
 
 @router.get("/problems/{slug}/impact")
@@ -427,6 +481,61 @@ def _label_for(position: int) -> str:
 def delete_contest(slug: str):
     contest = get_contest(slug)
     db.execute("DELETE FROM contests WHERE id = ?", (contest["id"],))
+    return {"deleted": slug}
+
+
+def _post_or_404(slug: str) -> sqlite3.Row:
+    row = db.one("SELECT * FROM posts WHERE slug = ?", (slug,))
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such post.")
+    return row
+
+
+@router.post("/posts")
+def create_post(body: PostBody, request: Request):
+    _check_slug(body.slug)
+    now = db.utcnow()
+    try:
+        post_id = db.insert(
+            "INSERT INTO posts (slug, title, body, author_id, pinned, published,"
+            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                body.slug,
+                body.title,
+                body.body,
+                require_admin(request)["id"],
+                int(body.pinned),
+                int(body.published),
+                now,
+                now,
+            ),
+        )
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="That slug is taken.") from None
+    return {"id": post_id, "slug": body.slug}
+
+
+@router.patch("/posts/{slug}")
+def update_post(slug: str, body: PostPatch):
+    post = _post_or_404(slug)
+    fields = body.model_dump(exclude_none=True)
+    if not fields:
+        return {"updated": 0, "slug": slug}
+    for key in ("pinned", "published"):
+        if key in fields:
+            fields[key] = int(fields[key])
+    fields["updated_at"] = db.utcnow()
+    assignments = ", ".join(f"{k} = ?" for k in fields)
+    db.execute(
+        f"UPDATE posts SET {assignments} WHERE id = ?", (*fields.values(), post["id"])
+    )
+    return {"updated": len(fields), "slug": slug}
+
+
+@router.delete("/posts/{slug}")
+def delete_post(slug: str):
+    post = _post_or_404(slug)
+    db.execute("DELETE FROM posts WHERE id = ?", (post["id"],))
     return {"deleted": slug}
 
 
