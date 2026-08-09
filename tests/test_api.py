@@ -1784,9 +1784,26 @@ class TestAPerLanguageLimitReachesTheRuntime:
         assert resolved_mb == 512
 
         argv = java.run_argv(resolved_mb)
-        assert any("-Xmx512m" == part for part in argv), argv
-        # ...and the base must not be what reaches it.
+        # 512 enforced, less the 320 MiB allowed for JVM overhead.
+        assert any("-Xmx192m" == part for part in argv), argv
+        # The base must not be what reaches it...
         assert not any("-Xmx64m" == part for part in argv), argv
+        # ...and neither may the whole ceiling: a heap equal to the limit lets
+        # the JVM fill it and then breach the limit with its own overhead.
+        assert not any("-Xmx512m" == part for part in argv), argv
+
+    def test_a_derived_limit_still_sizes_the_heap_as_it_always_did(self):
+        """base -> base + overhead enforced -> heap back at base."""
+        from stroj.judge import languages
+        java = languages.get("java")
+        for base in (64, 256, 512):
+            argv = java.run_argv(java.effective_memory_limit_mb(base))
+            assert f"-Xmx{base}m" in argv, (base, argv)
+
+    def test_the_heap_never_goes_below_a_usable_floor(self):
+        from stroj.judge import languages
+        argv = languages.get("java").run_argv(16)
+        assert "-Xmx32m" in argv, argv
 
     def test_the_source_uses_the_resolved_value(self):
         """Guard the wiring itself: the base limit is in scope right beside it

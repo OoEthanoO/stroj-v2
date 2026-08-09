@@ -47,7 +47,20 @@ class Language:
         return list(self.compile_cmd) if self.compile_cmd else None
 
     def run_argv(self, memory_limit_mb: int) -> list[str]:
-        return [arg.format(heap=max(32, memory_limit_mb)) for arg in self.run_cmd]
+        """Build the run command for a given *enforced* memory ceiling.
+
+        A runtime that caps its own heap with a flag must be told something
+        below the ceiling it is held to, or it will happily fill the heap and
+        then breach the limit with its own overhead on top. `memory_overhead_mb`
+        is exactly the allowance made for that overhead, so taking it back off
+        is what turns an enforced ceiling into a safe heap.
+
+        This keeps a derived limit behaving as it always did — base plus the
+        overhead, minus the overhead, is the base — while letting an explicit
+        per-language limit move the heap with it.
+        """
+        heap = max(32, memory_limit_mb - self.memory_overhead_mb)
+        return [arg.format(heap=heap) for arg in self.run_cmd]
 
     def effective_time_limit_ms(self, base_ms: int) -> int:
         return int(base_ms * self.time_multiplier) + self.time_overhead_ms
