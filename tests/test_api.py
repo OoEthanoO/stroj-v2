@@ -188,6 +188,8 @@ class TestSubmissions:
         assert len(detail["tests"]) == 2
 
     def test_wrong_answer_reports_the_failing_test(self, client, admin_client):
+        """Which test failed is named for an admin only — to the solver it is a
+        hint about hidden data, so they get the verdict and nothing more."""
         make_problem(admin_client)
         admin_client.post("/api/auth/logout")
         register(client, "coder")
@@ -195,9 +197,17 @@ class TestSubmissions:
             "problem": "a-plus-b", "language": "python3",
             "source": "a,b=map(int,input().split())\nprint(a*b)"})
         worker.drain()
-        detail = client.get(f"/api/submissions/{response.json()['id']}").json()
+        submission_id = response.json()["id"]
+
+        detail = client.get(f"/api/submissions/{submission_id}").json()
         assert detail["verdict"] == "WA"
-        assert "Test 1" in detail["message"]
+        assert detail["message"] == ""
+
+        client.post("/api/auth/logout")
+        client.post("/api/auth/login",
+                    json={"username": "admin", "password": "test-admin-password"})
+        seen_by_admin = client.get(f"/api/submissions/{submission_id}").json()
+        assert "Test 1" in seen_by_admin["message"]
 
     def test_unknown_language_is_rejected(self, client, admin_client):
         make_problem(admin_client)
@@ -1286,3 +1296,76 @@ class TestPerLanguageLimits:
             "limits": {"cpp": {"time_limit_ms": 200, "memory_limit_mb": 256}}})
         admin_client.delete("/api/admin/problems/a-plus-b")
         assert db.one("SELECT COUNT(*) AS n FROM problem_limits")["n"] == 0
+
+
+class TestJudgeOutputIsAdminOnly:
+    """Judge output names which hidden test failed and roughly how, which is a
+    hint about data the solver is not meant to see. Admins keep it, or a broken
+    checker or bad test file cannot be diagnosed from the site."""
+
+    def solve(self, client, admin_client, source, slug="a-plus-b"):
+        make_problem(admin_client, slug=slug)
+        admin_client.post("/api/auth/logout")
+        register(client, "solver9")
+        sid = client.post("/api/submissions", json={
+            "problem": slug, "language": "python3", "source": source}).json()["id"]
+        worker.drain()
+        return sid
+
+    def as_admin(self, client):
+        client.post("/api/auth/logout")
+        client.post("/api/auth/login",
+                    json={"username": "admin", "password": "test-admin-password"})
+
+    def test_the_owner_does_not_see_the_failure_message(self, client, admin_client):
+        sid = self.solve(client, admin_client, "print(999)")
+        data = client.get(f"/api/submissions/{sid}").json()
+        assert data["verdict"] == "WA"
+        assert data["message"] == ""
+
+    def test_an_admin_does_see_it(self, client, admin_client):
+        sid = self.solve(client, admin_client, "print(999)")
+        self.as_admin(client)
+        data = client.get(f"/api/submissions/{sid}").json()
+        assert data["message"], "an admin must still be able to troubleshoot"
+
+    def test_hidden_test_details_are_withheld(self, client, admin_client):
+        # Judging stops at the first failure, so this must clear the sample in
+        # order for a hidden test to run at all.
+        sid = self.solve(client, admin_client, "a,b=map(int,input().split())\nprint(abs(a)+abs(b))")
+        tests = client.get(f"/api/submissions/{sid}").json()["tests"]
+        hidden = [t for t in tests if not t["is_sample"]]
+        assert hidden, "the fixture should have a hidden test"
+        assert all(t["message"] == "" for t in hidden)
+        # The verdict itself is not a hint — they still learn which test broke.
+        assert any(t["verdict"] != "AC" for t in tests)
+
+    def test_hidden_test_details_reach_an_admin(self, client, admin_client):
+        sid = self.solve(client, admin_client, "a,b=map(int,input().split())\nprint(abs(a)+abs(b))")
+        self.as_admin(client)
+        tests = client.get(f"/api/submissions/{sid}").json()["tests"]
+        hidden = [t for t in tests if not t["is_sample"]]
+        assert any(t["message"] for t in hidden)
+
+    def test_sample_diagnostics_stay_with_the_solver(self, client, admin_client):
+        """Sample input and answer are printed in the statement, so a message
+        about one gives nothing away — and it is usually the program's own
+        stderr, which is exactly what a beginner needs."""
+        sid = self.solve(client, admin_client, "raise ValueError('my own bug')")
+        tests = client.get(f"/api/submissions/{sid}").json()["tests"]
+        samples = [t for t in tests if t["is_sample"]]
+        assert samples and any("my own bug" in t["message"] for t in samples)
+
+    def test_compile_errors_stay_with_the_solver(self, client, admin_client):
+        """Produced from their own source, quoting nothing from the problem.
+        Withheld, a CE is a verdict the solver cannot act on."""
+        sid = self.solve(client, admin_client, "def broken(:\n    pass")
+        data = client.get(f"/api/submissions/{sid}").json()
+        assert data["verdict"] == "CE"
+        assert data["message"], "a compile error must reach whoever wrote the code"
+
+    def test_the_list_view_never_carried_it(self, client, admin_client):
+        sid = self.solve(client, admin_client, "print(999)")
+        rows = client.get("/api/submissions").json()["submissions"]
+        assert rows and all("message" not in r for r in rows)
+        assert sid == rows[0]["id"]

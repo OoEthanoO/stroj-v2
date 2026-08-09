@@ -222,7 +222,8 @@ def get_submission(submission_id: int, request: Request):
 
     data = submission_public(row, user, with_source=True)
     own = user is not None and user["id"] == row["user_id"]
-    if own or is_admin(user):
+    admin = is_admin(user)
+    if own or admin:
         # How many tests the problem has, so a page watching a live judge can
         # show "4 of 18" rather than just a growing list of unknown length.
         data["test_count"] = db.one(
@@ -246,7 +247,11 @@ def get_submission(submission_id: int, request: Request):
                 "time_ms": t["time_ms"],
                 "memory_kb": t["memory_kb"],
                 "points": t["points"],
-                "message": t["message"],
+                # Same rule as the submission's own message: a per-test
+                # detail names which hidden test broke and roughly how. Sample
+                # tests are printed in the statement, so their diagnostics —
+                # usually the program's own stderr — give nothing away.
+                "message": t["message"] if (admin or t["is_sample"]) else "",
                 # NULL when the test data was replaced after this run, so the
                 # row no longer matches a live test case.
                 "subtask": t["subtask"] or 0,

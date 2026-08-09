@@ -7,7 +7,7 @@ import sqlite3
 from fastapi import HTTPException, Request
 
 from .. import auth, contest, db
-from ..judge.runner import VERDICT_NAMES
+from ..judge.runner import CE, VERDICT_NAMES
 
 
 def current_user(request: Request) -> sqlite3.Row | None:
@@ -142,5 +142,22 @@ def submission_public(
     }
     if with_source and (own or is_admin(viewer)):
         data["source"] = row["source"]
-        data["message"] = row["message"]
+        data["message"] = judge_output_for(row, viewer)
     return data
+
+
+def judge_output_for(row: sqlite3.Row, viewer: sqlite3.Row | None) -> str:
+    """The judge's own message, if this viewer is allowed to read it.
+
+    Judge output describes the hidden tests — which one failed, and how — so it
+    is a hint about data the solver is not meant to see. Admins keep it: without
+    it, a problem with broken test data or a misbehaving checker cannot be
+    diagnosed from the site at all.
+
+    A compile error is the exception. It is produced from the submitter's own
+    source, quotes nothing from the problem, and withholding it leaves a solver
+    with a verdict they cannot act on.
+    """
+    if is_admin(viewer) or row["verdict"] == CE:
+        return row["message"]
+    return ""

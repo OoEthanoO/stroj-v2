@@ -810,7 +810,10 @@ async function viewSubmission(id) {
           <span class="muted" title="${esc(absolute(s.created_at))}">submitted ${esc(relative(s.created_at))}</span>
           ${s.contest_slug ? `<a class="pill" href="#/contest/${encodeURIComponent(s.contest_slug)}">${esc(s.contest_slug)}</a>` : ''}
         </div>
-        ${s.message ? `<h3>Judge output</h3><pre class="io">${esc(s.message)}</pre>` : ''}
+        ${s.message ? `<h3>Judge output
+          ${state.user && state.user.is_admin && s.verdict !== 'CE'
+            ? '<span class="pill">admins only</span>' : ''}</h3>
+          <pre class="io">${esc(s.message)}</pre>` : ''}
       </div>
 
       ${tests || running ? `<h2>Tests ${progress}</h2><div class="table-wrap"><table>
