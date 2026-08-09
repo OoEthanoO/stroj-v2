@@ -691,6 +691,12 @@ async function viewProblem(slug, params) {
             </div>`
             : requireSignIn('Sign in to submit a solution.')}
         </div>
+        <div class="card">
+          <div class="row">
+            <a class="btn small" href="#/problem/${encodeURIComponent(slug)}/ranking">Ranking</a>
+            <a class="btn small" href="#/submissions?problem=${encodeURIComponent(slug)}">All submissions</a>
+          </div>
+        </div>
         <div class="card" id="my-subs"><h2 style="margin-top:0">Your submissions</h2>
           <div class="loading">Loading…</div></div>
       </div>
@@ -980,6 +986,43 @@ async function viewSubmission(id) {
       if (!(await render())) clearTimers();
     });
   }
+}
+
+/* ---- problem ranking ---- */
+
+async function viewRanking(slug) {
+  const data = await api(`/api/problems/${encodeURIComponent(slug)}/ranking`);
+  const rows = data.submissions.map((s) => {
+    const me = state.user && state.user.username === s.username;
+    return `<tr${me ? ' class="you"' : ''}>
+      <td class="num rank">${s.rank}</td>
+      <td class="wide">${userLink(s.username, s.user_role)}</td>
+      <td>${verdictBadge(s.verdict, s.verdict_name)}</td>
+      <td class="num">${s.earned_percent}%</td>
+      <td class="num muted">${s.time_ms} ms</td>
+      <td class="num muted">${memory(s.memory_kb)}</td>
+      <td class="small muted">${esc(s.language)}</td>
+      <td class="small muted" title="${esc(absolute(s.created_at))}">
+        <a href="#/submission/${s.id}">${esc(relative(s.created_at))}</a></td>
+    </tr>`;
+  }).join('');
+
+  setView(`
+    <div class="page-head">
+      <a href="#/problem/${encodeURIComponent(slug)}">← ${esc(data.problem.title)}</a>
+      <div class="spacer"></div>
+      <span class="muted small">${data.submissions.length} judged</span>
+    </div>
+    <h1>Ranking</h1>
+    <p class="muted small">Most of the problem earned first, then fastest, then
+      smallest, then earliest. Submissions still in the queue are not listed.</p>
+    ${data.submissions.length
+      ? `<div class="table-wrap"><table>
+          <thead><tr><th class="num">#</th><th>Who</th><th>Verdict</th>
+            <th class="num">Earned</th><th class="num">Time</th>
+            <th class="num">Memory</th><th>Language</th><th>When</th></tr></thead>
+          <tbody>${rows}</tbody></table></div>`
+      : '<div class="empty">Nothing has been judged for this problem yet.</div>'}`);
 }
 
 /* ---- contests ---- */
@@ -2156,7 +2199,10 @@ async function route() {
       case 'home': await viewHome(); break;
       case 'post': await viewPost(decodeURIComponent(parts[1] || '')); break;
       case 'problems': await viewProblems(); break;
-      case 'problem': await viewProblem(decodeURIComponent(parts[1] || ''), params); break;
+      case 'problem':
+        if (parts[2] === 'ranking') await viewRanking(decodeURIComponent(parts[1]));
+        else await viewProblem(decodeURIComponent(parts[1] || ''), params);
+        break;
       case 'submissions': await viewSubmissions(params); break;
       case 'submission': await viewSubmission(parts[1]); break;
       case 'contests': await viewContests(); break;

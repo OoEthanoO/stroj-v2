@@ -175,6 +175,78 @@ def list_submissions(
     return {"submissions": [submission_public(r, user) for r in rows]}
 
 
+@router.get("/problems/{slug}/ranking")
+def problem_ranking(
+    slug: str,
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    """Every judged submission for a problem, best first.
+
+    Best means: most of the problem earned, then fastest, then smallest, then
+    earliest — correctness before speed, and an earlier submission wins a tie
+    it drew with a later one.
+
+    Submissions still in the queue are left out; they have no result to rank.
+    So are ones made inside a contest that is still running, because listing
+    them here would hand out exactly what a frozen scoreboard is withholding.
+    """
+    problem = get_problem(slug, current_user(request))
+    user = current_user(request)
+
+    # Mirrors `contest._earned` and the leaderboard: submissions judged before
+    # `earned_percent` existed still carry a score, and ranking them last
+    # because of a schema change would be wrong.
+    earned = (
+        "CASE WHEN s.earned_percent > 0 THEN s.earned_percent"
+        "     WHEN s.max_score > 0"
+        "     THEN CAST(ROUND(100.0 * s.score / s.max_score) AS INTEGER)"
+        "     ELSE 0 END"
+    )
+
+    where = ["s.problem_id = ?", "s.verdict NOT IN (?, ?, ?)"]
+    params: list = [problem["id"], PENDING, JUDGING, AB]
+
+    if not is_admin(user):
+        # A live contest's submissions stay out until it finishes. Your own are
+        # always yours to see.
+        live = [
+            row["id"] for row in db.query("SELECT * FROM contests")
+            if contest_mod.state_of(row) == contest_mod.RUNNING
+        ]
+        if live:
+            marks = ", ".join("?" * len(live))
+            where.append(
+                f"(s.contest_id IS NULL OR s.contest_id NOT IN ({marks})"
+                f" OR s.user_id = ?)"
+            )
+            params.extend(live)
+            params.append(user["id"] if user else -1)
+
+    sql = (
+        f"{_JOINED} WHERE " + " AND ".join(where)
+        + f" ORDER BY {earned} DESC, s.time_ms ASC, s.memory_kb ASC, s.id ASC"
+        " LIMIT ?"
+    )
+    params.append(limit)
+
+    rows = db.query(sql, tuple(params))
+    ranked = []
+    for position, row in enumerate(rows, start=1):
+        entry = submission_public(row, user)
+        entry["rank"] = position
+        entry["earned_percent"] = (
+            row["earned_percent"] or
+            (round(100 * row["score"] / row["max_score"]) if row["max_score"] else 0)
+        )
+        ranked.append(entry)
+    return {
+        "problem": {"slug": problem["slug"], "title": problem["title"],
+                    "points": problem["points"]},
+        "submissions": ranked,
+    }
+
+
 @router.post("/submissions/{submission_id}/abort")
 def abort_submission(submission_id: int, request: Request):
     """Stop a submission that is queued or already running.

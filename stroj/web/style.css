@@ -500,3 +500,6 @@ math.math-display {
 /* Only the problem list wraps and soaks up the spare width; the three columns
    before it are short and fixed, so they should not be squeezed to fit. */
 .dmoj-table th:last-child, .dmoj-table td:last-child { width: 100%; white-space: normal; }
+
+/* Your own row in a ranking, so you can find yourself without reading names. */
+tr.you { outline: 2px solid var(--accent); outline-offset: -2px; }

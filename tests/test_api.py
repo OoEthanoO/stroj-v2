@@ -1552,3 +1552,160 @@ class TestAnInterruptedJudgeRecovers:
 
     def test_nothing_stuck_is_a_no_op(self, admin_client):
         assert worker.requeue_stuck() == 0
+
+
+class TestProblemRanking:
+    """Best first: most of the problem earned, then fastest, then smallest,
+    then earliest. Correctness has to outrank speed, or a fast wrong answer
+    beats a slow correct one."""
+
+    def seed(self, admin_client, rows):
+        """Insert judged submissions directly; the ordering is what is on trial."""
+        make_problem(admin_client)
+        pid = db.one("SELECT id FROM problems WHERE slug='a-plus-b'")["id"]
+        ids = {}
+        for name, verdict, earned, time_ms, memory_kb in rows:
+            uid = db.one("SELECT id FROM users WHERE username = ?", (name,))
+            if uid is None:
+                uid = db.insert("INSERT INTO users (username, password_hash, created_at)"
+                                " VALUES (?, 'x', ?)", (name, db.utcnow()))
+            else:
+                uid = uid["id"]
+            ids[name] = db.insert(
+                "INSERT INTO submissions (user_id, problem_id, language, source,"
+                " verdict, score, max_score, earned_percent, time_ms, memory_kb,"
+                " created_at, judged_at) VALUES (?,?,'python3','x',?,?,?,?,?,?,?,?)",
+                (uid, pid, verdict, 0, 0, earned, time_ms, memory_kb,
+                 db.utcnow(), db.utcnow()))
+        return ids
+
+    def order(self, client, slug="a-plus-b"):
+        data = client.get(f"/api/problems/{slug}/ranking").json()
+        return [s["username"] for s in data["submissions"]]
+
+    def test_more_earned_ranks_higher(self, client, admin_client):
+        self.seed(admin_client, [
+            ("partial", "WA", 40, 10, 100),
+            ("full", "AC", 100, 900, 9000),
+        ])
+        assert self.order(client) == ["full", "partial"]
+
+    def test_faster_breaks_a_tie_on_score(self, client, admin_client):
+        self.seed(admin_client, [
+            ("slow", "AC", 100, 900, 100),
+            ("quick", "AC", 100, 50, 100),
+        ])
+        assert self.order(client) == ["quick", "slow"]
+
+    def test_smaller_breaks_a_tie_on_time(self, client, admin_client):
+        self.seed(admin_client, [
+            ("fat", "AC", 100, 100, 90000),
+            ("lean", "AC", 100, 100, 1000),
+        ])
+        assert self.order(client) == ["lean", "fat"]
+
+    def test_earlier_wins_an_exact_tie(self, client, admin_client):
+        ids = self.seed(admin_client, [
+            ("first", "AC", 100, 100, 1000),
+            ("second", "AC", 100, 100, 1000),
+        ])
+        assert ids["first"] < ids["second"]
+        assert self.order(client) == ["first", "second"]
+
+    def test_ranks_are_numbered_from_one(self, client, admin_client):
+        self.seed(admin_client, [("a", "AC", 100, 10, 10), ("b", "WA", 0, 10, 10)])
+        data = client.get("/api/problems/a-plus-b/ranking").json()
+        assert [s["rank"] for s in data["submissions"]] == [1, 2]
+
+    def test_unjudged_submissions_are_left_out(self, client, admin_client):
+        self.seed(admin_client, [
+            ("done", "AC", 100, 10, 10),
+            ("queued", "PENDING", 0, 0, 0),
+            ("running", "JUDGING", 0, 0, 0),
+            ("cancelled", "AB", 0, 0, 0),
+        ])
+        assert self.order(client) == ["done"]
+
+    def test_a_pre_migration_accept_still_ranks_first(self, client, admin_client):
+        """Submissions judged before `earned_percent` existed carry 0 there but
+        a real score; ranking them last because of a schema change is wrong."""
+        make_problem(admin_client)
+        pid = db.one("SELECT id FROM problems WHERE slug='a-plus-b'")["id"]
+        for name, verdict, score, earned in (("old", "AC", 2, 0), ("new", "WA", 0, 30)):
+            uid = db.insert("INSERT INTO users (username, password_hash, created_at)"
+                            " VALUES (?, 'x', ?)", (name, db.utcnow()))
+            db.insert(
+                "INSERT INTO submissions (user_id, problem_id, language, source,"
+                " verdict, score, max_score, earned_percent, time_ms, memory_kb,"
+                " created_at) VALUES (?,?,'python3','x',?,?,2,?,10,10,?)",
+                (uid, pid, verdict, score, earned, db.utcnow()))
+        assert self.order(client) == ["old", "new"]
+
+    def test_a_hidden_problem_has_no_public_ranking(self, client, admin_client):
+        make_problem(admin_client, slug="secret", visible=False)
+        admin_client.post("/api/auth/logout")
+        register(client, "nosy3")
+        assert client.get("/api/problems/secret/ranking").status_code == 404
+
+    def test_source_is_not_exposed(self, client, admin_client):
+        self.seed(admin_client, [("someone", "AC", 100, 10, 10)])
+        admin_client.post("/api/auth/logout")
+        register(client, "reader")
+        rows = client.get("/api/problems/a-plus-b/ranking").json()["submissions"]
+        assert rows and all("source" not in r for r in rows)
+
+
+class TestRankingRespectsAContestFreeze:
+    """Listing a live contest's submissions here would hand out exactly what a
+    frozen scoreboard is withholding."""
+
+    def setup_contest(self, admin_client, running: bool):
+        make_problem(admin_client)
+        now = db.parse_time(db.utcnow())
+        span = ((now - timedelta(hours=1), now + timedelta(hours=1)) if running
+                else (now - timedelta(hours=3), now - timedelta(hours=1)))
+        iso = lambda d: d.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        cid = db.insert(
+            "INSERT INTO contests (slug, title, description, starts_at, ends_at,"
+            " scoring, penalty_minutes, created_at)"
+            " VALUES ('live','Live','',?,?,'icpc',20,?)",
+            (iso(span[0]), iso(span[1]), db.utcnow()))
+        pid = db.one("SELECT id FROM problems WHERE slug='a-plus-b'")["id"]
+        rival = db.insert("INSERT INTO users (username, password_hash, created_at)"
+                          " VALUES ('rival','x',?)", (db.utcnow(),))
+        db.insert(
+            "INSERT INTO submissions (user_id, problem_id, contest_id, language,"
+            " source, verdict, score, max_score, earned_percent, time_ms,"
+            " memory_kb, created_at) VALUES (?,?,?,'python3','x','AC',2,2,100,5,5,?)",
+            (rival, pid, cid, db.utcnow()))
+
+    def names(self, client):
+        return [s["username"] for s in
+                client.get("/api/problems/a-plus-b/ranking").json()["submissions"]]
+
+    def test_a_live_contest_entry_is_hidden(self, client, admin_client):
+        self.setup_contest(admin_client, running=True)
+        admin_client.post("/api/auth/logout")
+        register(client, "onlooker")
+        assert "rival" not in self.names(client)
+
+    def test_it_appears_once_the_contest_ends(self, client, admin_client):
+        self.setup_contest(admin_client, running=False)
+        admin_client.post("/api/auth/logout")
+        register(client, "onlooker2")
+        assert "rival" in self.names(client)
+
+    def test_an_admin_sees_it_during_the_contest(self, admin_client):
+        self.setup_contest(admin_client, running=True)
+        assert "rival" in self.names(admin_client)
+
+    def test_you_always_see_your_own(self, client, admin_client):
+        """Hiding a contestant's own result from them would be pointless."""
+        self.setup_contest(admin_client, running=True)
+        admin_client.post("/api/auth/logout")
+        # Log in as the rival themselves.
+        db.execute("UPDATE users SET password_hash = ? WHERE username = 'rival'",
+                   (__import__("stroj.auth", fromlist=["auth"]).hash_password("password123"),))
+        client.post("/api/auth/login",
+                    json={"username": "rival", "password": "password123"})
+        assert "rival" in self.names(client)
