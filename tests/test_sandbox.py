@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 
 import pytest
@@ -219,36 +220,43 @@ class TestMemoryIsAttributedToTheProgram:
 
 
 class TestChoosingWhichMeasurementToTrust:
-    """Tested as a decision rather than an outcome, because the bug it guards
-    is Linux-only: `ru_maxrss` inherits the parent's footprint there, but not
-    on macOS, so measuring a real program cannot tell the two rules apart on a
-    developer's machine.
+    """Tested as a decision rather than an outcome, because the behaviour it
+    guards is platform-specific: `ru_maxrss` inherits the parent's footprint on
+    Linux but not on macOS, so measuring a real program cannot tell a correct
+    rule from a broken one on a developer's machine.
+
+    `parent_floor` means "the part of ru_maxrss that was inherited" — the
+    judge's own resident size at fork on Linux, and zero where nothing is
+    inherited.
     """
 
     MB = 1024 * 1024
 
-    def test_a_sample_wins_over_the_inherited_figure(self):
-        """The regression: taking the larger of the two put the judge's own
-        size under every submission."""
+    def test_the_inherited_footprint_is_subtracted(self):
+        """The regression: using ru_maxrss raw put the judge's own size under
+        every submission, and a C++ A+B came back at 42 MiB."""
         got = sandbox.resolve_rss(4 * self.MB, 42 * self.MB, 41 * self.MB)
-        assert got == 4 * self.MB, "ru_maxrss must not be able to raise a sample"
+        assert got == 4 * self.MB
 
-    def test_a_sample_wins_even_when_it_is_tiny(self):
-        assert sandbox.resolve_rss(300 * 1024, 42 * self.MB, 41 * self.MB) == 300 * 1024
+    def test_a_sample_the_kernel_did_not_see_still_counts(self):
+        """A program too short-lived to sample properly is the other failure,
+        and reporting 0.03 MiB for it is no better than reporting 42."""
+        got = sandbox.resolve_rss(30 * 1024, 12 * self.MB, 8 * self.MB)
+        assert got == 4 * self.MB
 
-    def test_a_sample_wins_even_with_no_known_floor(self):
-        """parent_floor is 0 off Linux; that must not re-open the door."""
-        assert sandbox.resolve_rss(4 * self.MB, 42 * self.MB, 0) == 4 * self.MB
+    def test_the_larger_of_the_two_wins(self):
+        assert sandbox.resolve_rss(9 * self.MB, 12 * self.MB, 8 * self.MB) == 9 * self.MB
 
-    def test_without_a_sample_the_judge_is_subtracted(self):
-        got = sandbox.resolve_rss(0, 42 * self.MB, 41 * self.MB)
-        assert got == 1 * self.MB
+    def test_nothing_inherited_means_rusage_is_trusted_whole(self):
+        """On macOS ru_maxrss is already the child's own, so a floor of zero
+        must leave it intact rather than discard it."""
+        assert sandbox.resolve_rss(30 * 1024, 12 * self.MB, 0) == 12 * self.MB
 
     def test_a_shrinking_judge_cannot_produce_a_negative(self):
         assert sandbox.resolve_rss(0, 10 * self.MB, 40 * self.MB) == 0
 
-    def test_without_a_sample_or_a_floor_the_raw_figure_is_used(self):
-        assert sandbox.resolve_rss(0, 7 * self.MB, 0) == 7 * self.MB
+    def test_no_measurement_at_all_reports_nothing(self):
+        assert sandbox.resolve_rss(0, 0, 0) == 0
 
 
 class TestReportedMemoryExcludesTheJudge:
@@ -292,3 +300,31 @@ class TestReportedMemoryExcludesTheJudge:
         small = run_python("pass", tmp_path)
         large = run_python("x = bytearray(60 * 1024 * 1024)", tmp_path)
         assert large.max_rss_bytes > small.max_rss_bytes * 1.5
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="VmHWM is a Linux thing")
+class TestPeakIsReadFromTheKernel:
+    """Sampling the *current* size loses any program short enough to finish
+    between two samples — a C++ A+B runs in about two milliseconds and read as
+    0 MiB. `VmHWM` is the kernel's own high-water mark, so a single reading at
+    any point gives the true peak."""
+
+    def hwm(self, pid: int) -> int:
+        return sandbox._read_rss(pid)
+
+    def test_it_reports_this_process_at_its_peak_not_its_present(self):
+        import gc
+        before = self.hwm(os.getpid())
+        block = bytearray(60 * 1024 * 1024)
+        block[::4096] = b"1" * len(block[::4096])
+        peak = self.hwm(os.getpid())
+        del block
+        gc.collect()
+        after = self.hwm(os.getpid())
+        assert peak > before + 50 * 1024 * 1024, "the allocation was not seen"
+        # The memory is gone, but the mark is not: that is what makes one
+        # late sample enough.
+        assert after >= peak
+
+    def test_a_dead_process_reads_as_nothing(self):
+        assert self.hwm(999999) == 0

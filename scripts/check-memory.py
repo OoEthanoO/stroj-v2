@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """Report what the memory sampler actually sees, on this machine.
 
-    docker exec stroj-judge python /app/scripts/check-memory.py
+Run it against the live judge without deploying anything — the image only
+carries `stroj/`, so this file is never inside the container:
+
+    ssh stroj-judge 'docker exec -i stroj-judge python -' < scripts/check-memory.py
+
+The `-i` matters: without it `docker exec` discards stdin and the script never
+arrives.
 
 Memory is measured by sampling the child's resident size after it has
 `execve`'d. Whether that works depends on the kernel, the container's
@@ -16,8 +22,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, "/app")
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, "/app")            # where the container keeps it
+if "__file__" in globals():           # absent when piped in over stdin
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from stroj.judge import sandbox  # noqa: E402
 
@@ -40,10 +47,15 @@ def main() -> int:
     ]
     cxx = None
     try:
+        # Plain <iostream>, not <bits/stdc++.h> — the shim only exists inside
+        # the judge's own compile step, and a failure to build here would say
+        # nothing about memory.
         (box / "m.cpp").write_text(
-            "#include <bits/stdc++.h>\nusing namespace std;\n"
-            "int main(){long long a,b;cin>>a>>b;cout<<a+b<<'\\n';}")
-        subprocess.run(["g++", "-O2", "-std=c++20", "-o", str(box / "ab"),
+            "#include <iostream>\n"
+            "int main(){long long a,b;std::cin>>a>>b;std::cout<<a+b<<'\\n';}")
+        from stroj.judge import languages
+        compiler = languages.get("cpp").compile_cmd[0]
+        subprocess.run([compiler, "-O2", "-std=c++20", "-o", str(box / "ab"),
                         str(box / "m.cpp")], check=True, capture_output=True)
         cxx = [str(box / "ab")]
         programs.insert(0, ("C++ A+B", cxx))

@@ -266,6 +266,29 @@ def _make_rss_reader():
     page_size = os.sysconf("SC_PAGE_SIZE")
 
     def read_rss_proc(pid: int) -> int:
+        """Peak resident size since ``execve``, from ``VmHWM``.
+
+        Not the *current* size. The kernel already tracks the high-water mark,
+        and reading that instead of sampling the instantaneous value removes
+        the race that sampling otherwise loses: a C++ program that runs for two
+        milliseconds dies before enough samples land, and reported 0 MiB.
+        One reading at any point in its life gives the true peak, because the
+        figure only ever goes up.
+
+        `execve` installs a fresh address space, so the mark restarts there and
+        the judge's own footprint — inherited at `fork` and carried in
+        `ru_maxrss` — is excluded for free. `/proc/<pid>/status` is
+        world-readable, so this keeps working after the child drops to the
+        runner account in a container with no capabilities.
+        """
+        try:
+            with open(f"/proc/{pid}/status", "rb") as fh:
+                for line in fh:
+                    if line.startswith(b"VmHWM:"):
+                        return int(line.split()[1]) * 1024
+        except (OSError, IndexError, ValueError):
+            pass
+        # Kernels without VmHWM: fall back to the instantaneous size.
         try:
             with open(f"/proc/{pid}/statm", "rb") as fh:
                 return int(fh.read().split()[1]) * page_size
@@ -279,31 +302,25 @@ _read_rss = _make_rss_reader()
 
 
 def resolve_rss(sampled_peak: int, reported_rusage: int, parent_floor: int) -> int:
-    """Pick the figure that actually describes the program.
-
-    Two measurements are available and only one of them is trustworthy.
+    """Combine the two measurements into the program's own peak.
 
     ``sampled_peak`` is read from the child after it has ``execve``'d, so it is
-    the program's own resident size. ``reported_rusage`` is ``ru_maxrss`` from
-    ``wait4``, which measures the child from ``fork`` — and at that moment the
-    child is a copy-on-write clone of the judge, so on Linux it can never come
-    back smaller than the Python interpreter that launched it, whatever the
-    program went on to do.
+    the program and nothing else — but a process that lives three milliseconds
+    can finish before its pages are even faulted in, and then the sample is far
+    too low.
 
-    So a sample wins outright. Taking the larger of the two, as this once did,
-    reinstated the floor it was meant to remove: every submission reported
-    roughly the judge's own size, and a C++ program that adds two integers came
-    back at 42 MiB. Only when nothing was sampled — the process was gone inside
-    a millisecond — is the inherited figure used at all, and then with the
-    judge's own footprint taken off it.
+    ``reported_rusage`` is ``ru_maxrss`` from ``wait4``. It covers the whole
+    life of the child including the instant it was still a copy of the judge,
+    so on Linux it can never come back smaller than the interpreter that forked
+    it. ``parent_floor`` is exactly that inherited part — the judge's own
+    resident size at fork, and zero on platforms where nothing is inherited.
+
+    Taking the larger of the sample and the *floor-subtracted* rusage gets both
+    cases right: the subtraction removes the judge's footprint, which is what
+    made every submission report ~41 MiB, while still catching a peak the
+    sampler was too slow to see.
     """
-    if sampled_peak:
-        return sampled_peak
-    # No sample landed. `ru_maxrss` is all that is left, and on Linux it counts
-    # what the child inherited at fork, so take the judge's own footprint off
-    # it. Reporting nothing would be worse than reporting roughly: a blank
-    # column reads as "this problem uses no memory".
-    return max(0, reported_rusage - parent_floor)
+    return max(sampled_peak, max(0, reported_rusage - parent_floor))
 
 
 def _self_rss() -> int:
