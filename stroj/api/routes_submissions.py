@@ -164,6 +164,21 @@ def list_submissions(
         params.append(before)
     if not is_admin(user):
         where.append("(p.visible = 1 OR s.contest_id IS NOT NULL)")
+        # A live contest's results stay between the contestant and the judge.
+        # Listing them here hands out precisely what a frozen scoreboard is
+        # withholding, and the list is one click from the contest page.
+        live = [
+            row["id"] for row in db.query("SELECT * FROM contests")
+            if contest_mod.state_of(row) == contest_mod.RUNNING
+        ]
+        if live:
+            marks = ", ".join("?" * len(live))
+            where.append(
+                f"(s.contest_id IS NULL OR s.contest_id NOT IN ({marks})"
+                f" OR s.user_id = ?)"
+            )
+            params.extend(live)
+            params.append(user["id"] if user else -1)
 
     sql = _JOINED
     if where:

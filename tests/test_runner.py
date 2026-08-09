@@ -334,3 +334,63 @@ def test_an_untouched_event_changes_nothing(make_tests):
     outcome = runner.judge(correct, "python3", PROBLEM, make_tests(AB_TESTS),
                            abort=threading.Event())
     assert outcome.verdict == runner.AC
+
+
+class TestColdStartIsNotCharged:
+    """A freshly compiled binary pays to be faulted in from disk and to have
+    its libraries bound, and the judge reports the slowest test — so that
+    one-off cost became the reported time. Measured before this: 180 ms for a
+    C++ A+B whose CPU time was 9 ms."""
+
+    SOURCE = ("#include <bits/stdc++.h>\nusing namespace std;\n"
+              "int main(){long long a,b;cin>>a>>b;cout<<a+b<<'\\n';}")
+
+    def judge(self, make_tests, tests):
+        problem = ProblemSpec(time_limit_ms=4000, memory_limit_mb=256)
+        return runner.judge(self.SOURCE, "cpp", problem, make_tests(tests))
+
+    def test_the_first_run_no_longer_sets_the_reported_time(self, make_tests, monkeypatch):
+        warmed = self.judge(make_tests, AB_TESTS)
+        assert warmed.verdict == runner.AC
+
+        monkeypatch.setattr(runner, "_warm_up", lambda *a, **k: None)
+        cold = self.judge(make_tests, AB_TESTS)
+        assert cold.verdict == runner.AC
+
+        # The gap is roughly tenfold; a third of it is a safe threshold on a
+        # loaded machine while still failing if the warm-up stops happening.
+        assert warmed.time_ms * 3 < cold.time_ms, (
+            f"warmed {warmed.time_ms} ms vs cold {cold.time_ms} ms"
+        )
+
+    def test_it_does_not_change_the_verdict(self, make_tests):
+        """The throwaway run must be invisible: same result, same score."""
+        outcome = self.judge(make_tests, AB_TESTS)
+        assert outcome.verdict == runner.AC
+        assert outcome.score == outcome.max_score
+        assert len(outcome.tests) == len(AB_TESTS)
+
+    def test_a_broken_program_is_still_judged_normally(self, make_tests):
+        """A warm-up that crashes tells us nothing, so it must be ignored —
+        the real tests decide."""
+        outcome = runner.judge("raise SystemExit(9)", "python3", PROBLEM,
+                               make_tests(AB_TESTS))
+        assert outcome.verdict == runner.RE
+
+    def test_it_leaves_nothing_behind(self, make_tests, tmp_path):
+        """Its output must not be mistaken for the submission's."""
+        problem = ProblemSpec(time_limit_ms=4000, memory_limit_mb=256)
+        runner.judge(self.SOURCE, "cpp", problem, make_tests(AB_TESTS),
+                     work_dir=tmp_path)
+        leftovers = list(tmp_path.rglob("warmup.*"))
+        assert not leftovers, leftovers
+
+    def test_a_cancelled_submission_skips_it(self, make_tests):
+        """No point warming up a run that is already going nowhere."""
+        import threading
+        abort = threading.Event()
+        abort.set()
+        outcome = runner.judge(self.SOURCE, "cpp",
+                               ProblemSpec(time_limit_ms=4000, memory_limit_mb=256),
+                               make_tests(AB_TESTS), abort=abort)
+        assert outcome.verdict == runner.AB

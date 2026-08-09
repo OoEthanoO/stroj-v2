@@ -1709,3 +1709,57 @@ class TestRankingRespectsAContestFreeze:
         client.post("/api/auth/login",
                     json={"username": "rival", "password": "password123"})
         assert "rival" in self.names(client)
+
+
+class TestTheSubmissionListRespectsALiveContest:
+    """The scoreboard can be frozen, but the submissions list sat one click
+    away showing every verdict as it landed."""
+
+    def during(self, admin_client, running: bool):
+        make_problem(admin_client)
+        now = db.parse_time(db.utcnow())
+        span = ((now - timedelta(hours=1), now + timedelta(hours=1)) if running
+                else (now - timedelta(hours=3), now - timedelta(hours=1)))
+        iso = lambda d: d.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        cid = db.insert(
+            "INSERT INTO contests (slug, title, description, starts_at, ends_at,"
+            " scoring, penalty_minutes, created_at)"
+            " VALUES ('live','Live','',?,?,'icpc',20,?)",
+            (iso(span[0]), iso(span[1]), db.utcnow()))
+        pid = db.one("SELECT id FROM problems WHERE slug='a-plus-b'")["id"]
+        rival = db.insert("INSERT INTO users (username, password_hash, created_at)"
+                          " VALUES ('rival2','x',?)", (db.utcnow(),))
+        db.insert(
+            "INSERT INTO submissions (user_id, problem_id, contest_id, language,"
+            " source, verdict, score, max_score, earned_percent, time_ms,"
+            " memory_kb, created_at) VALUES (?,?,?,'python3','x','AC',2,2,100,5,5,?)",
+            (rival, pid, cid, db.utcnow()))
+
+    def names(self, client):
+        return [s["username"] for s in
+                client.get("/api/submissions").json()["submissions"]]
+
+    def test_a_rivals_live_result_is_hidden(self, client, admin_client):
+        self.during(admin_client, running=True)
+        admin_client.post("/api/auth/logout")
+        register(client, "watcher")
+        assert "rival2" not in self.names(client)
+
+    def test_it_appears_once_the_contest_is_over(self, client, admin_client):
+        self.during(admin_client, running=False)
+        admin_client.post("/api/auth/logout")
+        register(client, "watcher2")
+        assert "rival2" in self.names(client)
+
+    def test_an_admin_still_sees_everything(self, admin_client):
+        self.during(admin_client, running=True)
+        assert "rival2" in self.names(admin_client)
+
+    def test_practice_submissions_are_unaffected(self, client, admin_client):
+        """Only contest entries are withheld; ordinary practice is public."""
+        self.during(admin_client, running=True)
+        admin_client.post("/api/auth/logout")
+        register(client, "practiser")
+        client.post("/api/submissions", json={
+            "problem": "a-plus-b", "language": "python3", "source": "print(1)"})
+        assert "practiser" in self.names(client)

@@ -265,6 +265,56 @@ def _compile(
     return False, diagnostics.strip() or f"Compilation failed ({result.detail})."
 
 
+#: A first run pays for faulting the executable in from disk and for the
+#: dynamic linker resolving its libraries, and none of that is the submission.
+#: Measured on a freshly compiled C++ binary: 175 ms, then 15, 14, 12, 12, 12 —
+#: with CPU steady at 9 ms throughout, so it is waiting, not working. The
+#: judge reports the slowest test, so that one-off cost became the answer.
+#: Cap the throwaway run so a slow submission cannot pay a full limit for it.
+WARM_UP_LIMIT_S = 1.0
+
+
+def _warm_up(
+    lang: languages.Language,
+    problem: ProblemSpec,
+    test: TestSpec,
+    box: Path,
+    use_sandbox: bool,
+    run_as: tuple[int, int] | None,
+    abort: "threading.Event | None",
+) -> None:
+    """Run the program once and throw the result away.
+
+    Nothing here is scored or reported; the point is only that the pages are
+    resident and the libraries are bound before the first test is timed. A
+    failure is ignored on purpose — if the program is broken, the real tests
+    are where that gets decided.
+    """
+    if abort is not None and abort.is_set():
+        return
+    limit = min(WARM_UP_LIMIT_S, lang.effective_time_limit_ms(problem.time_limit_ms) / 1000.0)
+    try:
+        run(
+            lang.run_argv(problem.memory_limit_mb),
+            cwd=str(box),
+            stdin_path=test.input_path,
+            stdout_path=str(box / "warmup.out"),
+            stderr_path=str(box / "warmup.err"),
+            wall_limit_s=max(0.2, limit),
+            memory_limit_bytes=lang.effective_memory_limit_mb(
+                problem.memory_limit_mb) * 1024 * 1024,
+            address_space_rlimit=lang.limit_address_space,
+            output_limit_bytes=config.OUTPUT_LIMIT_BYTES,
+            use_sandbox=use_sandbox,
+            run_as=run_as,
+            abort=abort,
+        )
+    except Exception:                       # pragma: no cover - defensive
+        pass
+    for leftover in ("warmup.out", "warmup.err"):
+        (box / leftover).unlink(missing_ok=True)
+
+
 def _run_one_test(
     lang: languages.Language,
     problem: ProblemSpec,
@@ -416,6 +466,8 @@ def judge(
         # files) owned by the runner already — but re-assert, since a language
         # with no compile step never went through that path.
         _hand_box_to_runner(box, run_as)
+
+        _warm_up(lang, problem, tests[0], box, use_sandbox, run_as, abort)
 
         outcome = JudgeOutcome(AC, max_score=max_score)
         for test in tests:
