@@ -299,6 +299,10 @@ def resolve_rss(sampled_peak: int, reported_rusage: int, parent_floor: int) -> i
     """
     if sampled_peak:
         return sampled_peak
+    # No sample landed. `ru_maxrss` is all that is left, and on Linux it counts
+    # what the child inherited at fork, so take the judge's own footprint off
+    # it. Reporting nothing would be worse than reporting roughly: a blank
+    # column reads as "this problem uses no memory".
     return max(0, reported_rusage - parent_floor)
 
 
@@ -316,35 +320,39 @@ class _MemoryMonitor(threading.Thread):
     of megabytes of Python interpreter to the submission.
     """
 
-    def __init__(self, pid: int, limit_bytes: int | None, exec_path: str | None) -> None:
+    def __init__(self, pid: int, limit_bytes: int | None, exec_fd: int | None) -> None:
         super().__init__(name=f"rss-{pid}", daemon=True)
         self.pid = pid
         self.limit = limit_bytes
-        self.exec_path = exec_path
+        self.exec_fd = exec_fd
         self.peak = 0
         self.exceeded = threading.Event()
         self._done = threading.Event()
-        self._running_yet = exec_path is None
 
-    def _has_exec(self) -> bool:
-        """True once /proc says the child is running the program we launched."""
-        if self._running_yet:
-            return True
+    def _await_exec(self) -> None:
+        """Block until the child has ``execve``'d, or died trying.
+
+        The signal is a pipe whose write end the child holds close-on-exec:
+        ``execve`` closes it, and this read returns end-of-file at exactly that
+        moment. Reading it costs no permissions, which matters — the obvious
+        alternative, watching ``/proc/<pid>/exe``, needs ptrace access that the
+        judge does not have once the child has dropped to the runner account in
+        a container with its capabilities stripped. That check silently never
+        passed, so nothing was ever sampled and every submission fell back to
+        reporting the judge's own footprint.
+        """
+        if self.exec_fd is None:
+            return
         try:
-            if os.readlink(f"/proc/{self.pid}/exe") == self.exec_path:
-                self._running_yet = True
+            while os.read(self.exec_fd, 1):
+                pass          # nothing writes to it; only EOF is meaningful
         except OSError:
             pass
-        return self._running_yet
 
     def run(self) -> None:
+        self._await_exec()
         started = None
         while not self._done.is_set():
-            if not self._has_exec():
-                # Spin tightly: exec lands in well under a millisecond, and
-                # sleeping the full interval would lose real measurements.
-                self._done.wait(0.0005)
-                continue
             if started is None:
                 started = time.monotonic()
             rss = _read_rss(self.pid)
@@ -451,7 +459,10 @@ def run(
     # Captured before the fork: the child inherits this footprint, and
     # ru_maxrss cannot tell it apart from memory the submission really used.
     parent_floor = _self_rss() if sys.platform == "linux" else 0
-    exec_target = os.path.realpath(exe) if sys.platform == "linux" else None
+    # A pipe the child holds close-on-exec: `execve` closes its end, and the
+    # parent's read returns EOF at exactly that instant. `os.pipe` already sets
+    # FD_CLOEXEC on both ends, which is precisely the behaviour wanted here.
+    exec_r, exec_w = os.pipe()
 
     start = time.monotonic()
     try:
@@ -461,6 +472,7 @@ def run(
 
     if pid == 0:  # ---- child ----
         try:
+            os.close(exec_r)
             os.setpgid(0, 0)
             os.chdir(cwd)
             fd_in = os.open(in_path, os.O_RDONLY)
@@ -494,6 +506,9 @@ def run(
 
     # ---- parent ----
     # Both sides set the process group so a kill can never race the exec.
+    # Only the child's copy may stay open, or the read below never ends.
+    os.close(exec_w)
+
     try:
         os.setpgid(pid, pid)
     except OSError:
@@ -528,13 +543,14 @@ def run(
         watcher.start()
     # Always sample, even with no limit to enforce: it is the only measurement
     # that reflects the submission rather than the judge that launched it.
-    monitor = _MemoryMonitor(pid, memory_limit_bytes, exec_target)
+    monitor = _MemoryMonitor(pid, memory_limit_bytes, exec_r)
     monitor.start()
     try:
         _, status, usage = os.wait4(pid, 0)
     finally:
         timer.cancel()
         monitor.stop()
+        os.close(exec_r)
         finished.set()
         if watcher is not None:
             watcher.join(timeout=1.0)
