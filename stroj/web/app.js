@@ -100,6 +100,19 @@ function userLink(username, role) {
   return `<a class="user-link${admin}" href="#/user/${encodeURIComponent(username)}">${esc(username)}</a>`;
 }
 
+/** One row per language in the per-language limits table. */
+const limitRows = (limits) => Object.entries(limits).map(([id, l]) => `
+  <tr>
+    <td class="wide">${esc(l.name)}</td>
+    <td><input class="lim" data-lang="${esc(id)}" data-f="time" type="number"
+          min="100" max="60000" value="${l.time_limit_ms}" style="width:110px"></td>
+    <td><input class="lim" data-lang="${esc(id)}" data-f="memory" type="number"
+          min="16" max="4096" value="${l.memory_limit_mb}" style="width:110px"></td>
+    <td><span class="pill">${l.measured ? 'measured' : 'derived'}</span></td>
+    <td>${l.measured
+      ? `<button class="small" data-clear-limit="${esc(id)}">Clear</button>` : ''}</td>
+  </tr>`).join('');
+
 const pointsPill = (points) => `<span class="points-pill">${Number(points) || 0}</span>`;
 
 const typePills = (types) => ((types || []).length
@@ -1233,6 +1246,12 @@ async function viewAdminProblem(slug) {
           <input id="e-author" value="${esc(p.author || '')}" placeholder="(unattributed)"></label>
       </div>
       <label>Types ${typeChips('e-types', allTypes, p.types, true)}</label>
+      <div class="row">
+        <label class="row" style="gap:6px"><input type="checkbox" id="e-partial" style="width:auto"
+          ${p.partial ? 'checked' : ''}> partial scoring</label>
+        <label class="row" style="gap:6px"><input type="checkbox" id="e-visible" style="width:auto"
+          ${p.visible ? 'checked' : ''}> visible</label>
+      </div>
     </div>
 
     <details class="card" id="e-limits-card"${Object.values(limits).some((l) => l.measured) ? ' open' : ''}>
@@ -1244,26 +1263,13 @@ async function viewAdminProblem(slug) {
       <div class="table-wrap"><table class="limits-table">
         <thead><tr><th>Language</th><th>Time (ms)</th>
           <th>Memory (MiB)</th><th>Source</th><th></th></tr></thead>
-        <tbody>${Object.entries(limits).map(([id, l]) => `
-          <tr>
-            <td class="wide">${esc(l.name)}</td>
-            <td><input class="lim" data-lang="${esc(id)}" data-f="time" type="number"
-                  min="100" max="60000" value="${l.time_limit_ms}" style="width:110px"></td>
-            <td><input class="lim" data-lang="${esc(id)}" data-f="memory" type="number"
-                  min="16" max="4096" value="${l.memory_limit_mb}" style="width:110px"></td>
-            <td><span class="pill" data-source="${esc(id)}">${l.measured ? 'measured' : 'derived'}</span></td>
-            <td>${l.measured
-              ? `<button class="small" data-clear-limit="${esc(id)}">Clear</button>` : ''}</td>
-          </tr>`).join('')}</tbody>
+        <tbody id="e-limits-rows">${limitRows(limits)}</tbody>
       </table></div>
-      <div class="row end"><button class="small primary" id="e-save-limits">Save limits</button></div>
-      <div class="row">
-        <label class="row" style="gap:6px"><input type="checkbox" id="e-partial" style="width:auto"
-          ${p.partial ? 'checked' : ''}> partial scoring</label>
-        <label class="row" style="gap:6px"><input type="checkbox" id="e-visible" style="width:auto"
-          ${p.visible ? 'checked' : ''}> visible</label>
+      <div class="row end">
+        <span class="muted small spacer" id="e-limits-status"></span>
+        <button class="small primary" id="e-save-limits">Save limits</button>
       </div>
-    </div>
+    </details>
 
     <div class="grid-2">
       <div>
@@ -1287,47 +1293,69 @@ async function viewAdminProblem(slug) {
   // Only the rows an author actually touches are sent, so opening the editor
   // and saving does not silently pin every language to its derived value.
   const touched = new Set();
-  $$('.lim').forEach((input) => {
-    input.oninput = () => touched.add(input.dataset.lang);
-  });
+
+  const limitsUrl = `/api/admin/problems/${encodeURIComponent(slug)}/limits`;
+
+  /* Repaint just this table rather than re-running the route. The rest of the
+   * form is a separate, unsaved draft — title, base limits, statement — and a
+   * full re-render would throw all of it away for anyone who set the limits
+   * before pressing Save changes. */
+  async function refreshLimits(message) {
+    const { limits: fresh } = await api(limitsUrl);
+    $('#e-limits-rows').innerHTML = limitRows(fresh);
+    touched.clear();
+    bindLimits();
+    $('#e-limits-status').textContent = message || '';
+  }
+
+  function bindLimits() {
+    $$('.lim').forEach((input) => {
+      input.oninput = () => {
+        touched.add(input.dataset.lang);
+        $('#e-limits-status').textContent = '';
+      };
+    });
+    $$('[data-clear-limit]').forEach((button) => {
+      button.onclick = async () => {
+        const lang = button.dataset.clearLimit;
+        button.disabled = true;
+        try {
+          await api(limitsUrl, { method: 'PUT', body: { limits: { [lang]: null } } });
+          await refreshLimits(`${lang} back to the derived limit.`);
+        } catch (err) {
+          toast(err.message, 'bad');
+          button.disabled = false;
+        }
+      };
+    });
+  }
+  bindLimits();
 
   $('#e-save-limits').onclick = async () => {
     const button = $('#e-save-limits');
+    const body = {};
+    for (const lang of touched) {
+      const field = (f) => $(`.lim[data-lang="${CSS.escape(lang)}"][data-f="${f}"]`);
+      body[lang] = {
+        time_limit_ms: Number(field('time').value),
+        memory_limit_mb: Number(field('memory').value),
+      };
+    }
+    if (!Object.keys(body).length) {
+      $('#e-limits-status').textContent = 'Nothing changed.';
+      return;
+    }
     button.disabled = true;
     try {
-      const body = {};
-      for (const lang of touched) {
-        const field = (f) => $(`.lim[data-lang="${CSS.escape(lang)}"][data-f="${f}"]`);
-        body[lang] = {
-          time_limit_ms: Number(field('time').value),
-          memory_limit_mb: Number(field('memory').value),
-        };
-      }
-      if (!Object.keys(body).length) { toast('Nothing changed.'); return; }
-      await api(`/api/admin/problems/${encodeURIComponent(slug)}/limits`, {
-        method: 'PUT', body: { limits: body },
-      });
-      toast(`Set limits for ${Object.keys(body).length} language(s).`, 'good');
-      route();
+      await api(limitsUrl, { method: 'PUT', body: { limits: body } });
+      const n = Object.keys(body).length;
+      await refreshLimits(`Saved ${n} language${n === 1 ? '' : 's'}.`);
     } catch (err) {
       toast(err.message, 'bad');
     } finally {
       button.disabled = false;
     }
   };
-
-  $$('[data-clear-limit]').forEach((button) => {
-    button.onclick = async () => {
-      const lang = button.dataset.clearLimit;
-      try {
-        await api(`/api/admin/problems/${encodeURIComponent(slug)}/limits`, {
-          method: 'PUT', body: { limits: { [lang]: null } },
-        });
-        toast(`${lang} back to the derived limit.`);
-        route();
-      } catch (err) { toast(err.message, 'bad'); }
-    };
-  });
 
   const editor = $('#e-statement');
   markdownEditor(editor, $('#e-preview'));
