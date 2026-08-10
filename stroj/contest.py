@@ -38,6 +38,17 @@ def is_running(contest: sqlite3.Row, now: str | None = None) -> bool:
     return state_of(contest, now) == RUNNING
 
 
+def live_ids() -> list[int]:
+    """Contests running right now.
+
+    Every public listing of submissions has to exclude these, or it hands out
+    what the frozen scoreboard is withholding. The rule lives here rather than
+    at each call site because it had already been copied twice and the third
+    copy — the profile activity calendar — was written without it.
+    """
+    return [row["id"] for row in db.query("SELECT * FROM contests") if is_running(row)]
+
+
 def minutes_since_start(contest: sqlite3.Row, timestamp: str) -> int:
     delta = db.parse_time(timestamp) - db.parse_time(contest["starts_at"])
     return max(0, int(delta.total_seconds() // 60))

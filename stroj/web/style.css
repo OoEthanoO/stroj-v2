@@ -196,6 +196,10 @@ textarea.code {
 .error { color: var(--bad); font-size: 13px; }
 input.search { width: 220px; }
 
+/* A checkbox and its word sit on one line; every other label stacks. */
+label.check { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
+label.check input { width: auto; margin: 0; }
+
 .info {
   position: relative; align-self: center;
   display: inline-flex; align-items: center; justify-content: center;
@@ -283,6 +287,7 @@ td.wide { white-space: normal; }
   background: var(--surface-2); border: 1px solid var(--border);
   padding: 1px 7px; border-radius: 5px;
 }
+.pill.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
 
 /* ---------- stream ---------- */
 
@@ -381,10 +386,70 @@ dialog::backdrop { background: rgba(10, 12, 16, .45); }
 dialog h2 { margin: 0 0 16px; font-size: 18px; }
 dialog .row { justify-content: flex-end; margin-top: 6px; }
 
-details.admin-section { margin-bottom: 14px; }
-details.admin-section > summary {
-  cursor: pointer; font-weight: 600; padding: 10px 0; list-style-position: inside;
+/* ---------- markdown editor ---------- */
+
+/* Source and preview are one control, so they share a border and the tab bar
+   sits inside it. Which pane shows is a single attribute on the wrapper. */
+.md {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
 }
+.md-bar {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  background: var(--surface-2); border-bottom: 1px solid var(--border);
+}
+.md-tabs, .md-tools { display: flex; gap: 2px; }
+.md-tab, .md-tool {
+  padding: 4px 12px; font-size: 13px;
+  border-color: transparent; background: transparent; color: var(--muted);
+}
+.md-tool { width: 30px; padding: 4px 0; font-family: var(--mono); }
+.md-tab:hover:not(:disabled), .md-tool:hover:not(:disabled) { background: var(--surface); color: var(--text); }
+.md-tab.on { background: var(--surface); border-color: var(--border); color: var(--text); }
+
+.md-panes { display: grid; grid-template-columns: 1fr; }
+/* Scoped to .md so it outranks the `textarea.code` height set above. */
+.md .md-src, .md-preview { min-height: 480px; }
+.md .md-src { border: none; border-radius: 0; padding: 14px 16px; resize: vertical; }
+.md .md-src:focus { outline: none; }
+.md-preview { padding: 14px 16px; overflow: auto; }
+.md[data-mode="write"] .md-preview, .md[data-mode="preview"] .md-src { display: none; }
+.md[data-mode="split"] .md-panes { grid-template-columns: 1fr 1fr; }
+.md[data-mode="split"] .md-preview { border-left: 1px solid var(--border); }
+@media (max-width: 820px) {
+  /* Two half-width columns are unreadable here, so split degrades to write. */
+  .md[data-mode="split"] .md-panes { grid-template-columns: 1fr; }
+  .md[data-mode="split"] .md-preview { display: none; }
+}
+
+/* A section of the admin index, with its "+ New" button on the heading line. */
+.section-head { margin: 28px 0 10px; }
+.section-head h2 { margin: 0; }
+
+/* ---------- visibility ---------- */
+
+/* Two states and, in words, who can see the thing right now. Hidden colours
+   the whole bar rather than one control, so it is noticed without being read. */
+.vis {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 9px 12px; margin-bottom: 18px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+}
+.vis[data-on="0"] { background: var(--warn-bg); border-color: transparent; }
+.vis-note { font-size: 13px; color: var(--muted); }
+.vis[data-on="0"] .vis-note { color: var(--warn); }
+
+.seg { display: flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.seg-btn {
+  border: none; border-radius: 0; padding: 5px 14px; font-size: 13px;
+  background: var(--surface); color: var(--muted);
+}
+.seg-btn + .seg-btn { border-left: 1px solid var(--border); }
+.seg-btn.on { color: #fff; background: var(--accent); }
+.seg-btn.on:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+.vis[data-on="0"] .seg-btn.on { background: var(--warn); }
 
 /* ---------- identity ---------- */
 
@@ -428,6 +493,29 @@ details.admin-section > summary {
   background: var(--accent); vertical-align: middle; min-width: 2px;
 }
 
+/* ---------- submission calendar ---------- */
+
+.cal-wrap { overflow-x: auto; padding-bottom: 2px; }
+.cal { display: flex; gap: 3px; width: max-content; }
+.cal-week { display: grid; grid-template-rows: repeat(7, 11px); gap: 3px; }
+.cal-day { width: 11px; height: 11px; border-radius: 2px; background: var(--surface-2); }
+.cal-day.l1 { background: color-mix(in srgb, var(--accent) 30%, var(--surface-2)); }
+.cal-day.l2 { background: color-mix(in srgb, var(--accent) 55%, var(--surface-2)); }
+.cal-day.l3 { background: color-mix(in srgb, var(--accent) 78%, var(--surface-2)); }
+.cal-day.l4 { background: var(--accent); }
+.cal-tip {
+  position: fixed; transform: translate(-50%, -100%);
+  background: var(--text); color: var(--surface);
+  font-size: 12px; line-height: 1.4; white-space: nowrap;
+  padding: 3px 8px; border-radius: 5px;
+  pointer-events: none; z-index: 100;
+}
+.cal-months {
+  display: flex; gap: 3px; margin-bottom: 4px; width: max-content;
+  font-size: 11px; color: var(--muted);
+}
+.cal-months span { width: 11px; white-space: nowrap; }
+
 /* A subtask boundary inside a submission's test list. */
 tr.subtask-head td {
   background: var(--surface-2);
@@ -437,14 +525,6 @@ tr.subtask-head td {
   padding-top: 10px;
   padding-bottom: 10px;
 }
-
-/* An inline editor unfolds inside the table it belongs to, so the row it edits
-   stays visible directly above it for comparison. */
-/* Cells are `nowrap` so verdicts and timings never break mid-value, but a form
-   inside one needs to wrap or every label sits on the same line as its input. */
-.editor-row > td { background: var(--surface-2); padding: 16px 14px; white-space: normal; }
-.editor-row label { margin-bottom: 10px; }
-.editor-row .row.end { margin-top: 4px; }
 
 /* ---------- math ---------- */
 

@@ -191,10 +191,7 @@ def list_submissions(
         # A live contest's results stay between the contestant and the judge.
         # Listing them here hands out precisely what a frozen scoreboard is
         # withholding, and the list is one click from the contest page.
-        live = [
-            row["id"] for row in db.query("SELECT * FROM contests")
-            if contest_mod.state_of(row) == contest_mod.RUNNING
-        ]
+        live = contest_mod.live_ids()
         if live:
             marks = ", ".join("?" * len(live))
             where.append(
@@ -249,10 +246,7 @@ def problem_ranking(
     if not is_admin(user):
         # A live contest's submissions stay out until it finishes. Your own are
         # always yours to see.
-        live = [
-            row["id"] for row in db.query("SELECT * FROM contests")
-            if contest_mod.state_of(row) == contest_mod.RUNNING
-        ]
+        live = contest_mod.live_ids()
         if live:
             marks = ", ".join("?" * len(live))
             where.append(

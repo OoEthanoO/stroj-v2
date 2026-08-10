@@ -10,7 +10,7 @@ from datetime import timedelta
 import pytest
 
 from stroj import db
-from stroj.api import routes_admin
+from stroj.api import routes_admin, routes_users
 from stroj.judge import worker
 
 
@@ -748,6 +748,69 @@ class TestProfilesAndAuthorship:
     def test_leaderboard_endpoint(self, client):
         body = client.get("/api/leaderboard").json()
         assert "standings" in body and "decay" in body
+
+
+class TestSubmissionActivity:
+    """The profile's calendar of submissions per day."""
+
+    def submit(self, client, source="a,b=map(int,input().split())\nprint(a+b)"):
+        client.post("/api/submissions", json={
+            "problem": "a-plus-b", "language": "python3", "source": source})
+        worker.drain()
+
+    def activity(self, client, username="user1"):
+        return client.get(f"/api/users/{username}").json()["activity"]
+
+    def test_a_new_user_has_an_empty_year(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "quiet")
+        activity = self.activity(client, "quiet")
+        assert activity["counts"] == []
+        assert activity["total"] == 0
+        assert activity["days"] == routes_users.ACTIVITY_DAYS
+        assert activity["since"] < activity["until"]
+
+    def test_a_day_counts_every_submission_and_its_accepteds(
+            self, client, admin_client):
+        make_problem(admin_client)
+        admin_client.post("/api/auth/logout")
+        register(client)
+        self.submit(client)
+        self.submit(client, source="print(0)")
+
+        activity = self.activity(client)
+        assert activity["total"] == 2
+        assert len(activity["counts"]) == 1
+        assert activity["counts"][0]["count"] == 2
+        assert activity["counts"][0]["accepted"] == 1
+        assert activity["counts"][0]["date"] == db.utcnow()[:10]
+
+    def test_days_are_separate_and_older_ones_fall_out_of_the_window(
+            self, client, admin_client):
+        make_problem(admin_client)
+        admin_client.post("/api/auth/logout")
+        register(client)
+        self.submit(client)
+        self.submit(client, source="print(0)")
+        # Push one back a week and one clean out of the year.
+        ids = [r["id"] for r in db.query("SELECT id FROM submissions ORDER BY id")]
+        for sub_id, days in zip(ids, (7, 400)):
+            stamp = db.parse_time(db.utcnow()) - timedelta(days=days)
+            db.execute("UPDATE submissions SET created_at = ? WHERE id = ?",
+                       (stamp.strftime("%Y-%m-%dT%H:%M:%S.000Z"), sub_id))
+
+        activity = self.activity(client)
+        assert activity["total"] == 1
+        assert [d["count"] for d in activity["counts"]] == [1]
+        assert activity["counts"][0]["date"] >= activity["since"]
+
+    def test_the_calendar_is_public(self, client, admin_client):
+        make_problem(admin_client)
+        admin_client.post("/api/auth/logout")
+        register(client, "watched")
+        self.submit(client)
+        client.post("/api/auth/logout")
+        assert self.activity(client, "watched")["total"] == 1
 
 
 class TestLiveSubmissionView:
@@ -2234,3 +2297,86 @@ class TestTestDataIsUploadedOnce:
         admin_client.post("/api/admin/problems", json={"slug": "empty", "title": "E"})
         assert admin_client.post(
             "/api/admin/problems/empty/tests/upload").status_code == 400
+
+
+class TestTheActivityCalendarRespectsVisibility:
+    """A per-day count looks like an anonymous statistic, but during a contest
+    it says how many attempts a rival has made and how many landed — the thing
+    a frozen scoreboard exists to withhold. The calendar counts only what the
+    submissions list would show the same viewer."""
+
+    def contest_submissions(self, admin_client, *, running: bool, count: int = 3):
+        make_problem(admin_client, slug="cprob", visible=False)
+        now = db.parse_time(db.utcnow())
+        iso = lambda d: d.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        span = ((now - timedelta(minutes=5), now + timedelta(minutes=25)) if running
+                else (now - timedelta(hours=3), now - timedelta(hours=1)))
+        cid = db.insert(
+            "INSERT INTO contests (slug, title, description, starts_at, ends_at,"
+            " scoring, penalty_minutes, created_at)"
+            " VALUES ('diag','Diagnostic','',?,?,'ioi',0,?)",
+            (iso(span[0]), iso(span[1]), db.utcnow()))
+        pid = db.one("SELECT id FROM problems WHERE slug='cprob'")["id"]
+        db.execute("INSERT INTO contest_problems (contest_id, problem_id, label)"
+                   " VALUES (?,?, 'A')", (cid, pid))
+        rival = db.insert("INSERT INTO users (username, password_hash, created_at)"
+                          " VALUES ('rival','x',?)", (db.utcnow(),))
+        for _ in range(count):
+            db.insert(
+                "INSERT INTO submissions (user_id, problem_id, contest_id, language,"
+                " source, verdict, created_at) VALUES (?,?,?,'python3','','AC',?)",
+                (rival, pid, cid, db.utcnow()))
+        return rival
+
+    def totals(self, client, username="rival"):
+        """The calendar total and the number of rows the list shows, which must
+        agree — disagreeing is the whole bug."""
+        activity = client.get(f"/api/users/{username}").json()["activity"]
+        listed = client.get(
+            f"/api/submissions?username={username}&limit=200").json()["submissions"]
+        return activity["total"], len(listed)
+
+    def test_a_live_contest_is_invisible_to_a_rival(self, client, admin_client):
+        self.contest_submissions(admin_client, running=True)
+        admin_client.post("/api/auth/logout")
+        register(client, "opponent")
+        assert self.totals(client) == (0, 0)
+
+    def test_it_appears_once_the_contest_ends(self, client, admin_client):
+        self.contest_submissions(admin_client, running=False)
+        admin_client.post("/api/auth/logout")
+        register(client, "afterwards")
+        assert self.totals(client) == (3, 3)
+
+    def test_an_organiser_sees_it_all_along(self, admin_client):
+        self.contest_submissions(admin_client, running=True)
+        assert self.totals(admin_client) == (3, 3)
+
+    def test_practice_runs_on_an_unpublished_problem_are_hidden(
+            self, client, admin_client):
+        """The setter's own calibration runs, which is every problem before it
+        is published."""
+        make_problem(admin_client, slug="secret", visible=False)
+        admin_client.post("/api/submissions", json={
+            "problem": "secret", "language": "python3", "source": "print(1)"})
+        admin_client.post("/api/auth/logout")
+        register(client, "nosy")
+        assert client.get("/api/users/admin").json()["activity"]["total"] == 0
+
+    def test_you_always_see_your_own_calendar(self, client, admin_client):
+        """Hiding a contestant's own attempts from them would be pointless."""
+        self.contest_submissions(admin_client, running=True)
+        admin_client.post("/api/auth/logout")
+        db.execute("UPDATE users SET password_hash = ? WHERE username = 'rival'",
+                   (__import__("stroj.auth", fromlist=["auth"]).hash_password("password123"),))
+        client.post("/api/auth/login",
+                    json={"username": "rival", "password": "password123"})
+        assert client.get("/api/users/rival").json()["activity"]["total"] == 3
+
+    def test_published_practice_still_counts_for_everyone(self, client, admin_client):
+        make_problem(admin_client)
+        admin_client.post("/api/submissions", json={
+            "problem": "a-plus-b", "language": "python3", "source": "print(1)"})
+        admin_client.post("/api/auth/logout")
+        register(client, "browser")
+        assert client.get("/api/users/admin").json()["activity"]["total"] == 1

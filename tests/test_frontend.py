@@ -69,6 +69,16 @@ def test_mentions_suite():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
+def test_activity_calendar_suite():
+    """Run tests/test_activity_calendar.js and surface its output on failure."""
+    result = subprocess.run(
+        ["node", str(Path(__file__).parent / "test_activity_calendar.js")],
+        capture_output=True, text=True, cwd=ROOT,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
 def test_every_script_parses():
     for script in sorted(WEB.glob("*.js")):
         result = subprocess.run(
@@ -315,16 +325,18 @@ class TestNothingIsLostAcrossAnUpdate:
         return (WEB / "app.js").read_text()
 
     def test_every_editor_keeps_a_draft(self):
+        """Two surfaces hold long-form text: the profile bio, and the one admin
+        editor that every create and edit page is built from."""
         app = self.app()
-        # Requiring the opening quote skips the function's own definition,
-        # and the character class has to allow the dash in `new-post`.
-        kept = re.findall(r"keepDraft\(\s*[`'\"]([\w:${}.\-]+)", app)
-        # The long-form surfaces: problem statement, post body, bio, and the
-        # two create forms that hold the same kind of text.
-        assert any("problem:" in k for k in kept), kept
-        assert any("post:" in k for k in kept), kept
-        assert any("bio:" in k for k in kept), kept
-        assert "new-post" in kept and "new-problem" in kept, kept
+        assert "keepDraft(`bio:" in app
+        assert "keepDraft(adminDraftName(kind, slug)" in app
+
+    def test_create_and_edit_drafts_cannot_collide(self):
+        """A half-written new post and a half-written edit of an existing one
+        are different work; one key for both would silently overwrite."""
+        app = self.app()
+        line = next(x for x in app.splitlines() if "const adminDraftName" in x)
+        assert "`${kind}:${slug}`" in line and "`new-${kind}`" in line, line
 
     def test_a_draft_is_written_on_every_keystroke(self):
         """Saving on blur would lose the sentence being typed when the reload
@@ -338,7 +350,8 @@ class TestNothingIsLostAcrossAnUpdate:
     def test_a_draft_is_dropped_once_it_saves(self):
         """Otherwise the next visit restores work that is already committed."""
         app = self.app()
-        assert app.count(".clear()") >= 5
+        assert "bioDraft.clear()" in app
+        assert "draft.clear()" in app
 
     def test_a_corrupt_draft_does_not_break_the_page(self):
         fn = self.app()

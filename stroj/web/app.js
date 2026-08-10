@@ -460,22 +460,6 @@ function setView(html, { wide = false } = {}) {
   main.innerHTML = html;
 }
 
-/** Wire a Markdown textarea to a live preview, rendered by the same function
- *  that publishes it, with Tab inserting spaces instead of leaving the field. */
-function markdownEditor(editor, preview) {
-  const render = () => { preview.innerHTML = markdown(editor.value); };
-  render();
-  editor.oninput = render;
-  editor.onkeydown = (event) => {
-    if (event.key !== 'Tab') return;
-    event.preventDefault();
-    const { selectionStart: a, selectionEnd: b, value } = editor;
-    editor.value = value.slice(0, a) + '    ' + value.slice(b);
-    editor.selectionStart = editor.selectionEnd = a + 4;
-    render();
-  };
-}
-
 /* ---- stream ---- */
 
 function postCard(p) {
@@ -1341,6 +1325,95 @@ async function viewUsers() {
   render();
 }
 
+/* ---- submission calendar ---- */
+
+/** Lay the reported days out as GitHub does: one column per week, Sunday at
+ * the top, `null` for the padding days before the window opens. Days the API
+ * left out had no submissions, so they come back as zeroes. */
+function activityWeeks(activity) {
+  const byDate = new Map((activity.counts || []).map((d) => [d.date, d]));
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const cursor = new Date(`${activity.since}T00:00:00Z`);
+  cursor.setUTCDate(cursor.getUTCDate() - cursor.getUTCDay());
+  const end = new Date(`${activity.until}T00:00:00Z`);
+
+  const weeks = [];
+  for (; cursor <= end; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+    if (cursor.getUTCDay() === 0) weeks.push([]);
+    const date = iso(cursor);
+    weeks[weeks.length - 1].push(date < activity.since
+      ? null
+      : byDate.get(date) || { date, count: 0, accepted: 0 });
+  }
+  return weeks;
+}
+
+const activityLevel = (n) => (n >= 7 ? 4 : n >= 4 ? 3 : n >= 2 ? 2 : n ? 1 : 0);
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function activityTip(day) {
+  const [y, m, d] = day.date.split('-');
+  const when = `${MONTHS[Number(m) - 1]} ${Number(d)}, ${y}`;
+  if (!day.count) return `No submissions on ${when}`;
+  const accepted = day.accepted ? ` (${day.accepted} accepted)` : '';
+  return `${day.count} submission${day.count === 1 ? '' : 's'}${accepted} on ${when}`;
+}
+
+/* The squares are 11px inside a scrolling strip, so the bubble cannot live in
+ * the grid without being clipped; one fixed element, moved to whichever square
+ * is under the pointer, is both cheaper and always visible. */
+function wireCalendarTips(cal) {
+  const tip = document.createElement('div');
+  tip.className = 'cal-tip';
+  tip.hidden = true;
+  cal.append(tip);
+  cal.addEventListener('mouseover', (event) => {
+    const day = event.target.closest('.cal-day');
+    if (!day) return;
+    const box = day.getBoundingClientRect();
+    tip.textContent = day.dataset.tip;
+    tip.hidden = false;
+    // Centred on the square, but never past either edge of the window — the
+    // first and last columns sit close enough to clip it otherwise.
+    const half = tip.offsetWidth / 2;
+    tip.style.left = `${Math.min(
+      Math.max(box.left + box.width / 2, half + 6), innerWidth - half - 6)}px`;
+    tip.style.top = `${box.top - 6}px`;
+  });
+  cal.addEventListener('mouseleave', () => { tip.hidden = true; });
+}
+
+function activityCalendar(activity) {
+  const weeks = activityWeeks(activity);
+  let labelled = '';
+  const months = weeks.map((week) => {
+    const day = week.find((d) => d);
+    const month = day ? day.date.slice(0, 7) : '';
+    if (!month || month === labelled) return '<span></span>';
+    labelled = month;
+    return `<span>${MONTHS[Number(month.slice(5)) - 1]}</span>`;
+  }).join('');
+
+  const grid = weeks.map((week) => `<div class="cal-week">${week.map((day) => (day
+    ? `<div class="cal-day l${activityLevel(day.count)}"
+        data-tip="${esc(activityTip(day))}"></div>`
+    : '<div></div>')).join('')}</div>`).join('');
+
+  return `
+    <div class="row" style="justify-content:space-between;align-items:baseline">
+      <h2>Submissions</h2>
+      <span class="muted small">${activity.total} in the last year</span>
+    </div>
+    <div class="card">
+      <div class="cal-wrap">
+        <div class="cal-months">${months}</div>
+        <div class="cal">${grid}</div>
+      </div>
+    </div>`;
+}
+
 /* ---- user profile ---- */
 
 async function viewUser(username) {
@@ -1394,6 +1467,8 @@ async function viewUser(username) {
       </div>
     </div>
 
+    ${activityCalendar(u.activity)}
+
     ${u.authored.length ? `
       <h2>Problems written</h2>
       <div class="table-wrap"><table><tbody>${u.authored.map((p) => `
@@ -1409,6 +1484,8 @@ async function viewUser(username) {
          <p class="muted small">Each solve is weighted by its rank among your own
            solves, so the total shows why it is what it is.</p>`
       : '<div class="empty">Nothing solved yet.</div>'}`, { wide: true });
+
+  wireCalendarTips($('.cal'));
 
   if (!u.editable) return;
   const view = $('#bio-view');
@@ -1434,122 +1511,286 @@ async function viewUser(username) {
   };
 }
 
-/* ---- admin: edit one problem ---- */
+/* ------------------------------------------------------------ admin editor */
 
-async function viewAdminProblem(slug) {
-  if (!state.user || !state.user.is_admin) {
-    setView('<div class="empty">Admins only.</div>');
-    return;
+/* Everything an admin writes — a post, a problem, a contest — is authored on
+ * one page: a card of metadata fields, one Markdown body with a live preview,
+ * and Save. Only the field list and the API calls differ between them, so
+ * those are data in ADMIN_FORMS rather than three hand-written pages, and
+ * creating and editing are the same page with the slug fixed or not. */
+
+/* Toolbar actions over the selection. `wrap` surrounds it, `prefix` starts the
+ * line it is on; `key` is the Cmd/Ctrl shortcut that does the same thing. */
+const MD_TOOLS = [
+  { label: 'B', title: 'Bold  ⌘B', key: 'b', wrap: ['**', '**'] },
+  { label: 'I', title: 'Italic  ⌘I', key: 'i', wrap: ['*', '*'] },
+  { label: '`', title: 'Code  ⌘E', key: 'e', wrap: ['`', '`'] },
+  { label: '$', title: 'Math', wrap: ['$', '$'] },
+  { label: 'H', title: 'Heading', prefix: '## ' },
+  { label: '•', title: 'Bullet', prefix: '- ' },
+  { label: '↗', title: 'Link  ⌘K', key: 'k', wrap: ['[', '](https://)'] },
+];
+
+function markdownPane(value) {
+  const tab = (mode, label) => `<button type="button" class="md-tab${
+    mode === 'write' ? ' on' : ''}" data-mode="${mode}">${label}</button>`;
+  const tool = (t, i) => `<button type="button" class="md-tool" data-tool="${i}"
+    title="${esc(t.title)}">${esc(t.label)}</button>`;
+  return `
+    <div class="md" id="md" data-mode="write">
+      <div class="md-bar">
+        <div class="md-tabs">${tab('write', 'Write')}${tab('preview', 'Preview')}${tab('split', 'Split')}</div>
+        <div class="spacer"></div>
+        <div class="md-tools">${MD_TOOLS.map(tool).join('')}</div>
+      </div>
+      <div class="md-panes">
+        <textarea class="md-src code" spellcheck="false">${esc(value || '')}</textarea>
+        <div class="md-preview statement"></div>
+      </div>
+    </div>`;
+}
+
+/** Live preview, tab switching, toolbar and its shortcuts, over one textarea. */
+function bindMarkdownPane(root) {
+  const src = $('.md-src', root);
+  const preview = $('.md-preview', root);
+  const render = () => { preview.innerHTML = markdown(src.value); };
+
+  // setRangeText keeps the browser's own undo stack, which rewriting `value`
+  // by hand would throw away on every toolbar press.
+  const splice = (text, from, to, caret) => {
+    src.setRangeText(text, from, to, 'end');
+    src.selectionStart = src.selectionEnd = caret;
+    src.focus();
+    render();
+  };
+
+  const apply = (tool) => {
+    const { selectionStart: a, selectionEnd: b, value } = src;
+    if (tool.prefix) {
+      const line = value.lastIndexOf('\n', a - 1) + 1;
+      splice(tool.prefix, line, line, a + tool.prefix.length);
+      return;
+    }
+    const [open, close] = tool.wrap;
+    // With nothing selected the caret lands between the delimiters, ready to
+    // type; with a selection it lands after what was just wrapped.
+    splice(open + value.slice(a, b) + close, a, b,
+      a === b ? a + open.length : b + open.length + close.length);
+  };
+
+  root.onclick = (event) => {
+    const tab = event.target.closest('.md-tab');
+    if (tab) {
+      root.dataset.mode = tab.dataset.mode;
+      $$('.md-tab', root).forEach((t) => t.classList.toggle('on', t === tab));
+      return;
+    }
+    const tool = event.target.closest('.md-tool');
+    if (tool) apply(MD_TOOLS[Number(tool.dataset.tool)]);
+  };
+
+  src.oninput = render;
+  src.onkeydown = (event) => {
+    if (event.key === 'Tab') {
+      event.preventDefault();
+      splice('    ', src.selectionStart, src.selectionEnd, src.selectionStart + 4);
+      return;
+    }
+    if (!event.metaKey && !event.ctrlKey) return;
+    const tool = MD_TOOLS.find((t) => t.key === event.key.toLowerCase());
+    if (!tool) return;
+    event.preventDefault();
+    apply(tool);
+  };
+
+  render();
+  return src;
+}
+
+/** One metadata field. `type` picks the control; the rest is layout. */
+function adminField(f, value) {
+  const id = `f-${f.k}`;
+  const wrap = (inner) =>
+    `<label style="flex:${f.flex || 1};min-width:${f.w || 150}px">${esc(f.label)}${inner}</label>`;
+  switch (f.type) {
+    case 'check':
+      return `<label class="check"><input type="checkbox" id="${id}"${value ? ' checked' : ''}>
+        ${esc(f.label)}</label>`;
+    case 'select':
+      return wrap(`<select id="${id}">${f.options.map((o) =>
+        `<option value="${esc(o)}"${o === value ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`);
+    case 'chips':
+      return `<label style="flex:100%">${esc(f.label)}${typeChips(id, f.all, value || [], true)}</label>`;
+    /* Whether anyone but an admin can see this is the one setting worth being
+     * wrong about, so it gets a bar of its own above the form rather than a
+     * checkbox among the others — two labelled states and, in words, who can
+     * see it right now. The checkbox behind it is what carries the value, so
+     * reading and drafting the field stay the same as any other. */
+    case 'visibility':
+      return `
+        <div class="vis" data-on="${value ? 1 : 0}">
+          <input type="checkbox" id="${id}" hidden${value ? ' checked' : ''}>
+          <div class="seg">
+            <button type="button" class="seg-btn" data-on="1">${esc(f.on)}</button>
+            <button type="button" class="seg-btn" data-on="0">${esc(f.off)}</button>
+          </div>
+          <span class="vis-note"></span>
+        </div>`;
+    case 'number':
+      return wrap(`<input id="${id}" type="number" value="${esc(value)}"
+        min="${f.min}" max="${f.max}"${f.step ? ` step="${f.step}"` : ''}>`);
+    case 'time':
+      return wrap(`<input id="${id}" type="datetime-local" value="${esc(localField(value))}">`);
+    default:
+      return wrap(`<input id="${id}" value="${esc(value ?? '')}" placeholder="${esc(f.hint || '')}">`);
   }
-  // The list comes along for the type vocabulary: chips offer what other
-  // problems already use, so authors reuse a type instead of coining one.
-  const [p, { problems }, { limits }] = await Promise.all([
-    api(`/api/problems/${encodeURIComponent(slug)}`), api('/api/problems'),
-    api(`/api/admin/problems/${encodeURIComponent(slug)}/limits`),
-  ]);
-  const allTypes = [...new Set(problems.flatMap((x) => x.types).concat(p.types))].sort();
-  const checkerOption = (value, label) =>
-    `<option value="${value}" ${p.checker === value ? 'selected' : ''}>${label}</option>`;
+}
 
-  setView(`
-    <div class="page-head">
-      <a href="#/admin">← Admin</a>
-      <div class="spacer"></div>
-      <a class="pill" href="#/problem/${encodeURIComponent(slug)}">view as solver</a>
-    </div>
-    <h1 style="margin-bottom:4px">Edit ${esc(p.title)}</h1>
-    <p class="muted small mono" style="margin-top:0">${esc(slug)} · ${p.test_count} tests
-      — the slug is the problem's identity and cannot be changed here.</p>
+/** Keep the segmented control, its note and its checkbox saying one thing. */
+function bindVisibility(f) {
+  const box = $(`#f-${f.k}`);
+  const bar = box.closest('.vis');
+  const paint = () => {
+    bar.dataset.on = box.checked ? 1 : 0;
+    $$('.seg-btn', bar).forEach((b) => b.classList.toggle('on', (b.dataset.on === '1') === box.checked));
+    $('.vis-note', bar).textContent = box.checked ? f.note.on : f.note.off;
+  };
+  bar.onclick = (event) => {
+    const button = event.target.closest('.seg-btn');
+    if (!button) return;
+    box.checked = button.dataset.on === '1';
+    // The draft listens on the checkbox, which a scripted change does not fire.
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    paint();
+  };
+  paint();
+}
 
-    <div class="card">
-      <div class="row">
-        <label style="flex:3;min-width:220px">Title <input id="e-title" value="${esc(p.title)}"></label>
-        <label style="flex:1;min-width:110px">Time (ms)
-          <input id="e-tl" type="number" min="100" max="60000" value="${p.time_limit_ms}"></label>
-        <label style="flex:1;min-width:110px">Memory (MiB)
-          <input id="e-ml" type="number" min="16" max="4096" value="${p.memory_limit_mb}"></label>
-        <label style="flex:1;min-width:120px">Checker
-          <select id="e-checker">
-            ${checkerOption('token', 'token')}${checkerOption('exact', 'exact')}${checkerOption('float', 'float')}
-          </select></label>
-        <label style="flex:1;min-width:130px">Float epsilon
-          <input id="e-eps" type="number" step="any" value="${p.float_eps}"></label>
-        <label style="flex:1;min-width:110px">Points
-          <input id="e-points" type="number" min="1" max="10000" value="${p.points}"></label>
-        <label style="flex:2;min-width:160px">Author
-          <input id="e-author" value="${esc(p.author || '')}" placeholder="(unattributed)"></label>
-      </div>
-      <label>Types ${typeChips('e-types', allTypes, p.types, true)}</label>
-      <div class="row">
-        <label class="row" style="gap:6px"><input type="checkbox" id="e-partial" style="width:auto"
-          ${p.partial ? 'checked' : ''}> partial scoring</label>
-        <label class="row" style="gap:6px"><input type="checkbox" id="e-visible" style="width:auto"
-          ${p.visible ? 'checked' : ''}> visible</label>
-      </div>
-    </div>
+function readField(f) {
+  if (f.type === 'chips') return chosenTypes(`f-${f.k}`);
+  const el = $(`#f-${f.k}`);
+  if (f.type === 'check' || f.type === 'visibility') return el.checked;
+  if (f.type === 'number') return Number(el.value);
+  // An empty datetime is left as-is so the judge can name the problem with it,
+  // rather than throwing "Invalid time value" out of the Date constructor.
+  if (f.type === 'time') return el.value ? new Date(el.value).toISOString() : '';
+  return el.value.trim();
+}
 
-    <details class="card" id="e-limits-card"${Object.values(limits).some((l) => l.measured) ? ' open' : ''}>
-      <summary>Per-language limits</summary>
-      <p class="muted small">Set these from a measured run of the intended
-        solution in each language — the gap between runtimes depends on the
-        problem, not just the language. Clear a row to fall back to the base
-        limit above, scaled by that language's multiplier.</p>
-      <div class="table-wrap"><table class="limits-table">
-        <thead><tr><th>Language</th><th>Time (ms)</th>
-          <th>Memory (MiB)</th><th>Source</th><th></th></tr></thead>
-        <tbody id="e-limits-rows">${limitRows(limits)}</tbody>
-      </table></div>
-      <div class="row end">
-        <span class="muted small spacer" id="e-limits-status"></span>
-        <button class="small primary" id="e-save-limits">Save limits</button>
-      </div>
-    </details>
+const slugify = (s) => s.toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64);
 
-    <div class="grid-2">
-      <div>
-        <h2 style="margin-top:0">Statement (Markdown)</h2>
-        <textarea id="e-statement" class="code" style="min-height:460px"
-          spellcheck="false">${esc(p.statement)}</textarea>
-      </div>
-      <div>
-        <h2 style="margin-top:0">Preview</h2>
-        <div class="card statement" id="e-preview" style="min-height:460px"></div>
-      </div>
-    </div>
+/* ---- editor extras: the parts only one kind of thing has ---- */
 
-    <div class="row end" style="margin-top:14px">
-      <span class="muted small spacer" id="e-status"></span>
-      <button id="e-save" class="primary">Save changes</button>
-    </div>`, { wide: true });
+/* Test data cannot be attached to a problem that does not exist yet, so a new
+ * problem's archive is validated when it is picked and uploaded once Save has
+ * created something to attach it to. */
+function testDataPanel() {
+  let pending = null;
+  // Receipt for the copy the inspect call already left on the judge.
+  let pendingToken = '';
 
-  bindTypeChips('e-types');
+  return {
+    html: `
+      <div class="card">
+        <label>Test data — a zip of <code>1.in</code> / <code>1.out</code> pairs (optional)
+          <input type="file" id="p-tests" accept=".zip" style="max-width:340px"></label>
+        <p class="small muted" id="p-tests-status" style="margin:0">Checked as soon as you pick it,
+          before anything is created. Files whose name contains <code>sample</code> become visible
+          samples; the rest stay hidden. You can also add it later from the admin page.</p>
+      </div>`,
 
-  // A forced refresh must not cost an author their half-written statement.
-  const problemDraft = keepDraft(`problem:${slug}`, {
-    title: $('#e-title'), tl: $('#e-tl'), ml: $('#e-ml'), checker: $('#e-checker'),
-    eps: $('#e-eps'), points: $('#e-points'), author: $('#e-author'),
-    partial: $('#e-partial'), visible: $('#e-visible'), statement: $('#e-statement'),
-  });
+    bind() {
+      $('#p-tests').onchange = async () => {
+        const input = $('#p-tests');
+        const status = $('#p-tests-status');
+        pending = null;
+        pendingToken = '';
+        status.className = 'small muted';
+        status.style.color = '';
+        if (!input.files.length) { status.textContent = ''; return; }
 
+        status.textContent = 'Checking archive…';
+        const form = new FormData();
+        form.append('archive', input.files[0]);
+        try {
+          const found = await api('/api/admin/testdata/inspect', { method: 'POST', form });
+          pending = input.files[0];
+          pendingToken = found.token || '';
+          status.className = 'small';
+          status.style.color = 'var(--ok)';
+          status.textContent =
+            `✓ ${found.tests} test${found.tests === 1 ? '' : 's'}, ` +
+            `${found.samples} sample${found.samples === 1 ? '' : 's'} — first input starts "` +
+            `${found.preview.input.trim().slice(0, 40)}"`;
+        } catch (err) {
+          status.className = 'small error';
+          status.textContent = err.message;
+        }
+      };
+    },
+
+    check() {
+      if ($('#p-tests').files.length && !pending) {
+        throw new Error('That test archive was rejected — fix it or clear the field.');
+      }
+    },
+
+    async after(slug) {
+      if (!pending) {
+        toast('Problem created — it needs test data before it can be judged.', 'good');
+        return;
+      }
+      const form = new FormData();
+      // Inspection already carried these bytes to the judge; send the receipt
+      // instead of the archive. A real test set is tens of megabytes, and
+      // uploading it twice was the slowest step in authoring a problem.
+      if (pendingToken) form.append('token', pendingToken);
+      else form.append('archive', pending);
+      const url = `/api/admin/problems/${encodeURIComponent(slug)}/tests/upload`;
+      try {
+        let result;
+        try {
+          result = await api(url, { method: 'POST', form });
+        } catch (err) {
+          // 410: the staged copy expired or was swept. We still hold the file.
+          if (err.status !== 410) throw err;
+          const retry = new FormData();
+          retry.append('archive', pending);
+          result = await api(url, { method: 'POST', form: retry });
+        }
+        toast(`Created with ${result.tests} test case(s).`, 'good');
+      } catch (err) {
+        // The archive passed inspection, so this is unexpected — but never
+        // leave a testless problem behind because the second call failed.
+        await api(`/api/admin/problems/${encodeURIComponent(slug)}`, { method: 'DELETE' })
+          .catch(() => {});
+        throw new Error(`Test data failed to attach, problem not created: ${err.message}`);
+      }
+    },
+  };
+}
+
+/* Per-language limits save themselves rather than going out with the page: the
+ * rest of the form is an unsaved draft, and re-rendering the route to show the
+ * new numbers would throw a half-written statement away. */
+async function limitsPanel(slug) {
+  const url = `/api/admin/problems/${encodeURIComponent(slug)}/limits`;
+  const { limits } = await api(url);
   // Only the rows an author actually touches are sent, so opening the editor
   // and saving does not silently pin every language to its derived value.
   const touched = new Set();
 
-  const limitsUrl = `/api/admin/problems/${encodeURIComponent(slug)}/limits`;
-
-  /* Repaint just this table rather than re-running the route. The rest of the
-   * form is a separate, unsaved draft — title, base limits, statement — and a
-   * full re-render would throw all of it away for anyone who set the limits
-   * before pressing Save changes. */
-  async function refreshLimits(message) {
-    const { limits: fresh } = await api(limitsUrl);
+  async function refresh(message) {
+    const { limits: fresh } = await api(url);
     $('#e-limits-rows').innerHTML = limitRows(fresh);
     touched.clear();
-    bindLimits();
+    bindRows();
     $('#e-limits-status').textContent = message || '';
   }
 
-  function bindLimits() {
+  function bindRows() {
     $$('.lim').forEach((input) => {
       input.oninput = () => {
         touched.add(input.dataset.lang);
@@ -1561,8 +1802,8 @@ async function viewAdminProblem(slug) {
         const lang = button.dataset.clearLimit;
         button.disabled = true;
         try {
-          await api(limitsUrl, { method: 'PUT', body: { limits: { [lang]: null } } });
-          await refreshLimits(`${lang} back to the derived limit.`);
+          await api(url, { method: 'PUT', body: { limits: { [lang]: null } } });
+          await refresh(`${lang} back to the derived limit.`);
         } catch (err) {
           toast(err.message, 'bad');
           button.disabled = false;
@@ -1570,140 +1811,299 @@ async function viewAdminProblem(slug) {
       };
     });
   }
-  bindLimits();
 
-  $('#e-save-limits').onclick = async () => {
-    const button = $('#e-save-limits');
-    const body = {};
-    for (const lang of touched) {
-      const field = (f) => $(`.lim[data-lang="${CSS.escape(lang)}"][data-f="${f}"]`);
-      body[lang] = {
-        time_limit_ms: Number(field('time').value),
-        memory_limit_mb: Number(field('memory').value),
+  return {
+    html: `
+      <details class="card"${Object.values(limits).some((l) => l.measured) ? ' open' : ''}>
+        <summary>Per-language limits</summary>
+        <p class="muted small">Set these from a measured run of the intended
+          solution in each language — the gap between runtimes depends on the
+          problem, not just the language. Clear a row to fall back to the base
+          limit above, scaled by that language's multiplier.</p>
+        <div class="table-wrap"><table class="limits-table">
+          <thead><tr><th>Language</th><th>Time (ms)</th>
+            <th>Memory (MiB)</th><th>Source</th><th></th></tr></thead>
+          <tbody id="e-limits-rows">${limitRows(limits)}</tbody>
+        </table></div>
+        <div class="row end">
+          <span class="muted small spacer" id="e-limits-status"></span>
+          <button class="small primary" id="e-save-limits">Save limits</button>
+        </div>
+      </details>`,
+
+    bind() {
+      bindRows();
+      $('#e-save-limits').onclick = async () => {
+        const button = $('#e-save-limits');
+        const body = {};
+        for (const lang of touched) {
+          const field = (f) => $(`.lim[data-lang="${CSS.escape(lang)}"][data-f="${f}"]`);
+          body[lang] = {
+            time_limit_ms: Number(field('time').value),
+            memory_limit_mb: Number(field('memory').value),
+          };
+        }
+        if (!Object.keys(body).length) {
+          $('#e-limits-status').textContent = 'Nothing changed.';
+          return;
+        }
+        button.disabled = true;
+        try {
+          await api(url, { method: 'PUT', body: { limits: body } });
+          const n = Object.keys(body).length;
+          await refresh(`Saved ${n} language${n === 1 ? '' : 's'}.`);
+        } catch (err) {
+          toast(err.message, 'bad');
+        } finally {
+          button.disabled = false;
+        }
       };
-    }
-    if (!Object.keys(body).length) {
-      $('#e-limits-status').textContent = 'Nothing changed.';
-      return;
-    }
-    button.disabled = true;
-    try {
-      await api(limitsUrl, { method: 'PUT', body: { limits: body } });
-      const n = Object.keys(body).length;
-      await refreshLimits(`Saved ${n} language${n === 1 ? '' : 's'}.`);
-    } catch (err) {
-      toast(err.message, 'bad');
-    } finally {
-      button.disabled = false;
-    }
-  };
-
-  const editor = $('#e-statement');
-  markdownEditor(editor, $('#e-preview'));
-
-  $('#e-save').onclick = async () => {
-    const button = $('#e-save');
-    button.disabled = true;
-    $('#e-status').textContent = 'Saving…';
-    try {
-      await api(`/api/admin/problems/${encodeURIComponent(slug)}`, {
-        method: 'PATCH',
-        body: {
-          title: $('#e-title').value.trim(),
-          statement: editor.value,
-          time_limit_ms: Number($('#e-tl').value),
-          memory_limit_mb: Number($('#e-ml').value),
-          checker: $('#e-checker').value,
-          float_eps: Number($('#e-eps').value),
-          partial: $('#e-partial').checked,
-          visible: $('#e-visible').checked,
-          points: Number($('#e-points').value),
-          author: $('#e-author').value.trim() || null,
-          types: chosenTypes('e-types'),
-        },
-      });
-      $('#e-status').textContent = 'Saved.';
-      problemDraft.clear();
-      toast('Problem updated.', 'good');
-    } catch (err) {
-      $('#e-status').textContent = '';
-      toast(err.message, 'bad');
-    } finally {
-      button.disabled = false;
-    }
+    },
   };
 }
 
-/* ---- admin: edit one post ---- */
+/* A contest's problem set is a separate endpoint from the contest itself, so
+ * it rides along with Save rather than being its own form. Seeing the current
+ * set is the point: otherwise saving an empty box silently empties it. */
+function contestProblemsPanel(detail) {
+  const warning = {
+    running: 'This contest is running. Moving the start time recomputes every'
+      + ' penalty on the scoreboard.',
+    ended: 'This contest has ended. Editing it rewrites results that entrants'
+      + ' have already seen.',
+  }[detail.state];
 
-async function viewAdminPost(slug) {
+  return {
+    html: `
+      <div class="card">
+        <label>Problem set — slugs in order, comma-separated
+          <input id="c-problems" placeholder="slug-a, slug-b, …"
+            value="${esc((detail.problems || []).map((p) => p.slug).join(', '))}"></label>
+        ${warning ? `<p class="small muted" style="margin:0">${warning}</p>` : ''}
+      </div>`,
+
+    async after(slug) {
+      const slugs = $('#c-problems').value.split(',').map((x) => x.trim()).filter(Boolean);
+      await api(`/api/admin/contests/${encodeURIComponent(slug)}/problems`, {
+        method: 'PUT', body: { problems: slugs.map((x) => ({ slug: x })) },
+      });
+    },
+  };
+}
+
+/* ---- what each kind of thing is made of ---- */
+
+const ADMIN_FORMS = {
+  post: {
+    noun: 'post',
+    slugHint: 'round-2-results',
+    body: { k: 'body', label: 'Body' },
+    viewLabel: 'view in stream',
+    view: (slug) => `#/post/${encodeURIComponent(slug)}`,
+    fields: [
+      {
+        k: 'published', type: 'visibility', on: 'Published', off: 'Draft',
+        note: {
+          on: 'Everyone sees this in the stream.',
+          off: 'Only admins can see this. It stays out of the stream until you publish it.',
+        },
+      },
+      { k: 'title', label: 'Title', flex: 3, w: 240, hint: 'Round 2 results' },
+      { k: 'pinned', label: 'pinned', type: 'check' },
+    ],
+    blank: () => ({ title: '', body: '', pinned: false, published: true }),
+    load: (slug) => api(`/api/posts/${encodeURIComponent(slug)}`),
+    save: async (v, slug) => {
+      const body = {
+        title: v.title || v.slug, body: v.body, pinned: v.pinned, published: v.published,
+      };
+      if (slug) await api(`/api/admin/posts/${encodeURIComponent(slug)}`, { method: 'PATCH', body });
+      else await api('/api/admin/posts', { method: 'POST', body: { ...body, slug: v.slug } });
+    },
+  },
+
+  problem: {
+    noun: 'problem',
+    slugHint: 'two-sum',
+    body: { k: 'statement', label: 'Statement' },
+    viewLabel: 'view as solver',
+    view: (slug) => `#/problem/${encodeURIComponent(slug)}`,
+    subtitle: (p) => `${p.test_count} test${p.test_count === 1 ? '' : 's'}`,
+    fields: [
+      {
+        k: 'visible', type: 'visibility', on: 'Visible', off: 'Hidden',
+        note: {
+          on: 'Listed on the problems page for everyone.',
+          off: 'Off the problems list and unreadable — except to admins, and to'
+            + ' everyone once a contest containing it starts.',
+        },
+      },
+      { k: 'title', label: 'Title', flex: 3, w: 220, hint: 'Two Sum' },
+      { k: 'points', label: 'Points', type: 'number', min: 1, max: 10000, w: 110 },
+      { k: 'author', label: 'Author', flex: 2, w: 160, hint: '(you)' },
+      { k: 'time_limit_ms', label: 'Time (ms)', type: 'number', min: 100, max: 60000, w: 120 },
+      { k: 'memory_limit_mb', label: 'Memory (MiB)', type: 'number', min: 16, max: 4096, w: 130 },
+      { k: 'checker', label: 'Checker', type: 'select', options: ['token', 'exact', 'float'], w: 120 },
+      { k: 'float_eps', label: 'Float epsilon', type: 'number', min: 0, max: 1, step: 'any', w: 130 },
+      { k: 'types', label: 'Types', type: 'chips' },
+      { k: 'partial', label: 'partial scoring', type: 'check' },
+    ],
+    blank: () => ({
+      title: '', statement: '', points: 100, author: '', time_limit_ms: 1000,
+      memory_limit_mb: 256, checker: 'token', float_eps: 0.000001, types: [],
+      partial: false, visible: true,
+    }),
+    // The problem list comes along for the type vocabulary: chips offer what
+    // other problems already use, so authors reuse a type instead of coining one.
+    async load(slug) {
+      return api(`/api/problems/${encodeURIComponent(slug)}`);
+    },
+    async prepare(form, data) {
+      const { problems } = await api('/api/problems');
+      const types = form.fields.find((f) => f.k === 'types');
+      types.all = [...new Set(problems.flatMap((p) => p.types).concat(data.types || []))].sort();
+    },
+    extra: (slug) => (slug ? limitsPanel(slug) : testDataPanel()),
+    save: async (v, slug) => {
+      const body = {
+        title: v.title || v.slug, statement: v.statement, points: v.points,
+        author: v.author || null, time_limit_ms: v.time_limit_ms,
+        memory_limit_mb: v.memory_limit_mb, checker: v.checker, float_eps: v.float_eps,
+        types: v.types, partial: v.partial, visible: v.visible,
+      };
+      if (slug) await api(`/api/admin/problems/${encodeURIComponent(slug)}`, { method: 'PATCH', body });
+      else await api('/api/admin/problems', { method: 'POST', body: { ...body, slug: v.slug } });
+    },
+  },
+
+  contest: {
+    noun: 'contest',
+    slugHint: 'round-2',
+    body: { k: 'description', label: 'Description' },
+    viewLabel: 'view contest',
+    view: (slug) => `#/contest/${encodeURIComponent(slug)}`,
+    subtitle: (c) => STATE_LABEL[c.state].toLowerCase(),
+    fields: [
+      { k: 'title', label: 'Title', flex: 3, w: 220, hint: 'stroj Open Round 2' },
+      { k: 'scoring', label: 'Scoring', type: 'select', options: ['icpc', 'ioi'], w: 110 },
+      { k: 'penalty_minutes', label: 'Penalty (min)', type: 'number', min: 0, max: 1440, w: 130 },
+      { k: 'freeze_minutes', label: 'Freeze (min before end, 0 = none)', type: 'number', min: 0, max: 1440, w: 220 },
+      { k: 'starts_at', label: 'Starts (your local time)', type: 'time', w: 210 },
+      { k: 'ends_at', label: 'Ends (your local time)', type: 'time', w: 210 },
+    ],
+    blank: () => {
+      const now = new Date(Date.now() + state.clockSkewMs);
+      return {
+        title: '', description: '', scoring: 'icpc', penalty_minutes: 20, freeze_minutes: 0,
+        starts_at: now.toISOString(), ends_at: new Date(now.getTime() + 3 * 3600e3).toISOString(),
+      };
+    },
+    load: (slug) => api(`/api/contests/${encodeURIComponent(slug)}`),
+    extra: (slug, data) => (slug ? contestProblemsPanel(data) : null),
+    save: async (v, slug) => {
+      const body = {
+        title: v.title || v.slug, description: v.description, scoring: v.scoring,
+        penalty_minutes: v.penalty_minutes, freeze_minutes: v.freeze_minutes,
+        starts_at: v.starts_at, ends_at: v.ends_at,
+      };
+      if (slug) await api(`/api/admin/contests/${encodeURIComponent(slug)}`, { method: 'PATCH', body });
+      else await api('/api/admin/contests', { method: 'POST', body: { ...body, slug: v.slug } });
+    },
+  },
+};
+
+/* Create and edit share a key space so neither can clobber the other's draft. */
+const adminDraftName = (kind, slug) => (slug ? `${kind}:${slug}` : `new-${kind}`);
+
+async function viewAdminEditor(kind, slug) {
   if (!state.user || !state.user.is_admin) {
     setView('<div class="empty">Admins only.</div>');
     return;
   }
-  const p = await api(`/api/posts/${encodeURIComponent(slug)}`);
+  const form = ADMIN_FORMS[kind];
+  const creating = !slug;
+  const data = creating ? form.blank() : await form.load(slug);
+  if (form.prepare) await form.prepare(form, data);
+  const extra = form.extra ? await form.extra(slug, data) : null;
+  // Visibility leads the page instead of sitting in the form: it is the one
+  // setting whose wrong value is invisible until someone reports not seeing it.
+  const vis = form.fields.find((f) => f.type === 'visibility');
 
   setView(`
     <div class="page-head">
       <a href="#/admin">← Admin</a>
       <div class="spacer"></div>
-      <a class="pill" href="#/post/${encodeURIComponent(slug)}">view in stream</a>
+      ${creating ? '' : `<a class="pill" href="${form.view(slug)}">${form.viewLabel}</a>`}
     </div>
-    <h1 style="margin-bottom:4px">Edit post</h1>
-    <p class="muted small mono" style="margin-top:0">${esc(slug)}</p>
+    <h1 style="margin-bottom:4px">${creating ? `New ${form.noun}` : `Edit ${esc(data.title)}`}</h1>
+    <p class="muted small" style="margin-top:0">${creating
+      ? `The slug is this ${form.noun}'s permanent address and cannot be changed later.`
+      : `<span class="mono">${esc(slug)}</span>${form.subtitle ? ` · ${esc(form.subtitle(data))}` : ''}`}</p>
 
-    <div class="card">
-      <div class="row">
-        <label style="flex:3;min-width:240px">Title <input id="e-title" value="${esc(p.title)}"></label>
-        <label class="row" style="gap:6px"><input type="checkbox" id="e-pinned" style="width:auto"
-          ${p.pinned ? 'checked' : ''}> pinned</label>
-        <label class="row" style="gap:6px"><input type="checkbox" id="e-published" style="width:auto"
-          ${p.published ? 'checked' : ''}> published</label>
-      </div>
-    </div>
+    ${vis ? adminField(vis, data[vis.k]) : ''}
 
-    <div class="grid-2">
-      <div>
-        <h2 style="margin-top:0">Body (Markdown)</h2>
-        <textarea id="e-body" class="code" style="min-height:420px"
-          spellcheck="false">${esc(p.body)}</textarea>
-      </div>
-      <div>
-        <h2 style="margin-top:0">Preview</h2>
-        <div class="card statement" id="e-preview" style="min-height:420px"></div>
-      </div>
-    </div>
+    <div class="card"><div class="row">
+      ${creating ? adminField({ k: 'slug', label: 'Slug', flex: 2, w: 190, hint: form.slugHint }, '') : ''}
+      ${form.fields.filter((f) => f !== vis).map((f) => adminField(f, data[f.k])).join('')}
+    </div></div>
+
+    ${extra ? extra.html : ''}
+    ${markdownPane(data[form.body.k])}
 
     <div class="row end" style="margin-top:14px">
       <span class="muted small spacer" id="e-status"></span>
-      <button id="e-save" class="primary">Save changes</button>
+      <button class="primary" id="e-save">${creating ? `Create ${form.noun}` : 'Save changes'}</button>
     </div>`, { wide: true });
 
-  const postDraft = keepDraft(`post:${slug}`, {
-    title: $('#e-title'), body: $('#e-body'),
-    pinned: $('#e-pinned'), published: $('#e-published'),
-  });
-  markdownEditor($('#e-body'), $('#e-preview'));
+  form.fields.filter((f) => f.type === 'chips').forEach((f) => bindTypeChips(`f-${f.k}`));
+  if (extra && extra.bind) extra.bind();
+
+  // A forced refresh must not cost an author their half-written statement.
+  // Chips are not form controls, so they sit this out.
+  const kept = { [form.body.k]: $('.md-src') };
+  for (const f of form.fields) if (f.type !== 'chips') kept[f.k] = $(`#f-${f.k}`);
+  if (creating) kept.slug = $('#f-slug');
+  const draft = keepDraft(adminDraftName(kind, slug), kept);
+
+  // After the draft, so a restored value is what the bar paints itself from.
+  if (vis) bindVisibility(vis);
+  const src = bindMarkdownPane($('#md'));
+
+  // The slug is the permalink; keep it following the title until someone types
+  // one by hand — including across a restored draft that already has one.
+  if (creating) {
+    const slugField = $('#f-slug');
+    if (slugField.value) slugField.dataset.touched = '1';
+    slugField.oninput = () => { slugField.dataset.touched = '1'; };
+    $('#f-title').oninput = () => {
+      if (!slugField.dataset.touched) slugField.value = slugify($('#f-title').value);
+    };
+  }
 
   $('#e-save').onclick = async () => {
     const button = $('#e-save');
+    const status = $('#e-status');
     button.disabled = true;
-    $('#e-status').textContent = 'Saving…';
+    status.textContent = 'Saving…';
     try {
-      await api(`/api/admin/posts/${encodeURIComponent(slug)}`, {
-        method: 'PATCH',
-        body: {
-          title: $('#e-title').value.trim(),
-          body: $('#e-body').value,
-          pinned: $('#e-pinned').checked,
-          published: $('#e-published').checked,
-        },
-      });
-      $('#e-status').textContent = 'Saved.';
-      postDraft.clear();
-      toast('Post updated.', 'good');
+      if (extra && extra.check) extra.check();
+      const values = { slug: creating ? $('#f-slug').value.trim() : slug, [form.body.k]: src.value };
+      for (const f of form.fields) values[f.k] = readField(f);
+
+      await form.save(values, slug);
+      if (extra && extra.after) await extra.after(values.slug);
+      draft.clear();
+      if (creating) {
+        // testDataPanel toasts its own outcome, since only it knows whether
+        // the problem came with test data.
+        if (!(extra && extra.after)) toast(`${form.noun[0].toUpperCase()}${form.noun.slice(1)} created.`, 'good');
+        location.hash = '#/admin';
+      } else {
+        status.textContent = 'Saved.';
+        toast('Saved.', 'good');
+      }
     } catch (err) {
-      $('#e-status').textContent = '';
+      status.textContent = '';
       toast(err.message, 'bad');
     } finally {
       button.disabled = false;
@@ -1711,7 +2111,7 @@ async function viewAdminPost(slug) {
   };
 }
 
-/* ---- admin ---- */
+/* ------------------------------------------------------------- admin index */
 
 async function viewAdmin() {
   if (!state.user || !state.user.is_admin) {
@@ -1723,17 +2123,30 @@ async function viewAdmin() {
     api('/api/posts?limit=100'),
   ]);
 
-  const allTypes = [...new Set(problems.flatMap((p) => p.types))].sort();
+  /* Hidden has to be legible scanning straight down the column, rather than by
+   * reading each word — it is the state an admin is looking for. */
+  const statePill = (on, live, hidden) => (on
+    ? `<span class="pill">${live}</span>`
+    : `<span class="pill warn">${hidden}</span>`);
+
+  const head = (title, kind) => `
+    <div class="row section-head">
+      <h2>${title}</h2>
+      <div class="spacer"></div>
+      <a class="btn small primary" href="#/admin/new/${kind}">+ New ${kind}</a>
+    </div>`;
+
   const postRows = posts.map((p) => `
     <tr>
       <td class="wide"><a href="#/post/${encodeURIComponent(p.slug)}">${esc(p.title)}</a></td>
       <td class="mono small muted">${esc(p.slug)}</td>
-      <td><span class="pill">${p.published ? 'published' : 'draft'}</span>
+      <td>${statePill(p.published, 'published', 'draft')}
         ${p.pinned ? '<span class="pill">pinned</span>' : ''}</td>
       <td class="muted small">${esc(relative(p.created_at))}</td>
       <td>
         <div class="row">
           <a class="btn small" href="#/admin/post/${encodeURIComponent(p.slug)}">Edit</a>
+          <button class="small" data-publish="${esc(p.slug)}" data-published="${p.published ? 1 : 0}">${p.published ? 'Hide' : 'Publish'}</button>
           <button class="small" data-pin="${esc(p.slug)}" data-pinned="${p.pinned ? 1 : 0}">${p.pinned ? 'Unpin' : 'Pin'}</button>
           <button class="small danger" data-delete-post="${esc(p.slug)}">Delete</button>
         </div>
@@ -1744,7 +2157,7 @@ async function viewAdmin() {
     <tr>
       <td class="wide"><a href="#/problem/${encodeURIComponent(p.slug)}">${esc(p.title)}</a></td>
       <td class="mono small muted">${esc(p.slug)}</td>
-      <td>${p.visible ? '<span class="pill">visible</span>' : '<span class="pill">hidden</span>'}</td>
+      <td>${statePill(p.visible, 'visible', 'hidden')}</td>
       <td>
         <div class="row">
           <a class="btn small" href="#/admin/problem/${encodeURIComponent(p.slug)}">Edit</a>
@@ -1763,151 +2176,28 @@ async function viewAdmin() {
       <td><span class="badge state-${esc(c.state)}">${esc(STATE_LABEL[c.state])}</span></td>
       <td>
         <div class="row">
-          <button class="small" data-edit-contest="${esc(c.slug)}">Edit</button>
+          <a class="btn small" href="#/admin/contest/${encodeURIComponent(c.slug)}">Edit</a>
           <button class="small danger" data-delete-contest="${esc(c.slug)}">Delete</button>
-        </div>
-      </td>
-    </tr>
-    <tr class="editor-row" data-editor="${esc(c.slug)}" hidden>
-      <td colspan="4">
-        <div class="grid-2">
-          <div>
-            <label>Title <input data-f="title" value="${esc(c.title)}"></label>
-            <div class="row">
-              <label style="flex:1">Scoring
-                <select data-f="scoring">
-                  <option value="icpc"${c.scoring === 'icpc' ? ' selected' : ''}>ICPC</option>
-                  <option value="ioi"${c.scoring === 'ioi' ? ' selected' : ''}>IOI</option>
-                </select>
-              </label>
-              <label style="flex:1">Penalty (min)
-                <input data-f="penalty_minutes" type="number" min="0" max="1440" value="${c.penalty_minutes}"></label>
-            </div>
-            <label>Scoreboard freeze (min before end, 0 = none)
-              <input data-f="freeze_minutes" type="number" min="0" max="1440" value="${c.freeze_minutes}"></label>
-            <label>Problem set (comma-separated slugs, in order)
-              <input data-f="problems" placeholder="loading…" disabled></label>
-          </div>
-          <div>
-            <label>Starts (your local time)
-              <input data-f="starts_at" type="datetime-local" value="${localField(c.starts_at)}"></label>
-            <label>Ends (your local time)
-              <input data-f="ends_at" type="datetime-local" value="${localField(c.ends_at)}"></label>
-            <label>Description <textarea data-f="description" style="min-height:60px" placeholder="loading…" disabled></textarea></label>
-          </div>
-        </div>
-        <p class="small muted" data-warn="${esc(c.slug)}"></p>
-        <div class="row end">
-          <button class="small" data-cancel-contest="${esc(c.slug)}">Cancel</button>
-          <button class="small primary" data-save-contest="${esc(c.slug)}">Save changes</button>
         </div>
       </td>
     </tr>`).join('');
 
-  const now = new Date(Date.now() + state.clockSkewMs);
-  const isoLocal = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-
   setView(`
     <div class="page-head"><h1>Admin</h1></div>
 
-    <details class="admin-section card">
-      <summary>New post</summary>
-      <div class="row">
-        <label style="flex:2;min-width:220px">Title <input id="n-title" placeholder="Round 2 results"></label>
-        <label style="flex:2;min-width:200px">Slug <input id="n-slug" placeholder="round-2-results"></label>
-        <label class="row" style="gap:6px"><input type="checkbox" id="n-pinned" style="width:auto"> pinned</label>
-        <label class="row" style="gap:6px"><input type="checkbox" id="n-published" checked style="width:auto"> published</label>
-      </div>
-      <div class="grid-2">
-        <label>Body (Markdown)
-          <textarea id="n-body" class="code" style="min-height:220px"></textarea></label>
-        <div>
-          <label>Preview</label>
-          <div class="card statement" id="n-preview" style="min-height:220px"></div>
-        </div>
-      </div>
-      <div class="row end"><button class="primary" id="create-post">Publish</button></div>
-    </details>
-
-    <h2>Posts</h2>
+    ${head('Posts', 'post')}
     <div class="table-wrap"><table>
       <thead><tr><th>Title</th><th>Slug</th><th>State</th><th>Posted</th><th>Actions</th></tr></thead>
       <tbody>${postRows || '<tr><td colspan="5" class="muted">None yet.</td></tr>'}</tbody></table></div>
 
-    <details class="admin-section card" open>
-      <summary>New problem</summary>
-      <div class="grid-2">
-        <div>
-          <label>Slug <input id="p-slug" placeholder="two-sum" required></label>
-          <label>Title <input id="p-title" placeholder="Two Sum"></label>
-          <div class="row">
-            <label style="flex:1">Points <input id="p-points" type="number" value="100" min="1" max="10000"></label>
-            <label style="flex:2">Author <input id="p-author" placeholder="(you)"></label>
-          </div>
-          <label>Types ${typeChips('p-types', allTypes, [], true)}</label>
-          <div class="row">
-            <label style="flex:1">Time limit (ms) <input id="p-tl" type="number" value="1000" min="100" max="60000"></label>
-            <label style="flex:1">Memory (MiB) <input id="p-ml" type="number" value="256" min="16" max="4096"></label>
-          </div>
-          <div class="row">
-            <label style="flex:1">Checker
-              <select id="p-checker"><option value="token">token</option><option value="exact">exact</option><option value="float">float</option></select>
-            </label>
-            <label style="flex:1">Float epsilon <input id="p-eps" type="number" step="any" value="0.000001"></label>
-          </div>
-          <div class="row">
-            <label class="row" style="gap:6px"><input type="checkbox" id="p-partial" style="width:auto"> partial scoring</label>
-            <label class="row" style="gap:6px"><input type="checkbox" id="p-visible" checked style="width:auto"> visible</label>
-          </div>
-        </div>
-        <div>
-          <label>Statement (Markdown)
-            <textarea id="p-statement" class="code" style="min-height:230px"></textarea>
-          </label>
-          <label>Test data — zip of <code>1.in</code> / <code>1.out</code> pairs (optional)
-            <input type="file" id="p-tests" accept=".zip">
-          </label>
-          <p class="small" id="p-tests-status" style="margin-top:-6px"></p>
-        </div>
-      </div>
-      <div class="row end"><button class="primary" id="create-problem">Create problem</button></div>
-      <p class="muted small">The archive is checked as soon as you pick it, before anything is created.
-        Files whose name contains <code>sample</code> become visible samples; the rest stay hidden.
-        You can also add or replace test data later from the table below.</p>
-    </details>
-
-    <h2>Problems</h2>
+    ${head('Problems', 'problem')}
     <div class="table-wrap"><table>
       <thead><tr><th>Title</th><th>Slug</th><th>State</th><th>Actions</th></tr></thead>
       <tbody>${problemRows || '<tr><td colspan="4" class="muted">None yet.</td></tr>'}</tbody></table></div>
 
-    <details class="admin-section card">
-      <summary>New contest</summary>
-      <div class="grid-2">
-        <div>
-          <label>Slug <input id="c-slug" placeholder="round-2"></label>
-          <label>Title <input id="c-title" placeholder="stroj Open Round 2"></label>
-          <div class="row">
-            <label style="flex:1">Scoring
-              <select id="c-scoring"><option value="icpc">ICPC</option><option value="ioi">IOI</option></select>
-            </label>
-            <label style="flex:1">Penalty (min) <input id="c-penalty" type="number" value="20" min="0" max="1440"></label>
-          </div>
-          <label>Scoreboard freeze (min before end, 0 = none)
-            <input id="c-freeze" type="number" value="0" min="0" max="1440"></label>
-        </div>
-        <div>
-          <label>Starts (your local time) <input id="c-start" type="datetime-local" value="${isoLocal(now)}"></label>
-          <label>Ends (your local time) <input id="c-end" type="datetime-local" value="${isoLocal(new Date(now.getTime() + 3 * 3600e3))}"></label>
-          <label>Description <textarea id="c-desc" style="min-height:60px"></textarea></label>
-        </div>
-      </div>
-      <div class="row end"><button class="primary" id="create-contest">Create contest</button></div>
-    </details>
-
-    <h2>Contests</h2>
+    ${head('Contests', 'contest')}
     <div class="table-wrap"><table>
-      <thead><tr><th>Title</th><th>Slug</th><th>State</th><th>Problem set</th></tr></thead>
+      <thead><tr><th>Title</th><th>Slug</th><th>State</th><th>Actions</th></tr></thead>
       <tbody>${contestRows || '<tr><td colspan="4" class="muted">None yet.</td></tr>'}</tbody></table></div>
 
     <h2>Users</h2>
@@ -1926,41 +2216,13 @@ async function viewAdmin() {
     try { await fn(...args); } catch (err) { toast(err.message, 'bad'); }
   };
 
-  const newPostDraft = keepDraft('new-post', {
-    title: $('#n-title'), slug: $('#n-slug'), body: $('#n-body'),
-    pinned: $('#n-pinned'), published: $('#n-published'),
-  });
-  const newProblemDraft = keepDraft('new-problem', {
-    slug: $('#p-slug'), title: $('#p-title'), points: $('#p-points'),
-    author: $('#p-author'), tl: $('#p-tl'), ml: $('#p-ml'),
-    checker: $('#p-checker'), eps: $('#p-eps'), partial: $('#p-partial'),
-    visible: $('#p-visible'), statement: $('#p-statement'),
-  });
-  markdownEditor($('#n-body'), $('#n-preview'));
-
-  // The slug is the post's permalink; keep it following the title until an
-  // author types one by hand.
-  $('#n-title').oninput = () => {
-    if ($('#n-slug').dataset.touched) return;
-    $('#n-slug').value = $('#n-title').value.toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64);
-  };
-  $('#n-slug').oninput = () => { $('#n-slug').dataset.touched = '1'; };
-
-  $('#create-post').onclick = guard(async () => {
-    await api('/api/admin/posts', {
-      method: 'POST',
-      body: {
-        slug: $('#n-slug').value.trim(),
-        title: $('#n-title').value.trim(),
-        body: $('#n-body').value,
-        pinned: $('#n-pinned').checked,
-        published: $('#n-published').checked,
-      },
+  $$('[data-publish]').forEach((button) => {
+    button.onclick = guard(async () => {
+      await api(`/api/admin/posts/${encodeURIComponent(button.dataset.publish)}`, {
+        method: 'PATCH', body: { published: button.dataset.published !== '1' },
+      });
+      route();
     });
-    newPostDraft.clear();
-    toast('Posted.', 'good');
-    route();
   });
 
   $$('[data-pin]').forEach((button) => {
@@ -1980,123 +2242,6 @@ async function viewAdmin() {
       toast('Deleted.');
       route();
     });
-  });
-
-  // Validated archive, held in the browser until the problem exists to attach
-  // it to. Null means either nothing chosen or the last check failed.
-  let pendingTests = null;
-  // Receipt for the copy inspection already left on the judge.
-  let pendingToken = '';
-
-  $('#p-tests').onchange = async () => {
-    const input = $('#p-tests');
-    const status = $('#p-tests-status');
-    pendingTests = null;
-    pendingToken = '';
-    if (!input.files.length) { status.textContent = ''; return; }
-
-    status.className = 'small muted';
-    status.textContent = 'Checking archive…';
-    const form = new FormData();
-    form.append('archive', input.files[0]);
-    try {
-      const found = await api('/api/admin/testdata/inspect', { method: 'POST', form });
-      pendingTests = input.files[0];
-      pendingToken = found.token || '';
-      status.className = 'small';
-      status.style.color = 'var(--ok)';
-      status.textContent =
-        `✓ ${found.tests} test${found.tests === 1 ? '' : 's'}, ` +
-        `${found.samples} sample${found.samples === 1 ? '' : 's'} — first input starts "` +
-        `${found.preview.input.trim().slice(0, 40)}"`;
-    } catch (err) {
-      status.className = 'small error';
-      status.style.color = '';
-      status.textContent = err.message;
-    }
-  };
-
-  bindTypeChips('p-types');
-
-  $('#create-problem').onclick = guard(async () => {
-    const slug = $('#p-slug').value.trim();
-    if ($('#p-tests').files.length && !pendingTests) {
-      throw new Error('That test archive was rejected — fix it or clear the field.');
-    }
-
-    await api('/api/admin/problems', {
-      method: 'POST',
-      body: {
-        slug,
-        title: $('#p-title').value.trim() || slug,
-        statement: $('#p-statement').value,
-        time_limit_ms: Number($('#p-tl').value),
-        memory_limit_mb: Number($('#p-ml').value),
-        checker: $('#p-checker').value,
-        float_eps: Number($('#p-eps').value),
-        partial: $('#p-partial').checked,
-        visible: $('#p-visible').checked,
-        points: Number($('#p-points').value),
-        author: $('#p-author').value.trim() || null,
-        types: chosenTypes('p-types'),
-      },
-    });
-
-    if (pendingTests) {
-      const form = new FormData();
-      // Inspection already carried these bytes to the judge; send the receipt
-      // instead of the archive. A real test set is tens of megabytes and
-      // uploading it twice was the slowest part of authoring a problem.
-      if (pendingToken) form.append('token', pendingToken);
-      else form.append('archive', pendingTests);
-      try {
-        let result;
-        try {
-          result = await api(
-            `/api/admin/problems/${encodeURIComponent(slug)}/tests/upload`,
-            { method: 'POST', form });
-        } catch (err) {
-          // 410: the staged copy expired or was swept. We still hold the file.
-          if (err.status !== 410) throw err;
-          const retry = new FormData();
-          retry.append('archive', pendingTests);
-          result = await api(
-            `/api/admin/problems/${encodeURIComponent(slug)}/tests/upload`,
-            { method: 'POST', form: retry });
-        }
-        toast(`Created with ${result.tests} test case(s).`, 'good');
-        newProblemDraft.clear();
-      } catch (err) {
-        // The archive passed inspection, so this is unexpected — but never
-        // leave a testless problem behind because the second call failed.
-        await api(`/api/admin/problems/${encodeURIComponent(slug)}`, { method: 'DELETE' })
-          .catch(() => {});
-        throw new Error(`Test data failed to attach, problem not created: ${err.message}`);
-      }
-    } else {
-      toast('Problem created — it needs test data before it can be judged.', 'good');
-    }
-    newProblemDraft.clear();
-    route();
-  });
-
-  $('#create-contest').onclick = guard(async () => {
-    const toUtc = (value) => new Date(value).toISOString();
-    await api('/api/admin/contests', {
-      method: 'POST',
-      body: {
-        slug: $('#c-slug').value.trim(),
-        title: $('#c-title').value.trim() || $('#c-slug').value.trim(),
-        description: $('#c-desc').value,
-        starts_at: toUtc($('#c-start').value),
-        ends_at: toUtc($('#c-end').value),
-        scoring: $('#c-scoring').value,
-        penalty_minutes: Number($('#c-penalty').value),
-        freeze_minutes: Number($('#c-freeze').value),
-      },
-    });
-    toast('Contest created.', 'good');
-    route();
   });
 
   $$('[data-upload]').forEach((input) => {
@@ -2163,86 +2308,6 @@ async function viewAdmin() {
     });
   });
 
-  // Editing a contest, rather than deleting and recreating it. The two fields
-  // the list response does not carry — description and the current problem set
-  // — are filled in from the detail endpoint the first time an editor opens.
-  const editorOf = (slug) => $(`[data-editor="${CSS.escape(slug)}"]`);
-  const fieldsOf = (slug) => {
-    const found = {};
-    $$('[data-f]', editorOf(slug)).forEach((el) => { found[el.dataset.f] = el; });
-    return found;
-  };
-  const loaded = new Set();
-
-  $$('[data-edit-contest]').forEach((button) => {
-    button.onclick = guard(async () => {
-      const slug = button.dataset.editContest;
-      const row = editorOf(slug);
-      row.hidden = !row.hidden;
-      if (row.hidden || loaded.has(slug)) return;
-
-      const detail = await api(`/api/contests/${encodeURIComponent(slug)}`);
-      const fields = fieldsOf(slug);
-      fields.description.value = detail.description || '';
-      fields.description.disabled = false;
-      fields.description.placeholder = '';
-      // Seeing the current set is the point: otherwise saving an empty box
-      // silently empties the contest.
-      fields.problems.value = (detail.problems || []).map((pr) => pr.slug).join(', ');
-      fields.problems.disabled = false;
-      fields.problems.placeholder = 'slug-a, slug-b, …';
-      if (detail.sealed) {
-        fields.problems.value = '';
-        fields.problems.placeholder = 'unavailable — reopen after the contest starts';
-        fields.problems.disabled = true;
-      }
-      loaded.add(slug);
-
-      const warn = $(`[data-warn="${CSS.escape(slug)}"]`);
-      if (detail.state === 'running') {
-        warn.textContent = 'This contest is running. Moving the start time' +
-          ' recomputes every penalty on the scoreboard.';
-      } else if (detail.state === 'ended') {
-        warn.textContent = 'This contest has ended. Editing it rewrites results' +
-          ' that entrants have already seen.';
-      }
-    });
-  });
-
-  $$('[data-cancel-contest]').forEach((button) => {
-    button.onclick = () => { editorOf(button.dataset.cancelContest).hidden = true; };
-  });
-
-  $$('[data-save-contest]').forEach((button) => {
-    button.onclick = guard(async () => {
-      const slug = button.dataset.saveContest;
-      const fields = fieldsOf(slug);
-      const toUtc = (value) => new Date(value).toISOString();
-
-      await api(`/api/admin/contests/${encodeURIComponent(slug)}`, {
-        method: 'PATCH',
-        body: {
-          title: fields.title.value.trim(),
-          description: fields.description.value,
-          starts_at: toUtc(fields.starts_at.value),
-          ends_at: toUtc(fields.ends_at.value),
-          scoring: fields.scoring.value,
-          penalty_minutes: Number(fields.penalty_minutes.value),
-          freeze_minutes: Number(fields.freeze_minutes.value),
-        },
-      });
-
-      if (!fields.problems.disabled) {
-        const slugs = fields.problems.value.split(',').map((x) => x.trim()).filter(Boolean);
-        await api(`/api/admin/contests/${encodeURIComponent(slug)}/problems`, {
-          method: 'PUT', body: { problems: slugs.map((x) => ({ slug: x })) },
-        });
-      }
-      toast('Contest updated.', 'good');
-      route();
-    });
-  });
-
   $$('[data-role]').forEach((button) => {
     button.onclick = guard(async () => {
       await api(`/api/admin/users/${encodeURIComponent(button.dataset.role)}/role?role=${button.dataset.next}`,
@@ -2288,10 +2353,13 @@ async function route() {
       // them on the stream instead of the page they asked for.
       case 'leaderboard': location.hash = '#/users'; break;
       case 'user': await viewUser(decodeURIComponent(parts[1] || '')); break;
+      // "#/admin/new/post" creates one, "#/admin/post/x" edits it — the same
+      // editor either way, so the route only has to decide which.
       case 'admin':
-        if (parts[1] === 'problem' && parts[2]) await viewAdminProblem(decodeURIComponent(parts[2]));
-        else if (parts[1] === 'post' && parts[2]) await viewAdminPost(decodeURIComponent(parts[2]));
-        else await viewAdmin();
+        if (parts[1] === 'new' && ADMIN_FORMS[parts[2]]) await viewAdminEditor(parts[2]);
+        else if (ADMIN_FORMS[parts[1]] && parts[2]) {
+          await viewAdminEditor(parts[1], decodeURIComponent(parts[2]));
+        } else await viewAdmin();
         break;
       default: location.hash = '#/home';
     }
