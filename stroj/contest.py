@@ -132,7 +132,7 @@ def scoreboard(contest: sqlite3.Row, reveal: bool = False) -> dict:
     freeze are shown as a count and nothing more.
 
     ``reveal`` bypasses the freeze — for organisers, and for anyone once the
-    contest is over.
+    contest is over. It also lifts the pre-start seal described below.
     """
     problems = problems_of(contest["id"])
     label_of = {p["id"]: p["label"] for p in problems}
@@ -243,7 +243,12 @@ def scoreboard(contest: sqlite3.Row, reveal: bool = False) -> dict:
         "freeze_minutes": contest["freeze_minutes"] if "freeze_minutes" in contest.keys() else 0,
         "frozen_from": frozen_from,
         "frozen": frozen_from is not None,
-        "problems": [
+        # The detail endpoint seals the problem set until the clock starts, and
+        # listing the same problems here would quietly undo that: a title is
+        # often enough to name the technique, and the count alone tells everyone
+        # how the paper is shaped. Nothing is lost by withholding it — before
+        # the start there are no submissions and so no standings to explain.
+        "problems": [] if (state == BEFORE and not reveal) else [
             {
                 "label": p["label"],
                 "slug": p["slug"],

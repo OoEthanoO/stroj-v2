@@ -2007,3 +2007,62 @@ class TestBulkSubmit:
     def test_an_unknown_problem_is_a_404(self, admin_client):
         response = self.post(admin_client, "nope", {"intended.py": self.PY})
         assert response.status_code == 404
+
+
+class TestTheScoreboardKeepsTheSealBeforeTheStart:
+    """`contest_detail` withholds the problem set until the clock starts. The
+    scoreboard sits one click away and was handing out the same labels, slugs
+    and titles — enough to name five problems before anyone had seen them."""
+
+    def setup_future(self, admin_client, *, minutes_away: int):
+        make_problem(admin_client, slug="secret-a", visible=False)
+        now = db.parse_time(db.utcnow())
+        iso = lambda d: d.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        start = now + timedelta(minutes=minutes_away)
+        admin_client.post("/api/admin/contests", json={
+            "slug": "diag", "title": "Diagnostic", "description": "",
+            "starts_at": iso(start), "ends_at": iso(start + timedelta(minutes=30)),
+            "scoring": "ioi", "penalty_minutes": 0, "freeze_minutes": 0,
+        }).raise_for_status()
+        admin_client.put("/api/admin/contests/diag/problems",
+                         json={"problems": [{"slug": "secret-a", "label": "A"}]}
+                         ).raise_for_status()
+
+    def board(self, client):
+        response = client.get("/api/contests/diag/scoreboard")
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def test_the_problem_set_is_withheld(self, client, admin_client):
+        self.setup_future(admin_client, minutes_away=60)
+        admin_client.post("/api/auth/logout")
+        register(client, "peeker")
+        assert self.board(client)["problems"] == []
+
+    def test_not_even_the_count_gets_out(self, client, admin_client):
+        """Knowing there are five is itself information about the paper."""
+        self.setup_future(admin_client, minutes_away=60)
+        admin_client.post("/api/auth/logout")
+        register(client, "peeker2")
+        assert len(self.board(client)["problems"]) == 0
+
+    def test_an_organiser_still_sees_it(self, admin_client):
+        self.setup_future(admin_client, minutes_away=60)
+        assert [p["label"] for p in self.board(admin_client)["problems"]] == ["A"]
+
+    def test_it_opens_up_once_the_contest_starts(self, client, admin_client):
+        self.setup_future(admin_client, minutes_away=-5)
+        admin_client.post("/api/auth/logout")
+        register(client, "contestant")
+        board = self.board(client)
+        assert [p["label"] for p in board["problems"]] == ["A"]
+        assert board["problems"][0]["title"] == "A + B"
+
+    def test_the_two_endpoints_now_agree(self, client, admin_client):
+        """The bug was that they disagreed; this is what pins them together."""
+        self.setup_future(admin_client, minutes_away=60)
+        admin_client.post("/api/auth/logout")
+        register(client, "peeker3")
+        detail = client.get("/api/contests/diag").json()
+        assert detail["sealed"] is True
+        assert detail["problems"] == self.board(client)["problems"] == []
