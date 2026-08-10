@@ -9,6 +9,7 @@ from datetime import timedelta
 import pytest
 
 from stroj import db
+from stroj.api import routes_users
 from stroj.judge import worker
 
 
@@ -746,6 +747,69 @@ class TestProfilesAndAuthorship:
     def test_leaderboard_endpoint(self, client):
         body = client.get("/api/leaderboard").json()
         assert "standings" in body and "decay" in body
+
+
+class TestSubmissionActivity:
+    """The profile's calendar of submissions per day."""
+
+    def submit(self, client, source="a,b=map(int,input().split())\nprint(a+b)"):
+        client.post("/api/submissions", json={
+            "problem": "a-plus-b", "language": "python3", "source": source})
+        worker.drain()
+
+    def activity(self, client, username="user1"):
+        return client.get(f"/api/users/{username}").json()["activity"]
+
+    def test_a_new_user_has_an_empty_year(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "quiet")
+        activity = self.activity(client, "quiet")
+        assert activity["counts"] == []
+        assert activity["total"] == 0
+        assert activity["days"] == routes_users.ACTIVITY_DAYS
+        assert activity["since"] < activity["until"]
+
+    def test_a_day_counts_every_submission_and_its_accepteds(
+            self, client, admin_client):
+        make_problem(admin_client)
+        admin_client.post("/api/auth/logout")
+        register(client)
+        self.submit(client)
+        self.submit(client, source="print(0)")
+
+        activity = self.activity(client)
+        assert activity["total"] == 2
+        assert len(activity["counts"]) == 1
+        assert activity["counts"][0]["count"] == 2
+        assert activity["counts"][0]["accepted"] == 1
+        assert activity["counts"][0]["date"] == db.utcnow()[:10]
+
+    def test_days_are_separate_and_older_ones_fall_out_of_the_window(
+            self, client, admin_client):
+        make_problem(admin_client)
+        admin_client.post("/api/auth/logout")
+        register(client)
+        self.submit(client)
+        self.submit(client, source="print(0)")
+        # Push one back a week and one clean out of the year.
+        ids = [r["id"] for r in db.query("SELECT id FROM submissions ORDER BY id")]
+        for sub_id, days in zip(ids, (7, 400)):
+            stamp = db.parse_time(db.utcnow()) - timedelta(days=days)
+            db.execute("UPDATE submissions SET created_at = ? WHERE id = ?",
+                       (stamp.strftime("%Y-%m-%dT%H:%M:%S.000Z"), sub_id))
+
+        activity = self.activity(client)
+        assert activity["total"] == 1
+        assert [d["count"] for d in activity["counts"]] == [1]
+        assert activity["counts"][0]["date"] >= activity["since"]
+
+    def test_the_calendar_is_public(self, client, admin_client):
+        make_problem(admin_client)
+        admin_client.post("/api/auth/logout")
+        register(client, "watched")
+        self.submit(client)
+        client.post("/api/auth/logout")
+        assert self.activity(client, "watched")["total"] == 1
 
 
 class TestLiveSubmissionView:

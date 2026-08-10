@@ -1288,6 +1288,95 @@ async function viewUsers() {
   render();
 }
 
+/* ---- submission calendar ---- */
+
+/** Lay the reported days out as GitHub does: one column per week, Sunday at
+ * the top, `null` for the padding days before the window opens. Days the API
+ * left out had no submissions, so they come back as zeroes. */
+function activityWeeks(activity) {
+  const byDate = new Map((activity.counts || []).map((d) => [d.date, d]));
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const cursor = new Date(`${activity.since}T00:00:00Z`);
+  cursor.setUTCDate(cursor.getUTCDate() - cursor.getUTCDay());
+  const end = new Date(`${activity.until}T00:00:00Z`);
+
+  const weeks = [];
+  for (; cursor <= end; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+    if (cursor.getUTCDay() === 0) weeks.push([]);
+    const date = iso(cursor);
+    weeks[weeks.length - 1].push(date < activity.since
+      ? null
+      : byDate.get(date) || { date, count: 0, accepted: 0 });
+  }
+  return weeks;
+}
+
+const activityLevel = (n) => (n >= 7 ? 4 : n >= 4 ? 3 : n >= 2 ? 2 : n ? 1 : 0);
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function activityTip(day) {
+  const [y, m, d] = day.date.split('-');
+  const when = `${MONTHS[Number(m) - 1]} ${Number(d)}, ${y}`;
+  if (!day.count) return `No submissions on ${when}`;
+  const accepted = day.accepted ? ` (${day.accepted} accepted)` : '';
+  return `${day.count} submission${day.count === 1 ? '' : 's'}${accepted} on ${when}`;
+}
+
+/* The squares are 11px inside a scrolling strip, so the bubble cannot live in
+ * the grid without being clipped; one fixed element, moved to whichever square
+ * is under the pointer, is both cheaper and always visible. */
+function wireCalendarTips(cal) {
+  const tip = document.createElement('div');
+  tip.className = 'cal-tip';
+  tip.hidden = true;
+  cal.append(tip);
+  cal.addEventListener('mouseover', (event) => {
+    const day = event.target.closest('.cal-day');
+    if (!day) return;
+    const box = day.getBoundingClientRect();
+    tip.textContent = day.dataset.tip;
+    tip.hidden = false;
+    // Centred on the square, but never past either edge of the window — the
+    // first and last columns sit close enough to clip it otherwise.
+    const half = tip.offsetWidth / 2;
+    tip.style.left = `${Math.min(
+      Math.max(box.left + box.width / 2, half + 6), innerWidth - half - 6)}px`;
+    tip.style.top = `${box.top - 6}px`;
+  });
+  cal.addEventListener('mouseleave', () => { tip.hidden = true; });
+}
+
+function activityCalendar(activity) {
+  const weeks = activityWeeks(activity);
+  let labelled = '';
+  const months = weeks.map((week) => {
+    const day = week.find((d) => d);
+    const month = day ? day.date.slice(0, 7) : '';
+    if (!month || month === labelled) return '<span></span>';
+    labelled = month;
+    return `<span>${MONTHS[Number(month.slice(5)) - 1]}</span>`;
+  }).join('');
+
+  const grid = weeks.map((week) => `<div class="cal-week">${week.map((day) => (day
+    ? `<div class="cal-day l${activityLevel(day.count)}"
+        data-tip="${esc(activityTip(day))}"></div>`
+    : '<div></div>')).join('')}</div>`).join('');
+
+  return `
+    <div class="row" style="justify-content:space-between;align-items:baseline">
+      <h2>Submissions</h2>
+      <span class="muted small">${activity.total} in the last year</span>
+    </div>
+    <div class="card">
+      <div class="cal-wrap">
+        <div class="cal-months">${months}</div>
+        <div class="cal">${grid}</div>
+      </div>
+    </div>`;
+}
+
 /* ---- user profile ---- */
 
 async function viewUser(username) {
@@ -1341,6 +1430,8 @@ async function viewUser(username) {
       </div>
     </div>
 
+    ${activityCalendar(u.activity)}
+
     ${u.authored.length ? `
       <h2>Problems written</h2>
       <div class="table-wrap"><table><tbody>${u.authored.map((p) => `
@@ -1356,6 +1447,8 @@ async function viewUser(username) {
          <p class="muted small">Each solve is weighted by its rank among your own
            solves, so the total shows why it is what it is.</p>`
       : '<div class="empty">Nothing solved yet.</div>'}`, { wide: true });
+
+  wireCalendarTips($('.cal'));
 
   if (!u.editable) return;
   const view = $('#bio-view');

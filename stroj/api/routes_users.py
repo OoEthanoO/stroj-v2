@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
@@ -11,6 +13,9 @@ from .deps import current_user, require_user, user_public
 router = APIRouter(prefix="/api", tags=["users"])
 
 MAX_BIO_BYTES = 4000
+
+#: How far back the profile's submission calendar reaches, in days.
+ACTIVITY_DAYS = 365
 
 
 class BioBody(BaseModel):
@@ -39,6 +44,29 @@ def leaderboard(limit: int = Query(default=100, ge=1, le=500)):
     return {
         "decay": scoring.DECAY,
         "standings": scoring.leaderboard(limit=limit),
+    }
+
+
+def submission_activity(user_id: int, days: int = ACTIVITY_DAYS) -> dict:
+    """Submissions per day over the last `days` days, for the profile calendar.
+
+    Days are UTC, the same clock `created_at` is written in, and only days with
+    something on them are returned — the grid fills in the gaps itself.
+    """
+    since = (datetime.now(timezone.utc) - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    rows = db.query(
+        "SELECT substr(created_at, 1, 10) AS date, COUNT(*) AS count,"
+        "       SUM(verdict = 'AC') AS accepted"
+        "  FROM submissions WHERE user_id = ? AND created_at >= ?"
+        " GROUP BY date ORDER BY date",
+        (user_id, since),
+    )
+    return {
+        "days": days,
+        "since": since,
+        "until": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "total": sum(row["count"] for row in rows),
+        "counts": [dict(row) for row in rows],
     }
 
 
@@ -75,6 +103,7 @@ def profile(username: str, request: Request):
         "ranked_of": len(standings),
         "solved_count": len(solved),
         "solved": solved,
+        "activity": submission_activity(row["id"]),
         "authored": [
             {"slug": p["slug"], "title": p["title"], "points": p["points"]}
             for p in db.query(
