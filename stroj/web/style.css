@@ -665,3 +665,28 @@ tr.you { outline: 2px solid var(--accent); outline-offset: -2px; }
   border: 1px solid color-mix(in srgb, #d2a327 45%, transparent);
 }
 .view-as-banner button { margin-left: auto; }
+
+/* ---------- rating history graph ---------- */
+
+.rating-graph { width: 100%; height: auto; display: block; }
+.rating-graph .trend {
+  fill: none; stroke: var(--text); stroke-width: 2;
+  stroke-linejoin: round; stroke-linecap: round;
+}
+.rating-graph .dot { fill: var(--surface); stroke: var(--text); stroke-width: 2; }
+.rating-graph .dot:hover { fill: var(--text); }
+.rating-graph .axis { fill: var(--muted); font-size: 11px; font-family: var(--mono); }
+.rating-graph .band-name { fill: var(--muted); font-size: 10px; font-family: var(--mono); }
+
+/* The bands are context, not content: strong enough to read the tier from,
+   faint enough that the line stays the thing you look at. */
+.rating-graph .band { opacity: 0.16; }
+.rating-graph .band.tier-novice      { fill: #8a8a8a; }
+.rating-graph .band.tier-apprentice  { fill: #7d8fa8; }
+.rating-graph .band.tier-adept       { fill: #35a3bd; }
+.rating-graph .band.tier-specialist  { fill: #1f9c62; }
+.rating-graph .band.tier-expert      { fill: #6f9c1f; }
+.rating-graph .band.tier-master      { fill: #d2a327; }
+.rating-graph .band.tier-grandmaster { fill: #d2762a; }
+.rating-graph .band.tier-champion    { fill: #d13c58; }
+.rating-graph .band.tier-legend      { fill: #ffd24a; opacity: 0.3; }

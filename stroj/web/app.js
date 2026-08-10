@@ -1417,13 +1417,13 @@ function activityTip(day) {
 /* The squares are 11px inside a scrolling strip, so the bubble cannot live in
  * the grid without being clipped; one fixed element, moved to whichever square
  * is under the pointer, is both cheaper and always visible. */
-function wireCalendarTips(cal) {
+function wireTips(cal, selector = '.cal-day') {
   const tip = document.createElement('div');
   tip.className = 'cal-tip';
   tip.hidden = true;
   cal.append(tip);
   cal.addEventListener('mouseover', (event) => {
-    const day = event.target.closest('.cal-day');
+    const day = event.target.closest(selector);
     if (!day) return;
     const box = day.getBoundingClientRect();
     tip.textContent = day.dataset.tip;
@@ -1464,6 +1464,93 @@ function activityCalendar(activity) {
         <div class="cal-months">${months}</div>
         <div class="cal">${grid}</div>
       </div>
+    </div>`;
+}
+
+
+/** A competitor's rating over time, drawn against the tiers it passed through.
+ *
+ * Only worth drawing once there are at least two contests: one point is not a
+ * history, it is a dot, and a line through it would imply a trend nobody has
+ * earned yet.
+ *
+ * Time is the x axis rather than contest number, so a month away shows up as a
+ * gap. That gap is the thing that makes the next result move further, and a
+ * graph that spaced contests evenly would hide the only visual evidence of it.
+ */
+function ratingGraph(history, ladder) {
+  if (!history || history.length < 2) return '';
+
+  const W = 760, H = 230;
+  // Right padding holds the tier names. Monospace at 10 viewBox units is about
+  // 6 units a character, and "Grandmaster 1" is thirteen of them — 66 was too
+  // narrow and the labels ran out of the card.
+  const pad = { l: 48, r: 96, t: 14, b: 26 };
+  const points = history.map((h) => ({
+    at: parseTime(h.at).getTime(),
+    rating: h.rating_after,
+    tip: `${h.contest_title} — #${h.place}, ${h.delta > 0 ? '+' : ''}${h.delta}`
+      + ` to ${h.rating_after}`,
+  }));
+
+  const times = points.map((p) => p.at);
+  const values = points.map((p) => p.rating);
+  const t0 = Math.min(...times), t1 = Math.max(...times);
+  // Contests all at one instant would divide by zero; fall back to even spacing.
+  const spanT = t1 - t0 || 1;
+  const lo = Math.min(...values) - 18;
+  const hi = Math.max(...values) + 18;
+  const spanY = hi - lo || 1;
+
+  const x = (t) => pad.l + (t - t0) / spanT * (W - pad.l - pad.r);
+  const y = (v) => pad.t + (hi - v) / spanY * (H - pad.t - pad.b);
+
+  // Tier bands behind the line: the rating number means little on its own, and
+  // "the week they crossed into Expert" is the thing worth seeing.
+  const bands = (ladder || []).filter((r) => {
+    const top = r.to === null ? Infinity : r.to;
+    return top >= lo && r.from <= hi;
+  }).map((r) => {
+    const top = Math.min(r.to === null ? hi : r.to, hi);
+    const bottom = Math.max(r.from, lo);
+    const height = y(bottom) - y(top);
+    return `<rect class="band tier-${esc(r.tier.toLowerCase())}" x="${pad.l}"
+        y="${y(top).toFixed(1)}" width="${W - pad.l - pad.r}"
+        height="${Math.max(0, height).toFixed(1)}"></rect>`
+      + (height >= 13
+        ? `<text class="band-name" x="${W - pad.r + 6}"
+             y="${(y(top) + height / 2 + 3.5).toFixed(1)}">${esc(r.name)}</text>`
+        : '');
+  }).join('');
+
+  const line = points.map((p, i) =>
+    `${i ? 'L' : 'M'}${x(p.at).toFixed(1)} ${y(p.rating).toFixed(1)}`).join(' ');
+  const dots = points.map((p) => `<circle class="dot" cx="${x(p.at).toFixed(1)}"
+      cy="${y(p.rating).toFixed(1)}" r="3.5" data-tip="${esc(p.tip)}"></circle>`).join('');
+
+  const ticks = [hi - 18, Math.round((lo + hi) / 2), lo + 18].map((v) =>
+    `<text class="axis" x="${pad.l - 8}" y="${(y(v) + 3.5).toFixed(1)}"
+       text-anchor="end">${Math.round(v)}</text>`).join('');
+
+  const peak = Math.max(...values);
+  const now = values[values.length - 1];
+
+  return `
+    <div class="row" style="justify-content:space-between;align-items:baseline">
+      <h2>Rating</h2>
+      <span class="muted small">now ${now} · peak ${peak} · ${points.length} contests</span>
+    </div>
+    <div class="card">
+      <svg class="rating-graph" viewBox="0 0 ${W} ${H}" role="img"
+        aria-label="Rating over ${points.length} rated contests, now ${now}, peak ${peak}">
+        ${bands}
+        ${ticks}
+        <path class="trend" d="${line}"></path>
+        ${dots}
+        <text class="axis" x="${pad.l}" y="${H - 8}">${esc(absolute(history[0].at).split(',')[0])}</text>
+        <text class="axis" x="${W - pad.r}" y="${H - 8}" text-anchor="end"
+          >${esc(absolute(history[history.length - 1].at).split(',')[0])}</text>
+      </svg>
     </div>`;
 }
 
@@ -1601,7 +1688,12 @@ async function viewRanks() {
 /* ---- user profile ---- */
 
 async function viewUser(username) {
-  const u = await api(`/api/users/${encodeURIComponent(username)}`);
+  // The ladder comes along so the graph can draw the tiers this rating passed
+  // through. Fetched in parallel; a profile should not wait on a legend.
+  const [u, ranks] = await Promise.all([
+    api(`/api/users/${encodeURIComponent(username)}`),
+    api('/api/ranks').catch(() => ({ ladder: [] })),
+  ]);
   const maxPoints = Math.max(1, ...u.solved.map((s) => s.earned));
 
   const solvedRows = u.solved.map((s, i) => `
@@ -1661,6 +1753,7 @@ async function viewUser(username) {
     </div>
 
     ${activityCalendar(u.activity)}
+    ${ratingGraph(u.rating_history, ranks.ladder)}
     ${ratingHistory(u.rating_history)}
 
     ${u.authored.length ? `
@@ -1679,7 +1772,9 @@ async function viewUser(username) {
            solves, so the total shows why it is what it is.</p>`
       : '<div class="empty">Nothing solved yet.</div>'}`, { wide: true });
 
-  wireCalendarTips($('.cal'));
+  wireTips($('.cal'));
+  const graph = $('.rating-graph');
+  if (graph) wireTips(graph, '.dot');
 
   if (!u.editable) return;
   const view = $('#bio-view');
