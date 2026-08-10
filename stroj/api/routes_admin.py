@@ -22,7 +22,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
-from .. import config, db, testdata
+from .. import config, contest as contest_mod, db, testdata
 from ..judge import checkers, languages, worker
 from ..judge.runner import PENDING, validate_source
 from .deps import get_contest, require_admin
@@ -104,6 +104,7 @@ class ContestBody(BaseModel):
     penalty_minutes: int = Field(default=20, ge=0, le=1440)
     #: Minutes before the end when the scoreboard stops updating. 0 disables.
     freeze_minutes: int = Field(default=0, ge=0, le=1440)
+    rated: bool = False
 
 
 class ContestPatch(BaseModel):
@@ -114,6 +115,7 @@ class ContestPatch(BaseModel):
     scoring: str | None = None
     penalty_minutes: int | None = Field(default=None, ge=0, le=1440)
     freeze_minutes: int | None = Field(default=None, ge=0, le=1440)
+    rated: bool | None = None
 
 
 class PostBody(BaseModel):
@@ -646,8 +648,8 @@ def create_contest(body: ContestBody):
     try:
         contest_id = db.insert(
             "INSERT INTO contests (slug, title, description, starts_at, ends_at,"
-            " scoring, penalty_minutes, freeze_minutes, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " scoring, penalty_minutes, freeze_minutes, rated, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 body.slug,
                 body.title,
@@ -657,6 +659,7 @@ def create_contest(body: ContestBody):
                 body.scoring,
                 body.penalty_minutes,
                 body.freeze_minutes,
+                int(body.rated),
                 db.utcnow(),
             ),
         )
@@ -693,12 +696,32 @@ def update_contest(slug: str, body: ContestPatch):
         if "ends_at" in fields:
             fields["ends_at"] = ends_iso
 
+    if "rated" in fields:
+        fields["rated"] = int(fields["rated"])
+
     assignments = ", ".join(f"{k} = ?" for k in fields)
     db.execute(
         f"UPDATE contests SET {assignments} WHERE id = ?",
         (*fields.values(), contest["id"]),
     )
-    return {"updated": len(fields), "slug": slug}
+
+    # Anything here can change who was rated or by how much: flipping `rated`
+    # obviously, but also moving the window, since the window decides which
+    # submissions counted and therefore the standings the rating came from.
+    rebuilt = None
+    if {"rated", "starts_at", "ends_at", "scoring", "penalty_minutes"} & fields.keys():
+        rebuilt = contest_mod.recompute_ratings()
+    return {"updated": len(fields), "slug": slug, "ratings": rebuilt}
+
+
+@router.post("/ratings/recompute")
+def recompute_ratings():
+    """Rebuild every rating by replaying every rated contest.
+
+    Ratings are derived data, so this is never destructive and always the
+    correct repair: if a result is wrong, fix the contest and replay.
+    """
+    return contest_mod.recompute_ratings()
 
 
 @router.put("/contests/{slug}/problems")

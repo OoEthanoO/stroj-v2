@@ -6,7 +6,7 @@ import sqlite3
 
 from fastapi import HTTPException, Request
 
-from .. import auth, contest, db
+from .. import auth, contest, db, rating
 from ..judge.runner import CE, VERDICT_NAMES
 
 
@@ -91,6 +91,11 @@ def user_public(user: sqlite3.Row | None) -> dict | None:
         "username": user["username"],
         "role": user["role"],
         "is_admin": user["role"] == "admin",
+        "rating": user["rating"],
+        # `rating_rank`, not `rank`: `rank` already means leaderboard position
+        # on the profile and the standings, and shadowing it silently replaced
+        # the position everywhere both appear.
+        "rating_rank": rating.rank_dict(user["rating"], user["rated_contests"]),
     }
 
 

@@ -253,6 +253,22 @@ def requeue_stuck() -> int:
     return len(stuck)
 
 
+def apply_finished_ratings() -> int:
+    """Settle any rated contest that has ended and been fully judged.
+
+    Returns how many contests were newly settled. The replay covers every
+    rated contest, not just the new one, so calling this twice is harmless.
+    """
+    from .. import contest as contest_mod
+
+    ready = contest_mod.awaiting_rating()
+    if not ready:
+        return 0
+    contest_mod.recompute_ratings()
+    log.info("applied ratings for %s finished contest(s)", len(ready))
+    return len(ready)
+
+
 class JudgeWorker(threading.Thread):
     def __init__(self, index: int, poll_interval: float = 1.0) -> None:
         super().__init__(name=f"judge-{index}", daemon=True)
@@ -267,6 +283,14 @@ class JudgeWorker(threading.Thread):
                 submission_id = None
 
             if submission_id is None:
+                # Nothing to judge is exactly when to settle any contest that
+                # has finished, so ratings appear on their own rather than
+                # waiting for an admin to remember. Checked only while idle so
+                # it never competes with judging for a worker.
+                try:
+                    apply_finished_ratings()
+                except Exception:
+                    log.exception("failed to apply contest ratings")
                 _wakeup.wait(self.poll_interval)
                 _wakeup.clear()
                 continue

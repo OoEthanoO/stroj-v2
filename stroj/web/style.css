@@ -606,3 +606,44 @@ tr.you { outline: 2px solid var(--accent); outline-offset: -2px; }
   #account button, #account .btn { white-space: nowrap; padding: 5px 10px; }
   #account .badge { display: none; }  /* the name already says who you are */
 }
+
+/* ---------- competitive rank ---------- */
+
+.rank-badge {
+  display: inline-block; padding: 2px 9px; border-radius: 999px;
+  font-family: var(--mono); font-size: 12px; font-weight: 600;
+  letter-spacing: 0.2px; white-space: nowrap;
+  border: 1px solid transparent;
+}
+/* Each tier is a tinted chip rather than a flat colour fill, so a rank reads
+   at a glance without competing with the verdict badges beside it. */
+.rank-iron      { color: #8a8a8a; background: color-mix(in srgb, #8a8a8a 16%, transparent); border-color: color-mix(in srgb, #8a8a8a 34%, transparent); }
+.rank-bronze    { color: #b0763f; background: color-mix(in srgb, #b0763f 16%, transparent); border-color: color-mix(in srgb, #b0763f 34%, transparent); }
+.rank-silver    { color: #9aa6b2; background: color-mix(in srgb, #9aa6b2 16%, transparent); border-color: color-mix(in srgb, #9aa6b2 34%, transparent); }
+.rank-gold      { color: #d2a327; background: color-mix(in srgb, #d2a327 16%, transparent); border-color: color-mix(in srgb, #d2a327 34%, transparent); }
+.rank-platinum  { color: #35a3bd; background: color-mix(in srgb, #35a3bd 16%, transparent); border-color: color-mix(in srgb, #35a3bd 34%, transparent); }
+.rank-diamond   { color: #a969df; background: color-mix(in srgb, #a969df 16%, transparent); border-color: color-mix(in srgb, #a969df 34%, transparent); }
+.rank-ascendant { color: #1f9c62; background: color-mix(in srgb, #1f9c62 16%, transparent); border-color: color-mix(in srgb, #1f9c62 34%, transparent); }
+.rank-immortal  { color: #d13c58; background: color-mix(in srgb, #d13c58 16%, transparent); border-color: color-mix(in srgb, #d13c58 34%, transparent); }
+/* Radiant is the only rank without divisions, and the only one that glows. */
+.rank-radiant {
+  color: #1b1200;
+  background: linear-gradient(100deg, #ffe27a, #fff8dc 45%, #ffd24a);
+  border-color: #ffcf3f;
+  box-shadow: 0 0 10px color-mix(in srgb, #ffd24a 55%, transparent);
+}
+.rank-unranked { color: var(--muted); background: var(--surface-2); border-color: var(--border); }
+
+.rank-rating { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-left: 6px; }
+
+/* Rating movement. Neutral when a contest left you where you were. */
+.delta { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.delta.up   { color: var(--ok); }
+.delta.down { color: var(--bad); }
+
+.pill-rated { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+
+/* The ladder legend: 25 rungs, so it has to stay compact. */
+.ladder { display: flex; flex-wrap: wrap; gap: 6px; }
+.ladder .rung { display: flex; align-items: center; gap: 6px; }
+.ladder .rung .muted { font-size: 11px; }

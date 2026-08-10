@@ -72,6 +72,12 @@ _ADDED_COLUMNS: list[tuple[str, str, str]] = [
     ("problems", "author_id", "INTEGER"),
     ("testcases", "subtask", "INTEGER NOT NULL DEFAULT 0"),
     ("submissions", "earned_percent", "INTEGER NOT NULL DEFAULT 0"),
+    ("contests", "rated", "INTEGER NOT NULL DEFAULT 0"),
+    ("contests", "rated_at", "TEXT"),
+    ("users", "rating", "INTEGER NOT NULL DEFAULT 1000"),
+    ("users", "rating_deviation", "REAL NOT NULL DEFAULT 350.0"),
+    ("users", "rated_contests", "INTEGER NOT NULL DEFAULT 0"),
+    ("users", "last_rated_at", "TEXT"),
 ]
 
 

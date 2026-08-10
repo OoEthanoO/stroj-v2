@@ -17,7 +17,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import timedelta
 
-from . import db
+from . import db, rating
 from .judge.runner import AC, JUDGING, PENDING
 
 BEFORE = "before"
@@ -274,3 +274,168 @@ def scoreboard(contest: sqlite3.Row, reveal: bool = False) -> dict:
         ],
         "rows": result_rows,
     }
+
+
+# ---------------------------------------------------------------------------
+# Rating
+#
+# Ratings are derived, not accumulated. Every recompute throws away the stored
+# numbers and replays each rated contest in the order it finished. That costs
+# nothing at a club's scale and removes the failure modes an incremental update
+# would have: a contest rated twice, a contest rated before a late submission
+# finished judging, a contest whose results were corrected afterwards, or two
+# contests rated in the wrong order. If anything looks wrong, replaying fixes
+# it, because the replay *is* the definition.
+# ---------------------------------------------------------------------------
+
+
+def rated_contests() -> list[sqlite3.Row]:
+    """Finished rated contests, oldest first — the order they are replayed in.
+
+    A contest that is still running is not rated yet: its standings can change
+    with the next submission.
+    """
+    rows = db.query("SELECT * FROM contests WHERE rated = 1 ORDER BY ends_at, id")
+    return [row for row in rows if state_of(row) == ENDED]
+
+
+def _days_between(earlier: str | None, later: str) -> float | None:
+    if earlier is None:
+        return None
+    gap = (db.parse_time(later) - db.parse_time(earlier)).total_seconds()
+    return max(0.0, gap / 86400.0)
+
+
+def recompute_ratings() -> dict:
+    """Rebuild every rating from scratch. Safe to call at any time."""
+    contests = rated_contests()
+
+    # user id -> (rating, deviation, contests played, when they last competed)
+    standing: dict[int, tuple[int, float, int, str]] = {}
+    written = 0
+
+    stamp = db.utcnow()
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM rating_changes")
+        conn.execute("UPDATE contests SET rated_at = NULL")
+        conn.execute(
+            "UPDATE users SET rating = ?, rating_deviation = ?,"
+            " rated_contests = 0, last_rated_at = NULL",
+            (rating.START_RATING, rating.DEVIATION_NEW),
+        )
+
+        for contest in contests:
+            board = scoreboard(contest, reveal=True)
+            entrants = []
+            for row in board["rows"]:
+                current, deviation, _, last = standing.get(
+                    row["user_id"],
+                    (rating.START_RATING, rating.DEVIATION_NEW, 0, None),
+                )
+                entrants.append(
+                    rating.Entrant(
+                        user_id=row["user_id"],
+                        rating=current,
+                        deviation=deviation,
+                        days_idle=_days_between(last, contest["ends_at"]),
+                        place=row["rank"],
+                    )
+                )
+
+            for change in rating.compute(entrants):
+                played = standing.get(change.user_id, (0, 0, 0, None))[2] + 1
+                standing[change.user_id] = (
+                    change.rating_after,
+                    change.deviation_after,
+                    played,
+                    contest["ends_at"],
+                )
+                conn.execute(
+                    "INSERT INTO rating_changes (contest_id, user_id, place,"
+                    " rating_before, rating_after, deviation_before,"
+                    " deviation_after, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        contest["id"],
+                        change.user_id,
+                        change.place,
+                        change.rating_before,
+                        change.rating_after,
+                        change.deviation_before,
+                        change.deviation_after,
+                        contest["ends_at"],
+                    ),
+                )
+                written += 1
+
+        if contests:
+            marks = ", ".join("?" * len(contests))
+            conn.execute(
+                f"UPDATE contests SET rated_at = ? WHERE id IN ({marks})",
+                (stamp, *[c["id"] for c in contests]),
+            )
+
+        for user_id, (value, deviation, played, last) in standing.items():
+            conn.execute(
+                "UPDATE users SET rating = ?, rating_deviation = ?,"
+                " rated_contests = ?, last_rated_at = ? WHERE id = ?",
+                (value, deviation, played, last, user_id),
+            )
+
+    return {"contests": len(contests), "changes": written, "competitors": len(standing)}
+
+
+def rating_changes_for(contest_id: int) -> dict[int, sqlite3.Row]:
+    return {
+        row["user_id"]: row
+        for row in db.query(
+            "SELECT * FROM rating_changes WHERE contest_id = ?", (contest_id,)
+        )
+    }
+
+
+def rating_history(user_id: int) -> list[dict]:
+    """Every rated contest this competitor has entered, oldest first."""
+    rows = db.query(
+        "SELECT rc.*, c.slug AS contest_slug, c.title AS contest_title"
+        "  FROM rating_changes rc"
+        "  JOIN contests c ON c.id = rc.contest_id"
+        " WHERE rc.user_id = ? ORDER BY rc.created_at, rc.contest_id",
+        (user_id,),
+    )
+    return [
+        {
+            "contest_slug": row["contest_slug"],
+            "contest_title": row["contest_title"],
+            "place": row["place"],
+            "rating_before": row["rating_before"],
+            "rating_after": row["rating_after"],
+            "delta": row["rating_after"] - row["rating_before"],
+            "at": row["created_at"],
+            "rank": rating.rank_dict(row["rating_after"], 1),
+        }
+        for row in rows
+    ]
+
+
+def awaiting_rating() -> list[sqlite3.Row]:
+    """Finished rated contests whose results have not been applied.
+
+    Excludes any contest still holding a submission in the queue: rating a
+    contest while a solution is mid-judge would rank someone on a result that
+    has not landed. The judge polls this so nobody has to remember.
+    """
+    rows = db.query(
+        "SELECT * FROM contests WHERE rated = 1 AND rated_at IS NULL ORDER BY ends_at"
+    )
+    ready = []
+    for row in rows:
+        if state_of(row) != ENDED:
+            continue
+        busy = db.one(
+            "SELECT 1 FROM submissions WHERE contest_id = ? AND verdict IN (?, ?)"
+            " LIMIT 1",
+            (row["id"], PENDING, JUDGING),
+        )
+        if busy is None:
+            ready.append(row)
+    return ready

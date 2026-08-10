@@ -6,6 +6,16 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT    NOT NULL,
     role          TEXT    NOT NULL DEFAULT 'user',   -- 'user' | 'admin'
     bio           TEXT    NOT NULL DEFAULT '',       -- markdown, shown on the profile
+    -- Competitive standing. Kept here rather than derived on read because a
+    -- rating is a running total over contests, not a function of the present.
+    -- The default matches rating.START_RATING; it is a placeholder until
+    -- rated_contests > 0, and no rank is shown before then.
+    rating           INTEGER NOT NULL DEFAULT 1000,
+    -- How well the judge claims to know that rating. Falls as you compete,
+    -- rises while you do not. See stroj/rating.py.
+    rating_deviation REAL    NOT NULL DEFAULT 350.0,
+    rated_contests   INTEGER NOT NULL DEFAULT 0,
+    last_rated_at    TEXT,
     created_at    TEXT    NOT NULL
 );
 
@@ -100,8 +110,31 @@ CREATE TABLE IF NOT EXISTS contests (
     scoring     TEXT    NOT NULL DEFAULT 'icpc',     -- 'icpc' | 'ioi'
     penalty_minutes INTEGER NOT NULL DEFAULT 20,
     freeze_minutes  INTEGER NOT NULL DEFAULT 0,      -- hide board this long before the end
+    -- 1 = results move competitors' ratings. Off by default: a contest has to
+    -- be deliberately declared rated, because making one rated after the fact
+    -- rates people who entered thinking it was practice.
+    rated       INTEGER NOT NULL DEFAULT 0,
+    -- When the replay last covered this contest. NULL means its results have
+    -- not been applied yet, which is what the judge watches for.
+    rated_at    TEXT,
     created_at  TEXT    NOT NULL
 );
+
+-- What one rated contest did to one competitor. Written by a full replay of
+-- every rated contest in order, so this table is derived data and can always
+-- be rebuilt; nothing else may edit it.
+CREATE TABLE IF NOT EXISTS rating_changes (
+    contest_id       INTEGER NOT NULL REFERENCES contests(id) ON DELETE CASCADE,
+    user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    place            INTEGER NOT NULL,
+    rating_before    INTEGER NOT NULL,
+    rating_after     INTEGER NOT NULL,
+    deviation_before REAL    NOT NULL,
+    deviation_after  REAL    NOT NULL,
+    created_at       TEXT    NOT NULL,
+    PRIMARY KEY (contest_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rating_user ON rating_changes(user_id);
 
 CREATE TABLE IF NOT EXISTS contest_problems (
     contest_id INTEGER NOT NULL REFERENCES contests(id) ON DELETE CASCADE,

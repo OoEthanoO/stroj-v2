@@ -176,6 +176,22 @@ function dmojTable(problems) {
 
 const pointsPill = (points) => `<span class="points-pill">${Number(points) || 0}</span>`;
 
+/** A competitor's rank, or the absence of one.
+ *
+ * Someone who has not entered a rated contest is Unranked rather than sitting
+ * at the rank their starting rating would imply — that number is a placeholder,
+ * and drawing it as a standing claims something the judge cannot support. */
+function rankBadge(rank, { rating } = {}) {
+  if (!rank) return '<span class="rank-badge rank-unranked">Unranked</span>';
+  // Escaped even in the class: the tier is server data, and every other
+  // interpolation on this page goes through esc. One that does not is the kind
+  // of exception nobody remembers when the source of the data changes.
+  const tier = esc(rank.tier.toLowerCase());
+  const value = rating == null ? '' : `<span class="rank-rating">${esc(rating)}</span>`;
+  return `<span class="rank-badge rank-${tier}" title="${esc(rank.name)}">`
+    + `${esc(rank.name)}</span>${value}`;
+}
+
 const typePills = (types) => ((types || []).length
   ? types.map((t) => `<span class="pill">${esc(t)}</span>`).join(' ')
   : '<span class="muted">—</span>');
@@ -1080,13 +1096,16 @@ async function viewContests() {
       <td class="muted small">${esc(absolute(c.starts_at))}</td>
       <td class="muted small">${esc(absolute(c.ends_at))}</td>
       <td class="mono small muted">${esc(c.scoring.toUpperCase())}</td>
+      <td class="mono small">${c.rated
+        ? '<span class="pill pill-rated">rated</span>'
+        : '<span class="muted">unrated</span>'}</td>
       <td class="countdown mono small" data-starts="${esc(c.starts_at)}" data-ends="${esc(c.ends_at)}" data-state="${esc(c.state)}"></td>
     </tr>`).join('');
 
   setView(`
     <div class="page-head"><h1>Contests</h1></div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Contest</th><th>Status</th><th>Starts</th><th>Ends</th><th>Scoring</th><th>Clock</th></tr></thead>
+      <thead><tr><th>Contest</th><th>Status</th><th>Starts</th><th>Ends</th><th>Scoring</th><th>Rating</th><th>Clock</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`);
 
   const tick = () => $$('.countdown').forEach(updateCountdown);
@@ -1131,6 +1150,7 @@ async function viewContest(slug) {
       <div class="row small muted">
         <span class="pill">${esc(c.scoring.toUpperCase())} scoring</span>
         ${c.scoring === 'icpc' ? `<span class="pill">${c.penalty_minutes} min penalty</span>` : ''}
+        <span class="pill ${c.rated ? 'pill-rated' : ''}">${c.rated ? 'rated' : 'unrated'}</span>
         <span class="pill">${esc(absolute(c.starts_at))} → ${esc(absolute(c.ends_at))}</span>
       </div>
     </div>
@@ -1157,6 +1177,9 @@ async function viewScoreboard(slug) {
   const render = async () => {
     const board = await api(`/api/contests/${encodeURIComponent(slug)}/scoreboard`);
     const isIcpc = board.scoring === 'icpc';
+    // Only once the contest has actually been rated: a column of dashes
+    // during a live contest reads as "you gained nothing", not "not yet".
+    const showRating = board.rows.some((r) => r.rating);
 
     const headCells = board.problems.map((p) => `
       <th class="num" title="${esc(p.title)}">
@@ -1195,6 +1218,11 @@ async function viewScoreboard(slug) {
         <td class="wide">${userLink(r.username, r.role)}</td>
         <td class="num"><strong>${isIcpc ? r.solved : r.total_score}</strong></td>
         ${isIcpc ? `<td class="num muted">${r.penalty}</td>` : ''}
+        ${showRating ? `<td class="num">${r.rating
+          ? `<span class="delta ${r.rating.delta > 0 ? 'up' : r.rating.delta < 0 ? 'down' : ''}">${
+              r.rating.delta > 0 ? '+' : ''}${r.rating.delta}</span>`
+            + `<span class="muted small"> ${r.rating.after}</span>`
+          : '<span class="muted small">—</span>'}</td>` : ''}
         ${cells}
       </tr>`;
     }).join('');
@@ -1216,6 +1244,7 @@ async function viewScoreboard(slug) {
              <th class="num">#</th><th>Who</th>
              <th class="num">${isIcpc ? 'Solved' : 'Score'}</th>
              ${isIcpc ? '<th class="num">Penalty</th>' : ''}
+             ${showRating ? '<th class="num">Rating</th>' : ''}
              ${headCells}
            </tr></thead>
            <tbody>${rows}</tbody></table></div>`
@@ -1250,7 +1279,11 @@ async function viewUsers() {
   const board = await api('/api/leaderboard');
   const total = board.standings.length;
   const columns = [['rank', '#', ''], ['username', 'Who', ''], ['score', 'Score', 'num'],
-                   ['solved', 'Solved', 'num'], ['hardest', 'Hardest', 'num']];
+                   ['solved', 'Solved', 'num'], ['hardest', 'Hardest', 'num'],
+                   // Rating measures placing against other people; score
+                   // measures what you have solved. Neither implies the other,
+                   // so the table carries both rather than picking one.
+                   ['rating', 'Rating', 'num']];
   // Numeric columns read best largest-first, so they start descending; rank and
   // username start ascending. Re-clicking the active column flips it.
   let sort = { key: 'rank', dir: 1 };
@@ -1263,6 +1296,7 @@ async function viewUsers() {
       <td class="num"><strong>${s.score}</strong></td>
       <td class="num muted">${s.solved}</td>
       <td class="num">${pointsPill(s.hardest)}</td>
+      <td class="num">${rankBadge(s.rating_rank, { rating: s.rating_rank ? s.rating : null })}</td>
     </tr>`;
   };
 
@@ -1414,6 +1448,30 @@ function activityCalendar(activity) {
     </div>`;
 }
 
+/** Every rated contest a competitor has entered, newest first.
+ *
+ * Shown as a list rather than a chart: with weekly contests the interesting
+ * question is "what happened at that one", which a line graph hides. */
+function ratingHistory(history) {
+  if (!history || !history.length) return '';
+  const rows = [...history].reverse().map((h) => `
+    <tr>
+      <td class="wide"><a href="#/contest/${encodeURIComponent(h.contest_slug)}">${esc(h.contest_title)}</a>
+        <span class="muted small" title="${esc(absolute(h.at))}">${esc(relative(h.at))}</span></td>
+      <td class="num muted">#${h.place}</td>
+      <td class="num"><span class="delta ${h.delta > 0 ? 'up' : h.delta < 0 ? 'down' : ''}">${
+        h.delta > 0 ? '+' : ''}${h.delta}</span></td>
+      <td class="num">${h.rating_after}</td>
+      <td>${rankBadge(h.rank)}</td>
+    </tr>`).join('');
+  return `
+    <div class="row" style="justify-content:space-between;align-items:baseline">
+      <h2>Rated contests</h2>
+      <span class="muted small">${history.length}</span>
+    </div>
+    <div class="card"><div class="table-wrap"><table><tbody>${rows}</tbody></table></div></div>`;
+}
+
 /* ---- user profile ---- */
 
 async function viewUser(username) {
@@ -1442,10 +1500,16 @@ async function viewUser(username) {
 
     <div class="grid-2">
       <div class="card">
+        <div class="row" style="margin-bottom:14px">${rankBadge(u.rating_rank)}</div>
         <div class="row" style="align-items:flex-end;gap:26px">
           <div><div class="muted small">Score</div><div class="score-big">${u.score}</div></div>
-          <div><div class="muted small">Rank</div><div class="score-big">${u.rank ? '#' + u.rank : '—'}</div>
+          <div><div class="muted small">Standing</div><div class="score-big">${u.rank ? '#' + u.rank : '—'}</div>
             ${u.rank ? `<div class="muted small">of ${u.ranked_of}</div>` : ''}</div>
+          <div><div class="muted small">Rating</div>
+            <div class="score-big">${u.rated_contests ? u.rating : '—'}</div>
+            <div class="muted small">${u.rated_contests
+              ? `${u.rated_contests} rated contest${u.rated_contests === 1 ? '' : 's'}`
+              : 'no rated contests'}</div></div>
           <div><div class="muted small">Solved</div><div class="score-big">${u.solved_count}</div></div>
         </div>
       </div>
@@ -1468,6 +1532,7 @@ async function viewUser(username) {
     </div>
 
     ${activityCalendar(u.activity)}
+    ${ratingHistory(u.rating_history)}
 
     ${u.authored.length ? `
       <h2>Problems written</h2>
@@ -1990,11 +2055,14 @@ const ADMIN_FORMS = {
       { k: 'freeze_minutes', label: 'Freeze (min before end, 0 = none)', type: 'number', min: 0, max: 1440, w: 220 },
       { k: 'starts_at', label: 'Starts (your local time)', type: 'time', w: 210 },
       { k: 'ends_at', label: 'Ends (your local time)', type: 'time', w: 210 },
+      { k: 'rated', label: 'rated — results move competitors\u2019 ratings', type: 'check' },
     ],
     blank: () => {
       const now = new Date(Date.now() + state.clockSkewMs);
       return {
         title: '', description: '', scoring: 'icpc', penalty_minutes: 20, freeze_minutes: 0,
+        // Off by default: a contest has to be deliberately declared rated.
+        rated: false,
         starts_at: now.toISOString(), ends_at: new Date(now.getTime() + 3 * 3600e3).toISOString(),
       };
     },
@@ -2004,7 +2072,7 @@ const ADMIN_FORMS = {
       const body = {
         title: v.title || v.slug, description: v.description, scoring: v.scoring,
         penalty_minutes: v.penalty_minutes, freeze_minutes: v.freeze_minutes,
-        starts_at: v.starts_at, ends_at: v.ends_at,
+        starts_at: v.starts_at, ends_at: v.ends_at, rated: v.rated,
       };
       if (slug) await api(`/api/admin/contests/${encodeURIComponent(slug)}`, { method: 'PATCH', body });
       else await api('/api/admin/contests', { method: 'POST', body: { ...body, slug: v.slug } });

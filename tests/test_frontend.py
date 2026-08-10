@@ -79,6 +79,16 @@ def test_activity_calendar_suite():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
+def test_rank_badge_suite():
+    """Run tests/test_rank_badge.js and surface its output on failure."""
+    result = subprocess.run(
+        ["node", str(Path(__file__).parent / "test_rank_badge.js")],
+        capture_output=True, text=True, cwd=ROOT,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
 def test_every_script_parses():
     for script in sorted(WEB.glob("*.js")):
         result = subprocess.run(

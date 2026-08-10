@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from .. import contest, db, scoring
+from .. import contest, db, rating, scoring
 from .deps import current_user, is_admin, require_user, user_public
 
 router = APIRouter(prefix="/api", tags=["users"])
@@ -42,9 +42,34 @@ def mention_roster():
 
 @router.get("/leaderboard")
 def leaderboard(limit: int = Query(default=100, ge=1, le=500)):
+    standings = scoring.leaderboard(limit=limit)
+    # Two different measurements of the same people: the decayed score says
+    # what they have solved, the rating says how they place against each other.
+    # Neither derives from the other, so both travel with the row.
+    ratings = {
+        row["id"]: row
+        for row in db.query("SELECT id, rating, rated_contests FROM users")
+    }
+    for entry in standings:
+        user = ratings.get(entry["user_id"])
+        entry["rating"] = user["rating"] if user else rating.START_RATING
+        entry["rating_rank"] = (
+            rating.rank_dict(user["rating"], user["rated_contests"]) if user else None
+        )
     return {
         "decay": scoring.DECAY,
-        "standings": scoring.leaderboard(limit=limit),
+        "standings": standings,
+    }
+
+
+@router.get("/ranks")
+def rank_ladder():
+    """The whole ladder, so the site can draw a legend without reimplementing
+    any of the thresholds."""
+    return {
+        "ladder": rating.ladder(),
+        "start": rating.START_RATING,
+        "radiant_at": rating.RADIANT_AT,
     }
 
 
@@ -127,6 +152,10 @@ def profile(username: str, request: Request):
         "ranked_of": len(standings),
         "solved_count": len(solved),
         "solved": solved,
+        "rating": row["rating"],
+        "rating_rank": rating.rank_dict(row["rating"], row["rated_contests"]),
+        "rated_contests": row["rated_contests"],
+        "rating_history": contest.rating_history(row["id"]),
         "activity": submission_activity(row["id"], viewer),
         "authored": [
             {"slug": p["slug"], "title": p["title"], "points": p["points"]}

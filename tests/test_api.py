@@ -12,6 +12,7 @@ import pytest
 from stroj import db
 from stroj.api import routes_admin, routes_users
 from stroj.judge import worker
+from tests.conftest import _admin_password as _admin_pw
 
 
 def register(client, username="user1", password="password123"):
@@ -2380,3 +2381,136 @@ class TestTheActivityCalendarRespectsVisibility:
         admin_client.post("/api/auth/logout")
         register(client, "browser")
         assert client.get("/api/users/admin").json()["activity"]["total"] == 1
+
+
+class TestRatedContestsOverTheApi:
+    """The rating feature as the site sees it."""
+
+    def make_contest(self, admin_client, slug="rnd", *, rated=True, ended=True):
+        now = db.parse_time(db.utcnow())
+        iso = lambda d: d.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        span = ((now - timedelta(hours=3), now - timedelta(hours=1)) if ended
+                else (now - timedelta(minutes=5), now + timedelta(hours=1)))
+        response = admin_client.post("/api/admin/contests", json={
+            "slug": slug, "title": slug.title(), "description": "",
+            "starts_at": iso(span[0]), "ends_at": iso(span[1]),
+            "scoring": "ioi", "penalty_minutes": 0, "freeze_minutes": 0,
+            "rated": rated})
+        assert response.status_code == 200, response.text
+        return slug
+
+    def enter(self, slug, username, earned):
+        """Someone competes and finishes with `earned` percent."""
+        user = db.one("SELECT id FROM users WHERE username = ?", (username,))
+        contest_row = db.one("SELECT * FROM contests WHERE slug = ?", (slug,))
+        problem = db.one("SELECT id FROM problems LIMIT 1")
+        db.execute("INSERT OR IGNORE INTO contest_problems (contest_id, problem_id,"
+                   " label) VALUES (?, ?, 'A')", (contest_row["id"], problem["id"]))
+        db.insert(
+            "INSERT INTO submissions (user_id, problem_id, contest_id, language,"
+            " source, verdict, score, max_score, earned_percent, created_at)"
+            " VALUES (?, ?, ?, 'python3', '', 'AC', ?, 100, ?, ?)",
+            (user["id"], problem["id"], contest_row["id"], earned, earned,
+             contest_row["starts_at"]))
+
+    def test_a_contest_says_whether_it_counts(self, client, admin_client):
+        self.make_contest(admin_client, "rated-one", rated=True)
+        self.make_contest(admin_client, "practice", rated=False)
+        by_slug = {c["slug"]: c for c in client.get("/api/contests").json()["contests"]}
+        assert by_slug["rated-one"]["rated"] is True
+        assert by_slug["practice"]["rated"] is False
+
+    def test_rating_is_applied_and_shown_on_the_board(self, client, admin_client):
+        make_problem(admin_client)
+        register(client, "winner")
+        register(client, "runnerup")
+        admin_client.post("/api/auth/login", json={
+            "username": "admin", "password": _admin_pw()})
+        slug = self.make_contest(admin_client, "rnd")
+        self.enter(slug, "winner", 100)
+        self.enter(slug, "runnerup", 10)
+        assert admin_client.post("/api/admin/ratings/recompute").json()["changes"] == 2
+
+        board = client.get(f"/api/contests/{slug}/scoreboard").json()
+        by_name = {r["username"]: r for r in board["rows"]}
+        assert by_name["winner"]["rating"]["delta"] > 0
+        assert by_name["runnerup"]["rating"]["delta"] < 0
+        assert by_name["winner"]["rating"]["rank"]["name"]
+
+    def test_an_unrated_contest_carries_no_rating_column(self, client, admin_client):
+        make_problem(admin_client)
+        register(client, "someone")
+        admin_client.post("/api/auth/login", json={
+            "username": "admin", "password": _admin_pw()})
+        slug = self.make_contest(admin_client, "practice", rated=False)
+        self.enter(slug, "someone", 100)
+        admin_client.post("/api/admin/ratings/recompute")
+        board = client.get(f"/api/contests/{slug}/scoreboard").json()
+        assert all("rating" not in row for row in board["rows"])
+
+    def test_a_profile_carries_rating_rank_and_history(self, client, admin_client):
+        make_problem(admin_client)
+        register(client, "climber")
+        register(client, "other")
+        admin_client.post("/api/auth/login", json={
+            "username": "admin", "password": _admin_pw()})
+        slug = self.make_contest(admin_client, "rnd")
+        self.enter(slug, "climber", 100)
+        self.enter(slug, "other", 0)
+        admin_client.post("/api/admin/ratings/recompute")
+
+        profile = client.get("/api/users/climber").json()
+        assert profile["rated_contests"] == 1
+        assert profile["rating"] > 1000
+        assert profile["rating_rank"]["name"]
+        assert [h["contest_slug"] for h in profile["rating_history"]] == [slug]
+        assert profile["rating_history"][0]["delta"] > 0
+
+    def test_someone_who_never_competed_is_unranked(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "newcomer")
+        profile = client.get("/api/users/newcomer").json()
+        assert profile["rated_contests"] == 0
+        assert profile["rating_rank"] is None
+        assert profile["rating_history"] == []
+
+    def test_rank_does_not_shadow_leaderboard_position(self, client, admin_client):
+        """`rank` is the position on the users page; the ladder rank has its
+        own name. They were briefly the same key, which silently replaced one
+        with the other everywhere both appear."""
+        make_problem(admin_client)
+        register(client, "solver")
+        client.post("/api/submissions", json={
+            "problem": "a-plus-b", "language": "python3",
+            "source": "a, b = input().split()\nprint(int(a) + int(b))"})
+        worker.drain()
+        board = client.get("/api/leaderboard").json()["standings"]
+        assert board and isinstance(board[0]["rank"], int)
+        assert "rating_rank" in board[0]
+
+    def test_the_ladder_is_published_for_the_legend(self, client):
+        body = client.get("/api/ranks").json()
+        assert len(body["ladder"]) == 25
+        assert body["ladder"][0]["name"] == "Iron 1"
+        assert body["ladder"][-1]["name"] == "Radiant"
+        assert body["radiant_at"] > body["start"]
+
+    def test_only_admins_may_force_a_rebuild(self, client, admin_client):
+        admin_client.post("/api/auth/logout")
+        register(client, "meddler")
+        assert client.post("/api/admin/ratings/recompute").status_code == 403
+
+    def test_turning_rating_off_rebuilds_immediately(self, client, admin_client):
+        make_problem(admin_client)
+        register(client, "alpha")
+        register(client, "beta")
+        admin_client.post("/api/auth/login", json={
+            "username": "admin", "password": _admin_pw()})
+        slug = self.make_contest(admin_client, "rnd")
+        self.enter(slug, "alpha", 100)
+        self.enter(slug, "beta", 0)
+        admin_client.post("/api/admin/ratings/recompute")
+        assert client.get("/api/users/alpha").json()["rated_contests"] == 1
+
+        admin_client.patch(f"/api/admin/contests/{slug}", json={"rated": False})
+        assert client.get("/api/users/alpha").json()["rated_contests"] == 0
