@@ -391,7 +391,16 @@ function renderAccount() {
     // marks admins identically rather than having its own private styling.
     box.innerHTML = `
       ${userLink(state.user.username, state.user.role)}
+      ${viewingAsUser()
+        ? '<button class="small" id="view-as-off">Leave member view</button>'
+        : (state.user.is_admin
+          ? '<button class="small ghost" id="view-as-on" title="See the site as an ordinary member">Member view</button>'
+          : '')}
       <button class="small ghost" id="logout">Sign out</button>`;
+    const viewOn = $('#view-as-on');
+    if (viewOn) viewOn.onclick = () => setViewAsUser(true);
+    const viewOff = $('#view-as-off');
+    if (viewOff) viewOff.onclick = () => setViewAsUser(false);
     $('#logout').onclick = async () => {
       await api('/api/auth/logout', { method: 'POST' });
       state.user = null;
@@ -473,7 +482,16 @@ const view = () => $('#view');
 function setView(html, { wide = false } = {}) {
   const main = view();
   main.classList.toggle('wide', wide);
-  main.innerHTML = html;
+  // Prepended on every render rather than placed once, because the whole page
+  // is replaced on each route. Forgetting you are in member view and concluding
+  // the site is broken would be a worse bug than anything it helps you find.
+  main.innerHTML = (viewingAsUser()
+    ? `<div class="view-as-banner">Member view — the judge is answering as if
+         you were an ordinary member. Admin pages are unavailable until you
+         leave. <button class="small" data-view-as-off>Leave</button></div>`
+    : '') + html;
+  const leave = main.querySelector('[data-view-as-off]');
+  if (leave) leave.onclick = () => setViewAsUser(false);
 }
 
 /* ---- stream ---- */
@@ -1473,6 +1491,28 @@ function ratingHistory(history) {
     <div class="card"><div class="table-wrap"><table><tbody>${rows}</tbody></table></div></div>`;
 }
 
+
+
+/* ---- viewing the site as a member would see it ---- */
+
+/* An admin cannot audit what members see by looking at their own screen: the
+ * server has already decided they may see everything. Setting this cookie makes
+ * the server answer as it would for a member — hidden problems disappear,
+ * contest metadata seals, judge output goes away — so what is on screen is
+ * genuinely what a member gets, not a rehearsal of it. */
+const VIEW_AS_COOKIE = 'stroj_view_as';
+
+const viewingAsUser = () => document.cookie.split('; ')
+  .some((c) => c === `${VIEW_AS_COOKIE}=user`);
+
+function setViewAsUser(on) {
+  document.cookie = on
+    ? `${VIEW_AS_COOKIE}=user; path=/; SameSite=Lax`
+    : `${VIEW_AS_COOKIE}=; path=/; Max-Age=0; SameSite=Lax`;
+  // A full reload rather than a re-route: every cached payload on the page was
+  // fetched with the other set of privileges.
+  location.reload();
+}
 
 /* ---- how ranks and rating work ---- */
 

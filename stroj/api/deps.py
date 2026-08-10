@@ -10,8 +10,33 @@ from .. import auth, contest, db, rating
 from ..judge.runner import CE, VERDICT_NAMES
 
 
-def current_user(request: Request) -> sqlite3.Row | None:
-    return auth.user_for_token(request.cookies.get(auth.SESSION_COOKIE))
+#: Set by an admin who wants to browse as an ordinary member would.
+VIEW_AS_COOKIE = "stroj_view_as"
+
+
+def current_user(request: Request) -> sqlite3.Row | dict | None:
+    """Who is making this request — possibly with their admin role set aside.
+
+    An admin cannot check what members can see by looking at their own screen,
+    because the server has already decided they may see everything. The honest
+    way to answer "is this leaking?" is to make the server answer as it would
+    for a member, which is what this cookie does: the role is dropped here,
+    once, so every `is_admin` check downstream simply comes out False. Hidden
+    problems vanish from listings, contest metadata seals, judge output goes
+    away, and `/api/admin/*` returns 403 — not because the page is pretending,
+    but because the request really is an ordinary one now.
+
+    It can only ever take privilege away, and only from someone who had it, so
+    a member setting the cookie by hand gains nothing.
+    """
+    user = auth.user_for_token(request.cookies.get(auth.SESSION_COOKIE))
+    if user is None or user["role"] != "admin":
+        return user
+    if request.cookies.get(VIEW_AS_COOKIE) != "user":
+        return user
+    demoted = dict(user)
+    demoted["role"] = "user"
+    return demoted
 
 
 def require_user(request: Request) -> sqlite3.Row:

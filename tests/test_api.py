@@ -2567,3 +2567,103 @@ class TestTheRankExplainer:
                    if r["from"] <= body["start"] and (r["to"] is None
                                                       or body["start"] <= r["to"])]
         assert len(holding) == 1
+
+
+class TestMemberView:
+    """An admin browsing with their privileges set aside.
+
+    The value is that the *server* answers as it would for a member, so what
+    the admin sees is what members get rather than a client-side imitation
+    that could disagree with the API in exactly the places that matter."""
+
+    AS_USER = {"stroj_view_as": "user"}
+
+    def test_hidden_problems_disappear_from_the_listing(self, admin_client):
+        make_problem(admin_client, slug="secret", visible=False)
+        make_problem(admin_client, slug="open", visible=True)
+        seen = admin_client.get("/api/problems", cookies=self.AS_USER).json()["problems"]
+        assert [p["slug"] for p in seen] == ["open"]
+
+    def test_a_hidden_problem_is_a_404_like_it_would_be(self, admin_client):
+        make_problem(admin_client, slug="secret", visible=False)
+        assert admin_client.get("/api/problems/secret").status_code == 200
+        assert admin_client.get(
+            "/api/problems/secret", cookies=self.AS_USER).status_code == 404
+
+    def test_types_used_only_by_hidden_problems_never_appear(self, admin_client):
+        """The point of the exercise: a type nobody can see a problem for tells
+        members what the unreleased problems are about."""
+        make_problem(admin_client, slug="open", visible=True)
+        admin_client.patch("/api/admin/problems/open", json={"types": ["arrays"]})
+        make_problem(admin_client, slug="secret", visible=False)
+        admin_client.patch("/api/admin/problems/secret",
+                           json={"types": ["segment tree", "flows"]})
+        seen = admin_client.get("/api/problems", cookies=self.AS_USER).json()["problems"]
+        vocabulary = {t for p in seen for t in p["types"]}
+        assert vocabulary == {"arrays"}
+
+    def test_contest_metadata_seals_the_way_it_would(self, admin_client):
+        make_problem(admin_client, slug="cprob", visible=False)
+        admin_client.patch("/api/admin/problems/cprob",
+                           json={"types": ["binary search"], "points": 175})
+        now = db.parse_time(db.utcnow())
+        iso = lambda d: d.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        admin_client.post("/api/admin/contests", json={
+            "slug": "live", "title": "Live", "description": "",
+            "starts_at": iso(now - timedelta(minutes=5)),
+            "ends_at": iso(now + timedelta(hours=1)),
+            "scoring": "ioi", "penalty_minutes": 0, "freeze_minutes": 0})
+        admin_client.put("/api/admin/contests/live/problems",
+                         json={"problems": [{"slug": "cprob"}]})
+
+        plain = admin_client.get("/api/problems/cprob").json()
+        assert plain["points"] == 175 and plain["types"] == ["binary search"]
+        member = admin_client.get("/api/problems/cprob", cookies=self.AS_USER).json()
+        assert member["points"] is None and member["types"] == []
+        assert member["metadata_sealed"] is True
+
+    def test_admin_endpoints_are_closed_while_previewing(self, admin_client):
+        """Not decoration: an admin should not be able to edit from inside a
+        view that is pretending they cannot."""
+        assert admin_client.get("/api/admin/users").status_code == 200
+        assert admin_client.get(
+            "/api/admin/users", cookies=self.AS_USER).status_code == 403
+
+    def test_the_admin_is_still_signed_in_as_themselves(self, admin_client):
+        me = admin_client.get("/api/auth/me", cookies=self.AS_USER).json()["user"]
+        assert me["username"] == "admin"
+        assert me["is_admin"] is False, "the role is what is set aside, not the login"
+
+    def test_it_only_ever_removes_privilege(self, client, admin_client):
+        """A member setting the cookie by hand gains nothing."""
+        admin_client.post("/api/auth/logout")
+        register(client, "ordinary")
+        assert client.get("/api/admin/users", cookies=self.AS_USER).status_code == 403
+        me = client.get("/api/auth/me", cookies=self.AS_USER).json()["user"]
+        assert me["is_admin"] is False
+
+    def test_leaving_restores_everything(self, admin_client):
+        make_problem(admin_client, slug="secret", visible=False)
+        assert admin_client.get(
+            "/api/problems", cookies=self.AS_USER).json()["problems"] == []
+        after = admin_client.get("/api/problems").json()["problems"]
+        assert [p["slug"] for p in after] == ["secret"]
+
+
+def test_a_type_used_only_by_hidden_problems_reaches_no_member(client, admin_client):
+    """The type filter is built from whatever problems the listing returns, so
+    a type nobody can see a problem for would advertise what the unreleased set
+    is about. Asserted with a real member rather than an admin in member view,
+    so it holds even if that feature changes."""
+    make_problem(admin_client, slug="open", visible=True)
+    admin_client.patch("/api/admin/problems/open", json={"types": ["arrays"]})
+    make_problem(admin_client, slug="secret", visible=False)
+    admin_client.patch("/api/admin/problems/secret",
+                       json={"types": ["segment tree", "flows"]})
+    admin_client.post("/api/auth/logout")
+    register(client, "member")
+
+    problems = client.get("/api/problems").json()["problems"]
+    vocabulary = {t for p in problems for t in p["types"]}
+    assert vocabulary == {"arrays"}
+    assert "segment tree" not in vocabulary and "flows" not in vocabulary
