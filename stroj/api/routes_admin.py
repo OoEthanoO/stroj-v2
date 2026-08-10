@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import io
+import os
 import pathlib
 import re
+import secrets
 import sqlite3
+import time
 import zipfile
 
 from fastapi import (
@@ -391,12 +394,28 @@ def replace_tests(slug: str, body: TestsBody):
 @router.post("/problems/{slug}/tests/upload")
 async def upload_tests(
     slug: str,
-    archive: UploadFile = File(...),
+    archive: UploadFile | None = File(default=None),
+    token: str = Form(default=""),
     samples: int = Form(default=0),
 ):
-    """Replace the whole test set from a zip of ``1.in`` / ``1.out`` pairs."""
+    """Replace the whole test set from a zip of ``1.in`` / ``1.out`` pairs.
+
+    Either send the archive, or send the ``token`` from a prior inspect and the
+    already-uploaded bytes are reused.
+    """
     problem = _problem_or_404(slug)
-    data = await archive.read(MAX_UPLOAD_BYTES + 1)
+    if token:
+        staged = _staged_path(token)
+        if not staged.exists():
+            raise HTTPException(
+                status_code=410,
+                detail="That archive is no longer staged. Choose the file again.",
+            )
+        data = staged.read_bytes()
+    elif archive is not None:
+        data = await archive.read(MAX_UPLOAD_BYTES + 1)
+    else:
+        raise HTTPException(status_code=400, detail="No archive given.")
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Archive is too large.")
     try:
@@ -408,6 +427,8 @@ async def upload_tests(
         )
     except testdata.TestDataError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    if token:
+        _staged_path(token).unlink(missing_ok=True)
     return {"tests": count, "subtasks": parsed.subtasks}
 
 
@@ -508,6 +529,38 @@ async def bulk_submit(
     return {"submitted": submitted, "skipped": skipped}
 
 
+#: Inspected archives wait here for the Create button. A real test set runs to
+#: tens of megabytes, and uploading it once to validate and again to store
+#: doubles the slowest step of authoring a problem.
+STAGING_DIR = config.DATA_DIR / "staging"
+
+#: How long a staged archive survives. Long enough to write a statement around
+#: it, short enough that an abandoned upload does not sit on disk forever.
+STAGING_TTL_S = 6 * 60 * 60
+
+TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _sweep_staging() -> None:
+    """Delete staged archives past their welcome. Called on each new stage, so
+    there is no background task to supervise."""
+    cutoff = time.time() - STAGING_TTL_S
+    try:
+        for path in STAGING_DIR.glob("*.zip"):
+            if path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+    except OSError:
+        pass  # housekeeping must never fail an upload
+
+
+def _staged_path(token: str) -> pathlib.Path:
+    # The token reaches us from the client, so it names a file only after it is
+    # proven to be 32 hex characters and nothing else.
+    if not TOKEN_RE.match(token):
+        raise HTTPException(status_code=400, detail="Malformed archive token.")
+    return STAGING_DIR / f"{token}.zip"
+
+
 @router.post("/testdata/inspect")
 async def inspect_testdata(archive: UploadFile = File(...)):
     """Parse a test-data archive without touching the database.
@@ -515,6 +568,9 @@ async def inspect_testdata(archive: UploadFile = File(...)):
     Authoring order is naturally test-data-first: you have the tests before you
     have a slug. Validating up front means a malformed zip is rejected while
     nothing exists yet, instead of leaving behind a problem with no tests.
+
+    The bytes are kept under a token so that creating the problem can reuse
+    them instead of asking for the whole archive a second time.
     """
     data = await archive.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
@@ -524,6 +580,17 @@ async def inspect_testdata(archive: UploadFile = File(...)):
     except testdata.TestDataError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
+    token = secrets.token_hex(16)
+    try:
+        STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(STAGING_DIR, 0o700)
+        _sweep_staging()
+        _staged_path(token).write_bytes(data)
+    except OSError:
+        # Staging is an optimisation. If the disk says no, the client still has
+        # the file and can upload it again with the problem.
+        token = ""
+
     tests = parsed.tests
     first = tests[0]
     return {
@@ -531,6 +598,7 @@ async def inspect_testdata(archive: UploadFile = File(...)):
         "samples": sum(1 for t in tests if t["is_sample"]),
         "subtasks": parsed.subtasks,
         "bytes": sum(len(t["input"]) + len(t["output"]) for t in tests),
+        "token": token,
         # Enough of the first case to eyeball that the pairing is right.
         "preview": {
             "input": first["input"][:400],

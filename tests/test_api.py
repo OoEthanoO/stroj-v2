@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import io
+import re
 import zipfile
 from datetime import timedelta
 
 import pytest
 
 from stroj import db
+from stroj.api import routes_admin
 from stroj.judge import worker
 
 
@@ -2157,3 +2159,78 @@ class TestBothSubmissionRoutesAgree:
         admin_client.post("/api/auth/logout")
         register(client, "reader")
         assert "source" not in client.get(f"/api/submissions/{sid}").json()
+
+
+class TestTestDataIsUploadedOnce:
+    """Inspecting an archive and then creating the problem used to send the
+    whole thing twice. A real test set runs to tens of megabytes, so the second
+    copy was the slowest step in authoring a problem."""
+
+    def archive(self) -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as z:
+            z.writestr("sample1.in", "1 1\n")
+            z.writestr("sample1.out", "2\n")
+            z.writestr("2.in", "3 4\n")
+            z.writestr("2.out", "7\n")
+        return buffer.getvalue()
+
+    def inspect(self, admin_client):
+        response = admin_client.post(
+            "/api/admin/testdata/inspect",
+            files={"archive": ("t.zip", self.archive(), "application/zip")})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def test_inspect_hands_back_a_token(self, admin_client):
+        assert re.fullmatch(r"[0-9a-f]{32}", self.inspect(admin_client)["token"])
+
+    def test_the_token_stands_in_for_the_archive(self, admin_client):
+        token = self.inspect(admin_client)["token"]
+        admin_client.post("/api/admin/problems", json={"slug": "staged", "title": "S"})
+        response = admin_client.post("/api/admin/problems/staged/tests/upload",
+                                     data={"token": token, "samples": "1"})
+        assert response.status_code == 200, response.text
+        assert response.json()["tests"] == 2
+        tests = admin_client.get("/api/admin/problems/staged/tests").json()["tests"]
+        assert [t["is_sample"] for t in tests] == [True, False]
+
+    def test_the_staged_copy_is_dropped_once_used(self, admin_client):
+        """Otherwise every authored problem leaves its archive on disk."""
+        token = self.inspect(admin_client)["token"]
+        admin_client.post("/api/admin/problems", json={"slug": "staged", "title": "S"})
+        admin_client.post("/api/admin/problems/staged/tests/upload",
+                          json=None, data={"token": token})
+        assert not routes_admin._staged_path(token).exists()
+
+    def test_a_spent_token_reports_410_so_the_client_can_resend(self, admin_client):
+        token = self.inspect(admin_client)["token"]
+        routes_admin._staged_path(token).unlink()
+        admin_client.post("/api/admin/problems", json={"slug": "staged", "title": "S"})
+        response = admin_client.post("/api/admin/problems/staged/tests/upload",
+                                     data={"token": token})
+        assert response.status_code == 410
+
+    def test_a_token_cannot_name_a_file_outside_staging(self, admin_client):
+        """The token reaches the server from the client, so it is a path until
+        proven otherwise."""
+        admin_client.post("/api/admin/problems", json={"slug": "staged", "title": "S"})
+        for evil in ("../../etc/passwd", "..", "a/b", "ZZZZ" * 8):
+            response = admin_client.post("/api/admin/problems/staged/tests/upload",
+                                         data={"token": evil})
+            assert response.status_code == 400, f"{evil} -> {response.status_code}"
+
+    def test_sending_the_archive_still_works(self, admin_client):
+        """The problem editor uploads directly, with no inspect step."""
+        admin_client.post("/api/admin/problems", json={"slug": "direct", "title": "D"})
+        response = admin_client.post(
+            "/api/admin/problems/direct/tests/upload",
+            files={"archive": ("t.zip", self.archive(), "application/zip")},
+            data={"samples": "1"})
+        assert response.status_code == 200, response.text
+        assert response.json()["tests"] == 2
+
+    def test_neither_archive_nor_token_is_a_clean_400(self, admin_client):
+        admin_client.post("/api/admin/problems", json={"slug": "empty", "title": "E"})
+        assert admin_client.post(
+            "/api/admin/problems/empty/tests/upload").status_code == 400

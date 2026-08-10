@@ -1985,11 +1985,14 @@ async function viewAdmin() {
   // Validated archive, held in the browser until the problem exists to attach
   // it to. Null means either nothing chosen or the last check failed.
   let pendingTests = null;
+  // Receipt for the copy inspection already left on the judge.
+  let pendingToken = '';
 
   $('#p-tests').onchange = async () => {
     const input = $('#p-tests');
     const status = $('#p-tests-status');
     pendingTests = null;
+    pendingToken = '';
     if (!input.files.length) { status.textContent = ''; return; }
 
     status.className = 'small muted';
@@ -1999,6 +2002,7 @@ async function viewAdmin() {
     try {
       const found = await api('/api/admin/testdata/inspect', { method: 'POST', form });
       pendingTests = input.files[0];
+      pendingToken = found.token || '';
       status.className = 'small';
       status.style.color = 'var(--ok)';
       status.textContent =
@@ -2040,11 +2044,26 @@ async function viewAdmin() {
 
     if (pendingTests) {
       const form = new FormData();
-      form.append('archive', pendingTests);
+      // Inspection already carried these bytes to the judge; send the receipt
+      // instead of the archive. A real test set is tens of megabytes and
+      // uploading it twice was the slowest part of authoring a problem.
+      if (pendingToken) form.append('token', pendingToken);
+      else form.append('archive', pendingTests);
       try {
-        const result = await api(
-          `/api/admin/problems/${encodeURIComponent(slug)}/tests/upload`,
-          { method: 'POST', form });
+        let result;
+        try {
+          result = await api(
+            `/api/admin/problems/${encodeURIComponent(slug)}/tests/upload`,
+            { method: 'POST', form });
+        } catch (err) {
+          // 410: the staged copy expired or was swept. We still hold the file.
+          if (err.status !== 410) throw err;
+          const retry = new FormData();
+          retry.append('archive', pendingTests);
+          result = await api(
+            `/api/admin/problems/${encodeURIComponent(slug)}/tests/upload`,
+            { method: 'POST', form: retry });
+        }
         toast(`Created with ${result.tests} test case(s).`, 'good');
         newProblemDraft.clear();
       } catch (err) {
