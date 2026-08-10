@@ -1315,6 +1315,7 @@ async function viewUsers() {
         </span></span>
       <div class="spacer"></div>
       ${total ? '<input id="user-search" class="search" type="search" placeholder="Search users" autocomplete="off">' : ''}
+      <a class="btn small" href="#/ranks">Ranks &amp; rating</a>
       <span class="muted small" id="user-count">${total} ranked</span></div>
 
     ${total
@@ -1472,6 +1473,91 @@ function ratingHistory(history) {
     <div class="card"><div class="table-wrap"><table><tbody>${rows}</tbody></table></div></div>`;
 }
 
+
+/* ---- how ranks and rating work ---- */
+
+async function viewRanks() {
+  const info = await api('/api/ranks');
+  const start = info.ladder.find((r) => info.start >= r.from
+    && (r.to === null || info.start <= r.to));
+
+  // Grouped by tier so the shape of the ladder is visible at a glance: eight
+  // tiers of three, then one that stands alone.
+  const tiers = [];
+  for (const rung of info.ladder) {
+    const last = tiers[tiers.length - 1];
+    if (last && last.tier === rung.tier) last.rungs.push(rung);
+    else tiers.push({ tier: rung.tier, rungs: [rung] });
+  }
+
+  const tierRows = tiers.map(({ tier, rungs }) => `
+    <tr>
+      <td class="wide">${rungs.map((r) => rankBadge(
+        { tier: r.tier, division: r.division, name: r.name, index: r.index })).join(' ')}</td>
+      <td class="num mono small muted">${rungs[0].from}${
+        rungs[rungs.length - 1].to === null ? '+' : ' – ' + rungs[rungs.length - 1].to}</td>
+    </tr>`).join('');
+
+  const movement = info.movement.map((m) => `
+    <tr><td class="wide">${esc(m.who)}</td>
+        <td class="num mono">±${m.max_move}</td></tr>`).join('');
+
+  setView(`
+    <div class="page-head"><h1>Ranks &amp; rating</h1>
+      <div class="spacer"></div>
+      <a class="btn small" href="#/users">← users</a></div>
+
+    <div class="statement" style="max-width:70ch">
+      <p>Every <strong>rated</strong> contest moves your rating. Unrated ones —
+        practice, and anything the organisers mark as such — never do. A contest
+        says which it is on the contests page, before you enter.</p>
+      <p>You start at <strong>${info.start}</strong>, which is
+        ${start ? rankBadge({ tier: start.tier, division: start.division, name: start.name }) : ''},
+        and you are <em>Unranked</em> until you finish your first rated contest.
+        Until then the number is a placeholder, not a standing.</p>
+    </div>
+
+    <div class="grid-2">
+      <div>
+        <h2>The ladder</h2>
+        <div class="card"><div class="table-wrap"><table><tbody>${tierRows}</tbody></table></div>
+          <p class="muted small" style="margin-bottom:0">Eight tiers of three
+            divisions, counting upward — Iron 1 is the bottom of Iron, Iron 3
+            the top. Radiant has no divisions; it starts at
+            <strong>${info.radiant_at}</strong> and is meant to be reached by
+            one person in a season, if anyone.</p></div>
+      </div>
+
+      <div>
+        <h2>How far one contest moves you</h2>
+        <div class="card"><div class="table-wrap"><table><tbody>${movement}</tbody></table></div>
+          <p class="muted small" style="margin-bottom:0">A division is
+            ${info.rank_width} points, so a regular week is worth about one.</p></div>
+
+        <h2>How the number is worked out</h2>
+        <div class="card statement">
+      <p>You are scored against <em>everyone else who entered</em>, as though you
+        had played each of them one-on-one: you beat everyone you finished above.
+        Finishing above someone rated higher than you is worth more than
+        finishing above someone rated lower, because the first was less
+        expected.</p>
+      <p>The result is averaged over the field, so a contest is worth about the
+        same whether four people enter or forty. A quiet week is not a cheap
+        week, and a busy one is not a jackpot.</p>
+      <p>How far you actually move depends on how well the judge knows you. Your
+        first ${info.placement_contests} contests move you a long way, because it
+        has no idea yet. After that your rating settles and each week nudges it,
+        so one bad contest cannot undo a term.</p>
+      <p><strong>Missing contests costs you nothing.</strong> Your rating does not
+        decay while you are away. What changes is certainty: after a few weeks
+        off, the judge is less sure the number still describes you, so your next
+        result counts for more and puts you back where you belong faster. After
+        about ${info.weeks_to_forget} weeks away it treats you as new again.</p>
+        </div>
+      </div>
+    </div>`);
+}
+
 /* ---- user profile ---- */
 
 async function viewUser(username) {
@@ -1500,7 +1586,10 @@ async function viewUser(username) {
 
     <div class="grid-2">
       <div class="card">
-        <div class="row" style="margin-bottom:14px">${rankBadge(u.rating_rank)}</div>
+        <div class="row" style="margin-bottom:14px">
+          <a href="#/ranks" class="rank-link" title="How ranks and rating work"
+            >${rankBadge(u.rating_rank)}</a>
+        </div>
         <div class="row" style="align-items:flex-end;gap:26px">
           <div><div class="muted small">Score</div><div class="score-big">${u.score}</div></div>
           <div><div class="muted small">Standing</div><div class="score-big">${u.rank ? '#' + u.rank : '—'}</div>
@@ -2416,6 +2505,7 @@ async function route() {
         else await viewContest(decodeURIComponent(parts[1] || ''));
         break;
       case 'users': await viewUsers(); break;
+      case 'ranks': await viewRanks(); break;
       // The page was called the leaderboard until it grew search and sorting.
       // Links to it are already out there, and the default case would land
       // them on the stream instead of the page they asked for.

@@ -274,3 +274,59 @@ def ladder() -> list[dict]:
             }
         )
     return rungs
+
+
+def placement_contests(field: int = 15) -> int:
+    """How many contests it takes a newcomer to reach a settled rating.
+
+    Derived by running the real decay rather than stated as a number, so the
+    page explaining the system cannot drift from the system.
+    """
+    deviation = DEVIATION_NEW
+    for played in range(1, 50):
+        deviation = shrunk_deviation(deviation, field)
+        if deviation <= DEVIATION_MIN:
+            return played
+    return 0
+
+
+def explain() -> dict:
+    """Everything the site needs to describe the system truthfully.
+
+    All of it computed from the constants above, so the explanation is a view
+    of the implementation rather than a second copy of it that some later
+    tuning forgets to update.
+    """
+    settled_weekly = grown_deviation(DEVIATION_MIN, PERIOD_DAYS)
+    return {
+        "start": START_RATING,
+        "radiant_at": RADIANT_AT,
+        "rank_width": RANK_WIDTH,
+        "placement_contests": placement_contests(),
+        "period_days": int(PERIOD_DAYS),
+        "weeks_to_forget": int(PERIODS_TO_FORGET),
+        # What one contest can do to you, by how well you are known. The
+        # spread between the first and last row is the whole timing mechanic.
+        "movement": [
+            {
+                "who": "Your first contest",
+                "max_move": round(k_factor(DEVIATION_NEW)),
+            },
+            {
+                "who": f"Still placing (first {placement_contests()} contests)",
+                "max_move": round(k_factor(shrunk_deviation(DEVIATION_NEW, 15))),
+            },
+            {
+                "who": "Competing every week",
+                "max_move": round(k_factor(settled_weekly)),
+            },
+            {
+                "who": "Back after a month away",
+                "max_move": round(k_factor(grown_deviation(DEVIATION_MIN, 28))),
+            },
+            {
+                "who": "Back after a term away",
+                "max_move": round(k_factor(grown_deviation(DEVIATION_MIN, 84))),
+            },
+        ],
+    }

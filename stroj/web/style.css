@@ -647,3 +647,8 @@ tr.you { outline: 2px solid var(--accent); outline-offset: -2px; }
 .ladder { display: flex; flex-wrap: wrap; gap: 6px; }
 .ladder .rung { display: flex; align-items: center; gap: 6px; }
 .ladder .rung .muted { font-size: 11px; }
+
+/* The badge doubles as the way in to the explanation, so it must not look
+   like ordinary link text. */
+.rank-link { text-decoration: none; }
+.rank-link:hover .rank-badge { filter: brightness(1.12); }

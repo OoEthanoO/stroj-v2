@@ -66,11 +66,7 @@ def leaderboard(limit: int = Query(default=100, ge=1, le=500)):
 def rank_ladder():
     """The whole ladder, so the site can draw a legend without reimplementing
     any of the thresholds."""
-    return {
-        "ladder": rating.ladder(),
-        "start": rating.START_RATING,
-        "radiant_at": rating.RADIANT_AT,
-    }
+    return {"ladder": rating.ladder(), **rating.explain()}
 
 
 def submission_activity(

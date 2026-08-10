@@ -2514,3 +2514,56 @@ class TestRatedContestsOverTheApi:
 
         admin_client.patch(f"/api/admin/contests/{slug}", json={"rated": False})
         assert client.get("/api/users/alpha").json()["rated_contests"] == 0
+
+
+class TestTheRankExplainer:
+    """The ranks page is a view of the rating module, not a second copy of it.
+    These pin that: every number the page shows comes from the endpoint, and
+    the endpoint derives it from the constants that actually run."""
+
+    def body(self, client):
+        response = client.get("/api/ranks")
+        assert response.status_code == 200
+        return response.json()
+
+    def test_it_is_readable_without_signing_in(self, client):
+        """Someone deciding whether to join should be able to read the rules."""
+        assert self.body(client)["ladder"]
+
+    def test_the_ladder_arrives_whole(self, client):
+        ladder = self.body(client)["ladder"]
+        assert len(ladder) == 25
+        assert ladder[0]["name"] == "Iron 1"
+        assert ladder[-1]["name"] == "Radiant" and ladder[-1]["to"] is None
+
+    def test_the_page_can_state_the_mechanics_without_hardcoding_them(self, client):
+        body = self.body(client)
+        for key in ("start", "radiant_at", "rank_width", "placement_contests",
+                    "weeks_to_forget", "movement"):
+            assert key in body, key
+
+    def test_movement_shows_the_timing_effect(self, client):
+        """The gap between these rows is the whole reason the system is not
+        plain Elo, so the page has to be able to show it."""
+        moves = {m["who"]: m["max_move"] for m in self.body(client)["movement"]}
+        first = next(v for k, v in moves.items() if "first contest" in k)
+        weekly = next(v for k, v in moves.items() if "every week" in k)
+        away = next(v for k, v in moves.items() if "term away" in k)
+        assert first > away > weekly
+
+    def test_the_numbers_match_the_module(self, client):
+        from stroj import rating as module
+        body = self.body(client)
+        assert body["start"] == module.START_RATING
+        assert body["radiant_at"] == module.RADIANT_AT
+        assert body["rank_width"] == module.RANK_WIDTH
+        assert body["placement_contests"] == module.placement_contests()
+
+    def test_the_starting_rating_sits_on_the_published_ladder(self, client):
+        """The page says 'you start at N, which is <rank>' — that has to be a
+        rung the same payload describes."""
+        body = self.body(client)
+        holding = [r for r in body["ladder"]
+                   if r["from"] <= body["start"] and (r["to"] is None
+                                                      or body["start"] <= r["to"])]
+        assert len(holding) == 1
