@@ -2066,3 +2066,94 @@ class TestTheScoreboardKeepsTheSealBeforeTheStart:
         detail = client.get("/api/contests/diag").json()
         assert detail["sealed"] is True
         assert detail["problems"] == self.board(client)["problems"] == []
+
+
+class TestBothSubmissionRoutesAgree:
+    """The submissions list filters hidden problems and live contests in SQL.
+    Fetching one submission by id bypassed all of it — the id is a small
+    integer, so the whole list was readable by counting upwards.
+
+    Every case here asserts the list and the by-id route give the same answer,
+    because the bug was that they did not.
+    """
+
+    def visible_to(self, client, sid):
+        listed = sid in [s["id"] for s in
+                         client.get("/api/submissions?limit=200").json()["submissions"]]
+        direct = client.get(f"/api/submissions/{sid}").status_code == 200
+        assert listed == direct, (
+            f"list says {listed} but by-id says {direct} for submission {sid}")
+        return direct
+
+    def contest_submission(self, admin_client, *, running: bool, visible: bool = False):
+        make_problem(admin_client, slug="cprob", visible=visible)
+        now = db.parse_time(db.utcnow())
+        iso = lambda d: d.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        span = ((now - timedelta(minutes=5), now + timedelta(minutes=25)) if running
+                else (now - timedelta(hours=3), now - timedelta(hours=1)))
+        cid = db.insert(
+            "INSERT INTO contests (slug, title, description, starts_at, ends_at,"
+            " scoring, penalty_minutes, created_at)"
+            " VALUES ('diag','Diagnostic','',?,?,'ioi',0,?)",
+            (iso(span[0]), iso(span[1]), db.utcnow()))
+        pid = db.one("SELECT id FROM problems WHERE slug='cprob'")["id"]
+        db.execute("INSERT INTO contest_problems (contest_id, problem_id, label)"
+                   " VALUES (?,?, 'A')", (cid, pid))
+        rival = db.insert("INSERT INTO users (username, password_hash, created_at)"
+                          " VALUES ('rival','x',?)", (db.utcnow(),))
+        return db.insert(
+            "INSERT INTO submissions (user_id, problem_id, contest_id, language,"
+            " source, verdict, score, max_score, created_at)"
+            " VALUES (?,?,?,'python3','print(1)','AC',9,9,?)",
+            (rival, pid, cid, iso(span[0] + timedelta(minutes=1))))
+
+    def test_a_practice_run_on_a_hidden_problem_is_not_readable(self, client, admin_client):
+        """Calibration runs are the setter's own working."""
+        make_problem(admin_client, slug="secret", visible=False)
+        sid = admin_client.post("/api/submissions", json={
+            "problem": "secret", "language": "python3", "source": "print(1)"}).json()["id"]
+        admin_client.post("/api/auth/logout")
+        register(client, "nosy")
+        assert self.visible_to(client, sid) is False
+
+    def test_a_live_contest_entry_is_not_readable(self, client, admin_client):
+        """Otherwise the frozen scoreboard is decoration: poll the ids instead."""
+        sid = self.contest_submission(admin_client, running=True)
+        admin_client.post("/api/auth/logout")
+        register(client, "opponent")
+        assert self.visible_to(client, sid) is False
+
+    def test_it_opens_up_once_the_contest_ends(self, client, admin_client):
+        sid = self.contest_submission(admin_client, running=False)
+        admin_client.post("/api/auth/logout")
+        register(client, "afterwards")
+        assert self.visible_to(client, sid) is True
+
+    def test_a_published_problem_is_readable(self, client, admin_client):
+        make_problem(admin_client)
+        sid = admin_client.post("/api/submissions", json={
+            "problem": "a-plus-b", "language": "python3", "source": "print(1)"}).json()["id"]
+        admin_client.post("/api/auth/logout")
+        register(client, "browser")
+        assert self.visible_to(client, sid) is True
+
+    def test_you_can_always_read_your_own(self, client, admin_client):
+        """Hiding a contestant's own result from them would be pointless."""
+        make_problem(admin_client, slug="secret", visible=False)
+        admin_client.post("/api/auth/logout")
+        register(client, "author")
+        db.execute("UPDATE problems SET visible = 1 WHERE slug = 'secret'")
+        sid = client.post("/api/submissions", json={
+            "problem": "secret", "language": "python3", "source": "print(1)"}).json()["id"]
+        db.execute("UPDATE problems SET visible = 0 WHERE slug = 'secret'")
+        assert client.get(f"/api/submissions/{sid}").status_code == 200
+
+    def test_an_admin_reads_everything(self, admin_client):
+        sid = self.contest_submission(admin_client, running=True)
+        assert admin_client.get(f"/api/submissions/{sid}").status_code == 200
+
+    def test_the_source_stays_private_either_way(self, client, admin_client):
+        sid = self.contest_submission(admin_client, running=False)
+        admin_client.post("/api/auth/logout")
+        register(client, "reader")
+        assert "source" not in client.get(f"/api/submissions/{sid}").json()

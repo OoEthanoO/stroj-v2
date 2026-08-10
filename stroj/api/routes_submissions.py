@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
@@ -38,12 +40,34 @@ STARTED_AT = db.utcnow()
 _JOINED = """
 SELECT s.*, u.username AS username, u.role AS user_role,
        p.slug AS problem_slug, p.title AS problem_title,
+       p.visible AS problem_visible,
        c.slug AS contest_slug
   FROM submissions s
   JOIN users u    ON u.id = s.user_id
   JOIN problems p ON p.id = s.problem_id
   LEFT JOIN contests c ON c.id = s.contest_id
 """
+
+#: The same rule `list_submissions` applies in SQL, for one already-loaded row.
+#:
+#: The list has to express this as a WHERE clause because it paginates; reading
+#: one submission by id does not. Keeping the two in sync matters more than the
+#: duplication costs: fetching by id used to bypass the list's filters
+#: completely, which handed out live contest results the frozen scoreboard was
+#: busy withholding. `TestBothSubmissionRoutesAgree` pins them together.
+def may_read_submission(row: sqlite3.Row, user: sqlite3.Row | None) -> bool:
+    if is_admin(user) or (user is not None and user["id"] == row["user_id"]):
+        return True
+    # A practice run on an unpublished problem is the setter's own working.
+    if not row["problem_visible"] and row["contest_id"] is None:
+        return False
+    if row["contest_id"] is not None:
+        contest_row = db.one(
+            "SELECT * FROM contests WHERE id = ?", (row["contest_id"],)
+        )
+        if contest_row is not None and contest_mod.is_running(contest_row):
+            return False
+    return True
 
 
 class SubmitBody(BaseModel):
@@ -304,7 +328,7 @@ def abort_submission(submission_id: int, request: Request):
 def get_submission(submission_id: int, request: Request):
     user = current_user(request)
     row = db.one(_JOINED + " WHERE s.id = ?", (submission_id,))
-    if row is None:
+    if row is None or not may_read_submission(row, user):
         raise HTTPException(status_code=404, detail="No such submission.")
 
     data = submission_public(row, user, with_source=True)
