@@ -1813,3 +1813,87 @@ class TestAPerLanguageLimitReachesTheRuntime:
         source = pathlib.Path(runner.__file__).read_text()
         assert "lang.run_argv(problem.memory_limit_mb)" not in source
         assert "lang.run_argv(memory_limit_mb)" in source
+
+
+class TestAContestHidesPointsAndTypes:
+    """A problem's point value rates it against the archive and its type tags
+    name the technique. Both are hints, so a running contest withholds them."""
+
+    def setup_contest(self, admin_client, *, running: bool, visible: bool = False):
+        make_problem(admin_client, slug="secret", visible=visible)
+        admin_client.patch("/api/admin/problems/secret",
+                           json={"types": ["binary search", "greedy"],
+                                 "points": 175}).raise_for_status()
+        now = db.parse_time(db.utcnow())
+        span = ((now - timedelta(hours=1), now + timedelta(hours=1)) if running
+                else (now - timedelta(hours=3), now - timedelta(hours=1)))
+        iso = lambda d: d.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        cid = db.insert(
+            "INSERT INTO contests (slug, title, description, starts_at, ends_at,"
+            " scoring, penalty_minutes, created_at)"
+            " VALUES ('diag','Diagnostic','',?,?,'ioi',0,?)",
+            (iso(span[0]), iso(span[1]), db.utcnow()))
+        pid = db.one("SELECT id FROM problems WHERE slug='secret'")["id"]
+        db.execute("INSERT INTO contest_problems (contest_id, problem_id, label)"
+                   " VALUES (?, ?, 'A')", (cid, pid))
+
+    def detail(self, client):
+        response = client.get("/api/problems/secret")
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def test_points_are_withheld_while_it_runs(self, client, admin_client):
+        self.setup_contest(admin_client, running=True)
+        admin_client.post("/api/auth/logout")
+        register(client, "contestant")
+        assert self.detail(client)["points"] is None
+
+    def test_types_are_withheld_while_it_runs(self, client, admin_client):
+        self.setup_contest(admin_client, running=True)
+        admin_client.post("/api/auth/logout")
+        register(client, "contestant2")
+        assert self.detail(client)["types"] == []
+
+    def test_the_seal_is_announced_so_the_page_can_adapt(self, client, admin_client):
+        self.setup_contest(admin_client, running=True)
+        admin_client.post("/api/auth/logout")
+        register(client, "contestant3")
+        assert self.detail(client)["metadata_sealed"] is True
+
+    def test_subtask_weights_still_come_through(self, client, admin_client):
+        """Percentages say what to attempt without rating the problem."""
+        self.setup_contest(admin_client, running=True)
+        admin_client.put("/api/admin/problems/secret/tests", json={"tests": [
+            {"input": "2 3\n", "output": "5\n", "is_sample": True, "points": 1},
+            {"input": "-1 1\n", "output": "0\n", "points": 1, "subtask": 1},
+        ]}).raise_for_status()
+        admin_client.post("/api/auth/logout")
+        register(client, "contestant4")
+        detail = self.detail(client)
+        assert detail["points"] is None
+        assert detail["samples"], "samples are not a hint"
+
+    def test_an_admin_still_sees_everything(self, admin_client):
+        self.setup_contest(admin_client, running=True)
+        detail = self.detail(admin_client)
+        assert detail["points"] == 175
+        assert detail["types"] == ["binary search", "greedy"]
+        assert detail["metadata_sealed"] is False
+
+    def test_they_are_revealed_once_the_contest_ends(self, client, admin_client):
+        self.setup_contest(admin_client, running=False)
+        admin_client.post("/api/auth/logout")
+        register(client, "afterwards")
+        detail = self.detail(client)
+        assert detail["points"] == 175
+        assert detail["types"] == ["binary search", "greedy"]
+
+    def test_an_already_public_problem_keeps_its_rating(self, client, admin_client):
+        """Hiding an archived problem's points mid-contest protects nothing —
+        anyone could have read them yesterday."""
+        self.setup_contest(admin_client, running=True, visible=True)
+        admin_client.post("/api/auth/logout")
+        register(client, "browser")
+        detail = self.detail(client)
+        assert detail["points"] == 175
+        assert detail["types"] == ["binary search", "greedy"]

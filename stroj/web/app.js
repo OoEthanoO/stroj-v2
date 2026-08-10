@@ -624,6 +624,10 @@ const draftKey = (slug, language) => `stroj:draft:${slug}:${language}`;
 async function viewProblem(slug, params) {
   const contestSlug = params.get('contest');
   const problem = await api(`/api/problems/${encodeURIComponent(slug)}`);
+  // Points rate the problem against the archive and the type tags name the
+  // technique, so a live contest withholds both. Subtask weights stay: you
+  // need them to choose what to attempt, and a percentage gives nothing away.
+  const sealed = problem.metadata_sealed;
 
   const samples = problem.samples.map((s, i) => `
     <div class="sample-grid">
@@ -642,7 +646,7 @@ async function viewProblem(slug, params) {
       ${contestSlug ? `<a class="pill" href="#/contest/${encodeURIComponent(contestSlug)}">← contest</a>` : ''}
     </div>
     <div class="row small muted" style="margin-bottom:18px">
-      <span class="points-pill">${problem.points} points</span>
+      ${sealed ? '' : `<span class="points-pill">${problem.points} points</span>`}
       ${problem.author ? `<span class="pill">by ${userLink(problem.author, problem.author_role)}</span>` : ''}
       ${(problem.types || []).map((t) => `<span class="pill">${esc(t)}</span>`).join('')}
       <span class="pill">${problem.time_limit_ms} ms</span>
@@ -660,18 +664,20 @@ async function viewProblem(slug, params) {
           <div class="card">
             <h2 style="margin-top:0">Subtasks</h2>
             <p class="muted small">Solve every test in a subtask to earn its share
-              of the ${problem.points} points. Partial credit counts toward your score.</p>
+              of ${sealed ? "the problem's points" : `the ${problem.points} points`}.
+              Partial credit counts toward your score.</p>
             <div class="table-wrap"><table><tbody>${problem.subtasks.map((st) => `
               <tr><td class="mono" style="width:1%">${st.idx}</td>
                   <td class="wide muted small">${st.tests} test${st.tests === 1 ? '' : 's'}</td>
                   <td class="num">${st.percent}%</td>
-                  <td class="num">${pointsPill(Math.round(problem.points * st.percent / 100))}</td>
+                  ${sealed ? '' : `<td class="num">${pointsPill(Math.round(problem.points * st.percent / 100))}</td>`}
               </tr>`).join('')}</tbody></table></div>
           </div>` : (problem.partial ? `
           <div class="card">
             <h2 style="margin-top:0">Partial scoring</h2>
             <p class="muted small">No subtasks, so you earn the share of tests you
-              pass — 10 of 20 tests earns half of the ${problem.points} points.</p>
+              pass — 10 of 20 tests earns half
+              ${sealed ? 'the points' : `of the ${problem.points} points`}.</p>
           </div>` : '')}
       </div>
       <div>

@@ -32,17 +32,41 @@ def is_admin(user: sqlite3.Row | None) -> bool:
     return user is not None and user["role"] == "admin"
 
 
+def contests_with(problem_id: int) -> list[sqlite3.Row]:
+    return db.query(
+        "SELECT c.* FROM contest_problems cp"
+        " JOIN contests c ON c.id = cp.contest_id"
+        " WHERE cp.problem_id = ?",
+        (problem_id,),
+    )
+
+
 def problem_visible_to(problem: sqlite3.Row, user: sqlite3.Row | None) -> bool:
     """Hidden problems are readable by admins, and inside a running contest."""
     if problem["visible"] or is_admin(user):
         return True
-    rows = db.query(
-        "SELECT c.* FROM contest_problems cp"
-        " JOIN contests c ON c.id = cp.contest_id"
-        " WHERE cp.problem_id = ?",
-        (problem["id"],),
+    return any(
+        contest.state_of(c) != contest.BEFORE for c in contests_with(problem["id"])
     )
-    return any(contest.state_of(c) != contest.BEFORE for c in rows)
+
+
+def metadata_sealed(problem: sqlite3.Row, user: sqlite3.Row | None) -> bool:
+    """Whether this viewer must not be told the problem's points and types.
+
+    A problem written for a contest carries two things the statement does not:
+    a point value, which rates its difficulty against the rest of the archive,
+    and type tags, which name the technique outright. Telling a contestant that
+    problem D is tagged ``binary search`` measures whether they can implement a
+    named algorithm rather than whether they can pick one, which is the whole
+    thing a contest is asking.
+
+    Only applies while the contest runs, and only to problems that were not
+    already public — an archived problem's rating is common knowledge, and
+    hiding it mid-contest would tell nobody anything they could not look up.
+    """
+    if problem["visible"] or is_admin(user):
+        return False
+    return any(contest.is_running(c) for c in contests_with(problem["id"]))
 
 
 def get_problem(slug: str, user: sqlite3.Row | None) -> sqlite3.Row:
@@ -96,6 +120,7 @@ def problem_types(problem_id: int) -> list[str]:
 
 def problem_summary(problem: sqlite3.Row, user: sqlite3.Row | None = None) -> dict:
     author_name, author_role = _author_of(problem)
+    sealed = metadata_sealed(problem, user)
     data = {
         "slug": problem["slug"],
         "title": problem["title"],
@@ -104,10 +129,11 @@ def problem_summary(problem: sqlite3.Row, user: sqlite3.Row | None = None) -> di
         "checker": problem["checker"],
         "partial": bool(problem["partial"]),
         "visible": bool(problem["visible"]),
-        "points": problem["points"],
+        "points": None if sealed else problem["points"],
         "author": author_name,
         "author_role": author_role,
-        "types": problem_types(problem["id"]),
+        "types": [] if sealed else problem_types(problem["id"]),
+        "metadata_sealed": sealed,
     }
     if user is not None:
         best = db.one(
