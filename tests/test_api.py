@@ -2491,9 +2491,9 @@ class TestRatedContestsOverTheApi:
     def test_the_ladder_is_published_for_the_legend(self, client):
         body = client.get("/api/ranks").json()
         assert len(body["ladder"]) == 25
-        assert body["ladder"][0]["name"] == "Iron 1"
-        assert body["ladder"][-1]["name"] == "Radiant"
-        assert body["radiant_at"] > body["start"]
+        assert body["ladder"][0]["name"] == "Novice 1"
+        assert body["ladder"][-1]["name"] == "Legend"
+        assert body["legend_at"] > body["start"]
 
     def test_only_admins_may_force_a_rebuild(self, client, admin_client):
         admin_client.post("/api/auth/logout")
@@ -2533,12 +2533,12 @@ class TestTheRankExplainer:
     def test_the_ladder_arrives_whole(self, client):
         ladder = self.body(client)["ladder"]
         assert len(ladder) == 25
-        assert ladder[0]["name"] == "Iron 1"
-        assert ladder[-1]["name"] == "Radiant" and ladder[-1]["to"] is None
+        assert ladder[0]["name"] == "Novice 1"
+        assert ladder[-1]["name"] == "Legend" and ladder[-1]["to"] is None
 
     def test_the_page_can_state_the_mechanics_without_hardcoding_them(self, client):
         body = self.body(client)
-        for key in ("start", "radiant_at", "rank_width", "placement_contests",
+        for key in ("start", "legend_at", "rank_width", "placement_contests",
                     "weeks_to_forget", "movement"):
             assert key in body, key
 
@@ -2555,7 +2555,7 @@ class TestTheRankExplainer:
         from stroj import rating as module
         body = self.body(client)
         assert body["start"] == module.START_RATING
-        assert body["radiant_at"] == module.RADIANT_AT
+        assert body["legend_at"] == module.LEGEND_AT
         assert body["rank_width"] == module.RANK_WIDTH
         assert body["placement_contests"] == module.placement_contests()
 

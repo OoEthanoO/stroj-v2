@@ -1522,9 +1522,9 @@ async function viewRanks() {
         <h2>The ladder</h2>
         <div class="card"><div class="table-wrap"><table><tbody>${tierRows}</tbody></table></div>
           <p class="muted small" style="margin-bottom:0">Eight tiers of three
-            divisions, counting upward — Iron 1 is the bottom of Iron, Iron 3
-            the top. Radiant has no divisions; it starts at
-            <strong>${info.radiant_at}</strong> and is meant to be reached by
+            divisions, counting upward — Novice 1 is the bottom of Novice,
+            Novice 3 the top. Legend has no divisions; it starts at
+            <strong>${info.legend_at}</strong> and is meant to be reached by
             one person in a season, if anyone.</p></div>
       </div>
 

@@ -56,27 +56,27 @@ const rank = (tier, division, index) => ({ tier, division, index, name:
 
 // Every tier gets its own class, so the colour is driven by data not by a
 // hand-maintained switch somewhere else.
-for (const tier of ['Iron', 'Bronze', 'Silver', 'Gold', 'Platinum',
-                    'Diamond', 'Ascendant', 'Immortal']) {
+for (const tier of ['Novice', 'Apprentice', 'Adept', 'Specialist', 'Expert',
+                    'Master', 'Grandmaster', 'Champion']) {
   const html = rankBadge(rank(tier, 2, 4));
   contains(`${tier} carries its class`, html, `rank-${tier.toLowerCase()}`);
   contains(`${tier} shows its division`, html, `${tier} 2`);
 }
 
-const radiant = rankBadge(rank('Radiant', null, 24));
-contains('radiant has its own class', radiant, 'rank-radiant');
-contains('radiant names itself', radiant, '>Radiant<');
-absent('radiant shows no division number', radiant, 'Radiant 1');
+const legend = rankBadge(rank('Legend', null, 24));
+contains('the top rank has its own class', legend, 'rank-legend');
+contains('the top rank names itself', legend, '>Legend<');
+absent('the top rank shows no division number', legend, 'Legend 1');
 
 // The case the whole design turns on: no contests, no rank.
 const none = rankBadge(null);
 contains('unranked says so', none, 'Unranked');
 contains('unranked has its own class', none, 'rank-unranked');
-absent('unranked claims no tier', none, 'rank-iron');
+absent('unranked claims no tier', none, 'rank-novice');
 
 // A rating rides along only when asked for, and never for the unranked.
-contains('rating shown when given', rankBadge(rank('Gold', 1, 9), { rating: 1204 }), '1204');
-absent('no rating when omitted', rankBadge(rank('Gold', 1, 9)), 'rank-rating');
+contains('rating shown when given', rankBadge(rank('Expert', 1, 12), { rating: 1204 }), '1204');
+absent('no rating when omitted', rankBadge(rank('Expert', 1, 12)), 'rank-rating');
 absent('no rating for unranked', rankBadge(null, { rating: 1000 }), '1000');
 
 // A tier name is data from the server, so it goes through the escaper.

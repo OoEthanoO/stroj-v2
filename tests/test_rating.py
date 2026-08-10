@@ -156,30 +156,30 @@ class TestRankBrackets:
 
     def test_the_named_tiers_are_the_ones_asked_for(self):
         assert [t.lower() for t in rating.TIERS] + [rating.TOP_TIER.lower()] == [
-            "iron", "bronze", "silver", "gold", "platinum", "diamond",
-            "ascendant", "immortal", "radiant"]
+            "novice", "apprentice", "adept", "specialist", "expert",
+            "master", "grandmaster", "champion", "legend"]
 
     def test_divisions_count_upward_within_a_tier(self):
         floor = rating.RANK_FLOOR
         names = [rating.rank_for(floor + i * rating.RANK_WIDTH).name for i in range(3)]
-        assert names == ["Iron 1", "Iron 2", "Iron 3"]
+        assert names == ["Novice 1", "Novice 2", "Novice 3"]
 
-    def test_radiant_has_no_division(self):
-        top = rating.rank_for(rating.RADIANT_AT)
-        assert top.tier == "Radiant" and top.division is None
-        assert top.name == "Radiant"
+    def test_the_top_rank_has_no_division(self):
+        top = rating.rank_for(rating.LEGEND_AT)
+        assert top.tier == "Legend" and top.division is None
+        assert top.name == "Legend"
 
-    def test_radiant_is_the_only_rank_above_its_threshold(self):
-        assert rating.rank_for(rating.RADIANT_AT).name == "Radiant"
-        assert rating.rank_for(rating.RADIANT_AT + 10_000).name == "Radiant"
+    def test_legend_is_the_only_rank_above_its_threshold(self):
+        assert rating.rank_for(rating.LEGEND_AT).name == "Legend"
+        assert rating.rank_for(rating.LEGEND_AT + 10_000).name == "Legend"
 
-    def test_just_below_radiant_is_immortal_three(self):
-        assert rating.rank_for(rating.RADIANT_AT - 1).name == "Immortal 3"
+    def test_just_below_legend_is_champion_three(self):
+        assert rating.rank_for(rating.LEGEND_AT - 1).name == "Champion 3"
 
     def test_the_bottom_is_a_floor_not_a_hole(self):
-        assert rating.rank_for(rating.RANK_FLOOR).name == "Iron 1"
-        assert rating.rank_for(0).name == "Iron 1"
-        assert rating.rank_for(-500).name == "Iron 1"
+        assert rating.rank_for(rating.RANK_FLOOR).name == "Novice 1"
+        assert rating.rank_for(0).name == "Novice 1"
+        assert rating.rank_for(-500).name == "Novice 1"
 
     def test_rank_rises_with_rating(self):
         seen = [rating.rank_for(r).index for r in range(400, 2000, 7)]
@@ -197,8 +197,8 @@ class TestRankBrackets:
     def test_the_ladder_legend_covers_every_rung_without_gaps(self):
         rungs = rating.ladder()
         assert len(rungs) == rating.LADDER_SIZE
-        assert [r["name"] for r in rungs][:2] == ["Iron 1", "Iron 2"]
-        assert rungs[-1]["name"] == "Radiant" and rungs[-1]["to"] is None
+        assert [r["name"] for r in rungs][:2] == ["Novice 1", "Novice 2"]
+        assert rungs[-1]["name"] == "Legend" and rungs[-1]["to"] is None
         for lower, upper in zip(rungs, rungs[1:]):
             assert lower["to"] + 1 == upper["from"]
 
@@ -226,21 +226,21 @@ class TestTheLadderFitsOneSeason:
     BEST_STANDOUT = 1324
 
     def test_the_weakest_member_lands_at_the_bottom_rung(self):
-        assert rating.rank_for(self.WEAKEST).tier == "Iron"
+        assert rating.rank_for(self.WEAKEST).tier == "Novice"
 
     def test_a_newcomer_starts_mid_ladder(self):
-        assert rating.rank_for(self.STARTING).tier == "Gold"
+        assert rating.rank_for(self.STARTING).tier == "Specialist"
 
     def test_a_seasons_best_reaches_the_top_tiers(self):
-        assert rating.rank_for(self.BEST_TYPICAL).tier == "Immortal"
+        assert rating.rank_for(self.BEST_TYPICAL).tier == "Champion"
 
-    def test_a_standout_can_reach_radiant_in_one_season(self):
+    def test_a_standout_can_reach_the_top_in_one_season(self):
         """The point of the recalibration: the top rank has to be winnable by
         someone who is only here for one year, which is everybody."""
-        assert rating.rank_for(self.BEST_STANDOUT).name == "Radiant"
+        assert rating.rank_for(self.BEST_STANDOUT).name == "Legend"
 
-    def test_radiant_is_not_handed_to_a_merely_good_season(self):
-        assert rating.rank_for(self.BEST_TYPICAL).name != "Radiant"
+    def test_the_top_is_not_handed_to_a_merely_good_season(self):
+        assert rating.rank_for(self.BEST_TYPICAL).name != "Legend"
 
     def test_a_season_uses_most_of_the_ladder(self):
         low = rating.rank_for(self.WEAKEST).index

@@ -30,31 +30,38 @@ import math
 import os
 from dataclasses import dataclass
 
-#: Where a competitor starts: Gold 3, just under the middle of the ladder.
-#: Eleven rungs below to fall into and thirteen above to climb, so a season
-#: sorts people in both directions rather than only upward.
+#: Where a competitor starts: Specialist 3, just under the middle of the
+#: ladder. Eleven rungs below to fall into and thirteen above to climb, so a
+#: season sorts people in both directions rather than only upward.
 START_RATING = int(os.environ.get("STROJ_START_RATING", "1000"))
 
 #: Ratings do not go below this, so a run of bad contests cannot produce a
 #: number that reads as a joke rather than a standing.
 RATING_FLOOR = 100
 
-#: The eight tiers that have divisions, lowest first. Radiant stands alone.
+#: The eight tiers that have divisions, lowest first. Legend stands alone.
+#:
+#: Named for stages of learning a craft rather than for metals and gemstones,
+#: which is a ladder borrowed from shooters and says nothing about what anyone
+#: here is doing. The order is meant to be obvious without a legend: nobody has
+#: to be told that an Expert outranks an Apprentice. "Novice" is also a fair
+#: thing to call someone in their first month, which the bottom rung of a club
+#: ladder has to be.
 TIERS = (
-    "Iron",
-    "Bronze",
-    "Silver",
-    "Gold",
-    "Platinum",
-    "Diamond",
-    "Ascendant",
-    "Immortal",
+    "Novice",
+    "Apprentice",
+    "Adept",
+    "Specialist",
+    "Expert",
+    "Master",
+    "Grandmaster",
+    "Champion",
 )
 DIVISIONS = 3
-TOP_TIER = "Radiant"
+TOP_TIER = "Legend"
 
-#: Bottom of Iron 1. Anything below still reads as Iron 1 — the floor of the
-#: ladder is a floor, not a hole.
+#: Bottom of Novice 1. Anything below still reads as Novice 1 — the floor of
+#: the ladder is a floor, not a hole.
 RANK_FLOOR = 720
 #: Rating points per division.
 #:
@@ -67,7 +74,7 @@ RANK_FLOOR = 720
 #: playing twenty-eight weekly contests at seventy percent attendance, the
 #: weakest member finishes near 720 and the best near 1290, with a genuine
 #: standout reaching about 1325. Twenty-four divisions of 25 points span
-#: exactly that: Iron 1 begins where the weakest finish, and Radiant begins
+#: exactly that: Novice 1 begins where the weakest finish, and Legend begins
 #: just under where a standout does — earned in a season, but only by someone
 #: who was clearly the best in the room all year.
 #:
@@ -75,8 +82,8 @@ RANK_FLOOR = 720
 #: once you are expected to beat everyone, winning stops paying. Widening the
 #: divisions does not give people further to climb, it only empties the top.
 RANK_WIDTH = 25
-#: 24 divisions, then Radiant.
-RADIANT_AT = RANK_FLOOR + len(TIERS) * DIVISIONS * RANK_WIDTH
+#: 24 divisions, then Legend.
+LEGEND_AT = RANK_FLOOR + len(TIERS) * DIVISIONS * RANK_WIDTH
 
 #: A rating nobody has confirmed yet.
 DEVIATION_NEW = 350.0
@@ -212,9 +219,9 @@ def compute(entrants: list[Entrant]) -> list[Change]:
 @dataclass(frozen=True)
 class Rank:
     tier: str
-    #: 1, 2 or 3 — or None for Radiant, which has no divisions.
+    #: 1, 2 or 3 — or None for Legend, which has no divisions.
     division: int | None
-    #: Position on the whole ladder, 0 for Iron 1. Useful for colouring.
+    #: Position on the whole ladder, 0 for Novice 1. Useful for colouring.
     index: int
 
     @property
@@ -222,7 +229,7 @@ class Rank:
         return self.tier if self.division is None else f"{self.tier} {self.division}"
 
 
-#: Total number of rungs, Radiant included.
+#: Total number of rungs, Legend included.
 LADDER_SIZE = len(TIERS) * DIVISIONS + 1
 
 
@@ -300,7 +307,7 @@ def explain() -> dict:
     settled_weekly = grown_deviation(DEVIATION_MIN, PERIOD_DAYS)
     return {
         "start": START_RATING,
-        "radiant_at": RADIANT_AT,
+        "legend_at": LEGEND_AT,
         "rank_width": RANK_WIDTH,
         "placement_contests": placement_contests(),
         "period_days": int(PERIOD_DAYS),
