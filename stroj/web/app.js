@@ -697,6 +697,16 @@ async function viewProblem(slug, params) {
             </div>`
             : requireSignIn('Sign in to submit a solution.')}
         </div>
+        ${state.user && state.user.is_admin ? `
+        <details class="card">
+          <summary>Bulk submit a solution archive</summary>
+          <p class="muted small">Every source file in the zip is queued as its own
+            submission, with the language taken from its extension. Runs as
+            practice, never as a contest entry — this is for reading off the time
+            and memory each language needs.</p>
+          <input type="file" accept=".zip" id="bulk-file">
+          <div id="bulk-result"></div>
+        </details>` : ''}
         <div class="card">
           <div class="row">
             <a class="btn small" href="#/problem/${encodeURIComponent(slug)}/ranking">Ranking</a>
@@ -783,12 +793,49 @@ async function viewProblem(slug, params) {
             <td>${verdictBadge(s.verdict, s.verdict_name)}</td>
             <td class="num">${s.score}/${s.max_score}</td>
             <td class="num muted">${s.time_ms} ms</td>
+            <td class="num muted">${memory(s.memory_kb)}</td>
             <td class="muted small" title="${esc(absolute(s.created_at))}">${esc(relative(s.created_at))}</td>
           </tr>`).join('')}</tbody></table></div>`
       : '<p class="muted small">Nothing yet.</p>');
   };
   await refreshMine();
   every(2000, refreshMine);
+
+  const bulk = $('#bulk-file');
+  if (bulk) {
+    bulk.onchange = async () => {
+      if (!bulk.files.length) return;
+      const form = new FormData();
+      form.append('archive', bulk.files[0]);
+      const box = $('#bulk-result');
+      box.innerHTML = '<p class="muted small">Queueing…</p>';
+      try {
+        const result = await api(
+          `/api/admin/problems/${encodeURIComponent(slug)}/bulk-submit`,
+          { method: 'POST', form });
+        // Skipped files are listed rather than summarised: "2 skipped" leaves
+        // you wondering whether the one you cared about was among them.
+        box.innerHTML = `
+          <div class="table-wrap"><table><tbody>${result.submitted.map((s) => `
+            <tr><td class="mono small">${esc(s.file)}</td>
+                <td class="muted small">${esc(s.language)}</td>
+                <td><a href="#/submission/${s.id}">#${s.id}</a></td></tr>`).join('')}
+          </tbody></table></div>
+          ${result.skipped.length ? `<p class="muted small">Skipped:
+            ${result.skipped.map((s) => `${esc(s.file)} — ${esc(s.reason)}`).join('; ')}</p>` : ''}`;
+        toast(`Queued ${result.submitted.length} submission(s).`, 'good');
+        lastMine = null;
+        await refreshMine();
+      } catch (err) {
+        // Report in place as well as in the toast: left on "Queueing…" this
+        // would read as a hang rather than a rejection.
+        box.innerHTML = `<p class="small v-WA">${esc(err.message)}</p>`;
+        toast(err.message, 'bad');
+      } finally {
+        bulk.value = '';
+      }
+    };
+  }
 }
 
 /* ---- submissions ---- */

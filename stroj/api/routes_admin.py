@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import io
+import pathlib
 import re
 import sqlite3
+import zipfile
 
 from fastapi import (
     APIRouter,
@@ -16,9 +19,9 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
-from .. import db, testdata
+from .. import config, db, testdata
 from ..judge import checkers, languages, worker
-from ..judge.runner import PENDING
+from ..judge.runner import PENDING, validate_source
 from .deps import get_contest, require_admin
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -406,6 +409,103 @@ async def upload_tests(
     except testdata.TestDataError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     return {"tests": count, "subtasks": parsed.subtasks}
+
+
+#: Filename suffix -> language id. What a solution is written in is already
+#: recorded in its extension, so asking the uploader to say again invites the
+#: two to disagree.
+SOURCE_LANGUAGES = {
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".cxx": "cpp",
+    ".py": "python3",
+    ".java": "java",
+}
+
+#: A calibration run is three or four files. This is a guard against a stray
+#: archive, not a limit anyone should meet in normal use.
+MAX_BULK_FILES = 20
+
+
+@router.post("/problems/{slug}/bulk-submit")
+async def bulk_submit(
+    slug: str,
+    archive: UploadFile = File(...),
+    user: sqlite3.Row = Depends(require_admin),
+):
+    """Queue every source file in a zip as its own submission.
+
+    Setting a problem's time and memory limits means running the intended
+    solution in each language and reading off what it used. Done by hand that
+    is: open the editor, paste, submit, wait, repeat — three times per problem,
+    and again after every change to the test data.
+
+    Deliberately exempt from the in-flight cap and the submit rate limiter.
+    Both exist to stop one account flooding the queue, and both would reject
+    the second half of an archive that is doing exactly what was asked. The
+    file count is the bound instead.
+
+    Always submitted as practice, never into a contest: these runs are
+    calibration, and they have no business on a scoreboard.
+    """
+    problem = _problem_or_404(slug)
+
+    data = await archive.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Archive is too large.")
+    try:
+        bundle = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="That is not a zip file.") from None
+
+    submitted: list[dict] = []
+    skipped: list[dict] = []
+
+    for info in sorted(bundle.infolist(), key=lambda i: i.filename):
+        name = pathlib.PurePosixPath(info.filename).name
+        if info.is_dir() or name.startswith(".") or "__MACOSX" in info.filename:
+            continue
+        language_id = SOURCE_LANGUAGES.get(pathlib.PurePosixPath(name).suffix.lower())
+        if language_id is None:
+            # Solution archives routinely carry a README or a stray .class.
+            # Those are not failures, so they are reported but not shouted about.
+            skipped.append({"file": name, "reason": "not a recognised source file"})
+            continue
+        if len(submitted) >= MAX_BULK_FILES:
+            skipped.append({"file": name, "reason": f"over the {MAX_BULK_FILES}-file limit"})
+            continue
+        # Checked before reading, so a compressed bomb never reaches memory.
+        if info.file_size > config.MAX_SOURCE_BYTES:
+            skipped.append({"file": name, "reason": "source is too large"})
+            continue
+        if not languages.is_available(language_id):
+            skipped.append(
+                {"file": name, "reason": f"{languages.get(language_id).name} is not installed"}
+            )
+            continue
+
+        source = bundle.read(info).decode("utf-8", "replace")
+        rejection = validate_source(language_id, source)
+        if rejection:
+            skipped.append({"file": name, "reason": rejection})
+            continue
+
+        submission_id = db.insert(
+            "INSERT INTO submissions (user_id, problem_id, contest_id, language,"
+            " source, verdict, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?)",
+            (user["id"], problem["id"], language_id, source, PENDING, db.utcnow()),
+        )
+        submitted.append({"file": name, "language": language_id, "id": submission_id})
+
+    if not submitted:
+        detail = "; ".join(f"{s['file']}: {s['reason']}" for s in skipped[:4])
+        raise HTTPException(
+            status_code=400,
+            detail=f"No submittable source files in that archive. {detail}".strip(),
+        )
+
+    worker.notify()
+    return {"submitted": submitted, "skipped": skipped}
 
 
 @router.post("/testdata/inspect")

@@ -1897,3 +1897,113 @@ class TestAContestHidesPointsAndTypes:
         detail = self.detail(client)
         assert detail["points"] == 175
         assert detail["types"] == ["binary search", "greedy"]
+
+
+class TestBulkSubmit:
+    """Calibrating a problem's limits means running the intended solution in
+    every language. One upload replaces three rounds of copy-paste."""
+
+    CPP = "#include <cstdio>\nint main(){int a,b;scanf(\"%d %d\",&a,&b);printf(\"%d\\n\",a+b);}\n"
+    PY = "a, b = input().split()\nprint(int(a) + int(b))\n"
+    JAVA = ("public class Main { public static void main(String[] a) {"
+            " java.util.Scanner s = new java.util.Scanner(System.in);"
+            " System.out.println(s.nextInt() + s.nextInt()); } }\n")
+
+    def bundle(self, files: dict) -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            for name, text in files.items():
+                archive.writestr(name, text)
+        return buffer.getvalue()
+
+    def post(self, client, slug, files):
+        return client.post(
+            f"/api/admin/problems/{slug}/bulk-submit",
+            files={"archive": ("solutions.zip", self.bundle(files), "application/zip")},
+        )
+
+    def test_every_source_file_becomes_a_submission(self, admin_client):
+        make_problem(admin_client)
+        response = self.post(admin_client, "a-plus-b", {
+            "intended.cpp": self.CPP, "intended.py": self.PY, "Main.java": self.JAVA})
+        assert response.status_code == 200, response.text
+        submitted = response.json()["submitted"]
+        assert len(submitted) == 3
+        assert {s["language"] for s in submitted} == {"cpp", "python3", "java"}
+
+    def test_the_language_comes_from_the_extension(self, admin_client):
+        make_problem(admin_client)
+        body = self.post(admin_client, "a-plus-b", {
+            "a.cpp": self.CPP, "b.py": self.PY}).json()
+        by_file = {s["file"]: s["language"] for s in body["submitted"]}
+        assert by_file == {"a.cpp": "cpp", "b.py": "python3"}
+
+    def test_nested_directories_are_flattened(self, admin_client):
+        """Zipping a folder is the normal way to make one of these."""
+        make_problem(admin_client)
+        body = self.post(admin_client, "a-plus-b",
+                         {"solutions/intended.cpp": self.CPP}).json()
+        assert [s["file"] for s in body["submitted"]] == ["intended.cpp"]
+
+    def test_readmes_and_junk_are_skipped_not_fatal(self, admin_client):
+        make_problem(admin_client)
+        body = self.post(admin_client, "a-plus-b", {
+            "intended.cpp": self.CPP, "README.md": "notes",
+            "Main.class": "\x00\x01", ".DS_Store": "junk",
+            "__MACOSX/._x.cpp": "junk"}).json()
+        assert [s["file"] for s in body["submitted"]] == ["intended.cpp"]
+        assert {s["file"] for s in body["skipped"]} == {"README.md", "Main.class"}
+
+    def test_a_bad_java_class_name_is_reported_per_file(self, admin_client):
+        """One unusable file must not sink the files beside it."""
+        make_problem(admin_client)
+        body = self.post(admin_client, "a-plus-b", {
+            "intended.cpp": self.CPP,
+            "Solution.java": "public class Solution {}\n"}).json()
+        assert [s["file"] for s in body["submitted"]] == ["intended.cpp"]
+        assert body["skipped"][0]["file"] == "Solution.java"
+        assert "Main" in body["skipped"][0]["reason"]
+
+    def test_an_archive_with_nothing_to_run_is_an_error(self, admin_client):
+        make_problem(admin_client)
+        response = self.post(admin_client, "a-plus-b", {"README.md": "notes"})
+        assert response.status_code == 400
+        assert "README.md" in response.json()["detail"]
+
+    def test_a_non_zip_is_rejected(self, admin_client):
+        make_problem(admin_client)
+        response = admin_client.post(
+            "/api/admin/problems/a-plus-b/bulk-submit",
+            files={"archive": ("x.zip", b"not a zip", "application/zip")})
+        assert response.status_code == 400
+
+    def test_it_ignores_the_in_flight_cap(self, admin_client):
+        """The cap stops one account flooding the queue. An archive of eight
+        solutions is not a flood, and truncating it silently would be worse."""
+        make_problem(admin_client)
+        files = {f"s{i}.py": f"# {i}\n{self.PY}" for i in range(8)}
+        body = self.post(admin_client, "a-plus-b", files).json()
+        assert len(body["submitted"]) == 8
+
+    def test_runs_are_practice_never_contest_entries(self, admin_client):
+        make_problem(admin_client)
+        self.post(admin_client, "a-plus-b", {"intended.py": self.PY})
+        rows = db.query("SELECT contest_id FROM submissions")
+        assert rows and all(r["contest_id"] is None for r in rows)
+
+    def test_a_hidden_problem_still_works(self, admin_client):
+        """Every problem is hidden while it is being calibrated."""
+        make_problem(admin_client, slug="secret", visible=False)
+        response = self.post(admin_client, "secret", {"intended.py": self.PY})
+        assert response.status_code == 200, response.text
+
+    def test_only_admins_may_do_this(self, client, admin_client):
+        make_problem(admin_client)
+        admin_client.post("/api/auth/logout")
+        register(client, "ordinary")
+        response = self.post(client, "a-plus-b", {"intended.py": self.PY})
+        assert response.status_code == 403
+
+    def test_an_unknown_problem_is_a_404(self, admin_client):
+        response = self.post(admin_client, "nope", {"intended.py": self.PY})
+        assert response.status_code == 404
