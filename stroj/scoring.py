@@ -74,6 +74,20 @@ class Standing:
 #: someone's profile and nudge every other solve down a rank.
 MIN_EARNED_PERCENT = 1
 
+#: Hidden problems are worth nothing until they are published.
+#:
+#: A problem is hidden while it is being written and while it is a contest's
+#: unreleased problem set, and in both states its solves are not achievements:
+#: the setter's own calibration runs, and contestants' work on a paper nobody
+#: else can see yet. Counting either would put points on the board that no one
+#: else could go and earn, and list a problem on a profile that 404s for every
+#: visitor. Publishing the problem grants the points to everyone who solved it,
+#: all at once, which is the right moment for them to appear.
+#:
+#: Contest standings are computed in `contest.py` from the contest's own
+#: problem set and never come through here, so a live scoreboard is unaffected.
+PUBLISHED_ONLY = "p.visible = 1"
+
 
 def _solved_points_by_user() -> dict[int, tuple[str, str, list[int]]]:
     """Every user's earned value per problem, keyed by user id.
@@ -88,7 +102,7 @@ def _solved_points_by_user() -> dict[int, tuple[str, str, list[int]]]:
         "  FROM submissions s"
         "  JOIN users u    ON u.id = s.user_id"
         "  JOIN problems p ON p.id = s.problem_id"
-        " WHERE s.earned_percent >= ?"
+        f" WHERE s.earned_percent >= ? AND {PUBLISHED_ONLY}"
         " GROUP BY u.id, p.id",
         (MIN_EARNED_PERCENT,),
     )
@@ -137,7 +151,7 @@ def solved_problems(user_id: int) -> list[dict]:
         "       MIN(s.created_at) AS first_solved"
         "  FROM submissions s"
         "  JOIN problems p ON p.id = s.problem_id"
-        " WHERE s.user_id = ? AND s.earned_percent >= ?"
+        f" WHERE s.user_id = ? AND s.earned_percent >= ? AND {PUBLISHED_ONLY}"
         " GROUP BY p.id",
         (user_id, MIN_EARNED_PERCENT),
     )
@@ -168,7 +182,7 @@ def user_score(user_id: int) -> float:
     rows = db.query(
         "SELECT p.points, MAX(s.earned_percent) AS best FROM submissions s"
         "  JOIN problems p ON p.id = s.problem_id"
-        " WHERE s.user_id = ? AND s.earned_percent >= ?"
+        f" WHERE s.user_id = ? AND s.earned_percent >= ? AND {PUBLISHED_ONLY}"
         " GROUP BY p.id",
         (user_id, MIN_EARNED_PERCENT),
     )

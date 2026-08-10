@@ -147,3 +147,64 @@ class TestLeaderboard:
         assert sum(r["contribution"] for r in rows) == pytest.approx(
             scoring.user_score(people["users"]["grinder"]), abs=0.2
         )
+
+
+class TestHiddenProblemsAreWorthNothing:
+    """A problem is hidden while it is being written and while it is a
+    contest's unreleased set. Neither state is an achievement."""
+
+    @pytest.fixture
+    def world(self):
+        user = db.insert(
+            "INSERT INTO users (username, password_hash, role, created_at)"
+            " VALUES ('solver', 'x', 'user', ?)", (db.utcnow(),))
+        published = db.insert(
+            "INSERT INTO problems (slug, title, points, visible, created_at)"
+            " VALUES ('open', 'Open', 100, 1, ?)", (db.utcnow(),))
+        hidden = db.insert(
+            "INSERT INTO problems (slug, title, points, visible, created_at)"
+            " VALUES ('draft', 'Draft', 500, 0, ?)", (db.utcnow(),))
+
+        def solve(problem_id, percent=100):
+            db.insert(
+                "INSERT INTO submissions (user_id, problem_id, language, source,"
+                " verdict, earned_percent, created_at)"
+                " VALUES (?, ?, 'python3', '', 'AC', ?, ?)",
+                (user, problem_id, percent, db.utcnow()))
+
+        return {"user": user, "open": published, "draft": hidden, "solve": solve}
+
+    def test_a_hidden_solve_adds_no_points(self, world):
+        world["solve"](world["draft"])
+        assert scoring.user_score(world["user"]) == 0
+
+    def test_it_stays_off_the_solved_list(self, world):
+        world["solve"](world["draft"])
+        assert scoring.solved_problems(world["user"]) == []
+
+    def test_it_keeps_you_off_the_leaderboard_entirely(self, world):
+        world["solve"](world["draft"])
+        assert scoring.leaderboard() == []
+
+    def test_published_solves_are_untouched(self, world):
+        world["solve"](world["open"])
+        assert scoring.user_score(world["user"]) == pytest.approx(100)
+        assert [r["slug"] for r in scoring.solved_problems(world["user"])] == ["open"]
+
+    def test_a_hidden_solve_does_not_even_shift_the_ranks(self, world):
+        """The decay makes rank position load-bearing: a phantom 500-point
+        solve at rank 0 would push a real one down and shrink it."""
+        world["solve"](world["open"])
+        alone = scoring.user_score(world["user"])
+        world["solve"](world["draft"])
+        assert scoring.user_score(world["user"]) == pytest.approx(alone)
+
+    def test_publishing_hands_out_the_points(self, world):
+        world["solve"](world["draft"])
+        db.execute("UPDATE problems SET visible = 1 WHERE id = ?", (world["draft"],))
+        assert scoring.user_score(world["user"]) == pytest.approx(500)
+        assert [r["slug"] for r in scoring.solved_problems(world["user"])] == ["draft"]
+
+    def test_partial_credit_on_a_hidden_problem_is_also_nothing(self, world):
+        world["solve"](world["draft"], percent=40)
+        assert scoring.leaderboard() == []

@@ -6,7 +6,7 @@ from datetime import timedelta
 
 import pytest
 
-from stroj import contest, db
+from stroj import contest, db, scoring
 
 
 def iso(moment) -> str:
@@ -361,3 +361,35 @@ class TestAbortedSubmissionsOnTheScoreboard:
         cell = fixtures["board"]("ioi")["rows"][0]["cells"]["A"]
         assert cell["score"] == 0
         assert cell["solved"] is False
+
+
+class TestHiddenProblemsStillScoreInAContest:
+    """Every contest problem is hidden until the contest ends, so a scoreboard
+    that skipped hidden problems would be blank for the whole event.
+
+    The global ranking deliberately ignores hidden problems. That filter lives
+    in `scoring.py`; these standings are built here from the contest's own
+    problem set, and this is the test that keeps the two apart.
+    """
+
+    def test_the_scoreboard_counts_a_hidden_problem(self, fixtures):
+        db.execute("UPDATE problems SET visible = 0")
+        fixtures["submit"]("ann", "A", "AC", 10)
+        board = fixtures["board"]()
+        assert board["rows"][0]["username"] == "ann"
+        assert board["rows"][0]["solved"] == 1
+
+    def test_ioi_partials_survive_too(self, fixtures):
+        db.execute("UPDATE problems SET visible = 0")
+        fixtures["submit"]("ann", "A", "WA", 10, score=6, max_score=10)
+        board = fixtures["board"]("ioi")
+        assert board["rows"][0]["total_score"] == 60
+
+    def test_the_global_ranking_still_ignores_it(self, fixtures):
+        """Same solve, same moment: it counts on the board and nowhere else."""
+        db.execute("UPDATE problems SET visible = 0")
+        db.execute("UPDATE submissions SET earned_percent = 100")
+        fixtures["submit"]("ann", "A", "AC", 10)
+        db.execute("UPDATE submissions SET earned_percent = 100")
+        assert fixtures["board"]()["rows"][0]["solved"] == 1
+        assert scoring.leaderboard() == []
