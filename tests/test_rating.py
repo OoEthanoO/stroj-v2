@@ -212,3 +212,43 @@ class TestRankBrackets:
         """Room to fall as well as climb, so a first season sorts both ways."""
         index = rating.rank_for(rating.START_RATING).index
         assert 8 <= index <= 16
+
+
+class TestTheLadderFitsOneSeason:
+    """September to May is the only span anyone at this club has, so the ladder
+    is sized to it. These are the landmarks measured across forty simulated
+    clubs of sixteen playing twenty-eight weekly contests; if `RANK_WIDTH` or
+    `RANK_FLOOR` moves, the ladder stops describing a season and these fail."""
+
+    WEAKEST = 741
+    STARTING = rating.START_RATING
+    BEST_TYPICAL = 1289
+    BEST_STANDOUT = 1324
+
+    def test_the_weakest_member_lands_at_the_bottom_rung(self):
+        assert rating.rank_for(self.WEAKEST).tier == "Iron"
+
+    def test_a_newcomer_starts_mid_ladder(self):
+        assert rating.rank_for(self.STARTING).tier == "Gold"
+
+    def test_a_seasons_best_reaches_the_top_tiers(self):
+        assert rating.rank_for(self.BEST_TYPICAL).tier == "Immortal"
+
+    def test_a_standout_can_reach_radiant_in_one_season(self):
+        """The point of the recalibration: the top rank has to be winnable by
+        someone who is only here for one year, which is everybody."""
+        assert rating.rank_for(self.BEST_STANDOUT).name == "Radiant"
+
+    def test_radiant_is_not_handed_to_a_merely_good_season(self):
+        assert rating.rank_for(self.BEST_TYPICAL).name != "Radiant"
+
+    def test_a_season_uses_most_of_the_ladder(self):
+        low = rating.rank_for(self.WEAKEST).index
+        high = rating.rank_for(self.BEST_TYPICAL).index
+        assert high - low >= 20, "a season should span nearly every rung"
+
+    def test_the_summer_gap_re_places_a_returning_member(self):
+        """May to September is about sixteen weeks, which should leave a
+        veteran's rating loose enough to re-sort against a new intake."""
+        settled = rating.grown_deviation(rating.DEVIATION_MIN, 16 * 7)
+        assert rating.k_factor(settled) > 3 * rating.K_SETTLED

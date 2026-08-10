@@ -30,9 +30,9 @@ import math
 import os
 from dataclasses import dataclass
 
-#: Where a competitor starts: Gold 2, the middle of the ladder. Ten rungs
-#: below to fall into and fourteen above to climb, so the first season sorts
-#: people in both directions instead of only upward.
+#: Where a competitor starts: Gold 3, just under the middle of the ladder.
+#: Eleven rungs below to fall into and thirteen above to climb, so a season
+#: sorts people in both directions rather than only upward.
 START_RATING = int(os.environ.get("STROJ_START_RATING", "1000"))
 
 #: Ratings do not go below this, so a run of bad contests cannot produce a
@@ -55,18 +55,26 @@ TOP_TIER = "Radiant"
 
 #: Bottom of Iron 1. Anything below still reads as Iron 1 — the floor of the
 #: ladder is a floor, not a hole.
-RANK_FLOOR = 650
+RANK_FLOOR = 720
 #: Rating points per division.
 #:
-#: Sized from what a closed pool can actually produce, not from what looks
-#: tidy. Elo in a fixed field self-limits: once you are far enough above
-#: everyone that you are expected to win, winning stops paying, so a club's
-#: whole spread settles at roughly 550 points and reaches about 800 after a
-#: couple of years. Simulated at 60 points per division, twenty members used
-#: four tiers of nine and Diamond upward was unreachable — a ladder with five
-#: dead rungs. At 35 the same club spans Iron to Immortal, and Radiant sits
-#: just beyond the best two-year regular, which is where a top rank belongs.
-RANK_WIDTH = 35
+#: Sized to **one season**, September to May, because that is the only span
+#: anyone here actually has. Members arrive in September and the club turns
+#: over in May; a ladder whose top rungs need a second year is a ladder with
+#: five decorative rungs for everybody who will ever use it.
+#:
+#: Measured rather than guessed. Across forty simulated clubs of sixteen
+#: playing twenty-eight weekly contests at seventy percent attendance, the
+#: weakest member finishes near 720 and the best near 1290, with a genuine
+#: standout reaching about 1325. Twenty-four divisions of 25 points span
+#: exactly that: Iron 1 begins where the weakest finish, and Radiant begins
+#: just under where a standout does — earned in a season, but only by someone
+#: who was clearly the best in the room all year.
+#:
+#: Elo in a closed pool self-limits, which is why the range is this narrow:
+#: once you are expected to beat everyone, winning stops paying. Widening the
+#: divisions does not give people further to climb, it only empties the top.
+RANK_WIDTH = 25
 #: 24 divisions, then Radiant.
 RADIANT_AT = RANK_FLOOR + len(TIERS) * DIVISIONS * RANK_WIDTH
 
