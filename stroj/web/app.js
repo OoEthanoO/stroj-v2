@@ -536,6 +536,38 @@ async function viewPost(slug) {
 
 /* ---- problems ---- */
 
+
+/** Order a problem list by one column.
+ *
+ * `key` of null means the order the judge served, which is roughly the order
+ * the problems were written — worth being able to get back to, so clicking a
+ * column a third time returns here rather than leaving you stuck in a sort.
+ *
+ * Types has no sort: a problem carries several, and picking one of them to
+ * order by would be an arbitrary answer dressed up as a useful one.
+ */
+const PROBLEM_TEXT_COLUMNS = new Set(['title', 'author', 'checker']);
+
+function sortProblems(problems, { key, dir }) {
+  if (!key) return problems.slice();
+  const text = PROBLEM_TEXT_COLUMNS.has(key);
+  // An unattributed problem has no author; treat it as blank rather than
+  // letting undefined poison the comparison.
+  const value = (p) => (text ? (p[key] || '') : (p[key] ?? 0));
+  return problems.slice().sort((a, b) => {
+    const gap = text
+      ? value(a).localeCompare(value(b))
+      : value(a) - value(b);
+    // Titles break every tie, so two problems on equal points keep a stable,
+    // readable order instead of shuffling between renders.
+    return dir * gap || a.title.localeCompare(b.title);
+  });
+}
+
+/** Which way a column should run the first time it is clicked. Numbers read
+ *  largest-first; names read A to Z. */
+const firstDirection = (key) => (PROBLEM_TEXT_COLUMNS.has(key) ? 1 : -1);
+
 async function viewProblems() {
   const { problems } = await api('/api/problems');
   if (!problems.length) {
@@ -573,10 +605,20 @@ async function viewProblems() {
         <span class="muted small">Types</span>${typeChips('f-types', types)}</div>` : ''}
     </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Problem</th><th>Types</th><th class="num">Points</th><th>Author</th><th class="num">Time</th><th class="num">Memory</th><th>Checker</th></tr></thead>
+      <thead><tr>
+        ${[['title', 'Problem', ''], [null, 'Types', 'small'], ['points', 'Points', 'num'],
+           ['author', 'Author', ''], ['time_limit_ms', 'Time', 'num'],
+           ['memory_limit_mb', 'Memory', 'num'], ['checker', 'Checker', '']]
+          .map(([key, label, cls]) => (key
+            ? `<th class="${cls} sort" data-key="${key}">${label}<span class="arrow"></span></th>`
+            : `<th class="${cls}">${label}</th>`)).join('')}
+      </tr></thead>
       <tbody id="p-rows"></tbody>
     </table></div>
     ${dmojTable(problems)}`);
+
+  // Null means the order the judge served them in.
+  let sort = { key: null, dir: 1 };
 
   const apply = () => {
     const q = $('#f-q').value.trim().toLowerCase();
@@ -588,13 +630,30 @@ async function viewProblems() {
       (!q || p.title.toLowerCase().includes(q) || p.slug.includes(q))
       && (!chosen.length || chosen.some((t) => p.types.includes(t)))
       && p.points >= min && p.points <= max);
-    $('#p-rows').innerHTML = shown.map(row).join('')
+    $('#p-rows').innerHTML = sortProblems(shown, sort).map(row).join('')
       || '<tr><td colspan="7" class="muted">Nothing matches those filters.</td></tr>';
     $('#p-count').textContent = shown.length === problems.length
       ? `${problems.length} total` : `${shown.length} of ${problems.length}`;
+    $$('th.sort').forEach((th) => {
+      const active = th.dataset.key === sort.key;
+      th.classList.toggle('active', active);
+      $('.arrow', th).textContent = active ? (sort.dir > 0 ? '↑' : '↓') : '';
+    });
   };
   $$('.filters input').forEach((el) => { el.oninput = apply; });
   if (types.length) bindTypeChips('f-types', apply);
+
+  $$('th.sort').forEach((th) => {
+    th.onclick = () => {
+      const key = th.dataset.key;
+      // Three states: the column's natural direction, then the other one, then
+      // back to the order the judge served.
+      sort = sort.key !== key ? { key, dir: firstDirection(key) }
+        : sort.dir === firstDirection(key) ? { key, dir: -sort.dir }
+        : { key: null, dir: 1 };
+      apply();
+    };
+  });
   apply();
 }
 
