@@ -480,6 +480,9 @@ function requireSignIn(message) {
 const view = () => $('#view');
 
 function setView(html, { wide = false } = {}) {
+  // Whatever was on screen has been replaced, so any guard it installed is
+  // pointing at elements that no longer exist.
+  stopWatchingUnsaved();
   const main = view();
   main.classList.toggle('wide', wide);
   // Prepended on every render rather than placed once, because the whole page
@@ -603,6 +606,70 @@ async function viewProblems() {
  * dropped once the form saves successfully.
  */
 const FORM_DRAFT_PREFIX = 'stroj:form:';
+
+
+/* ---- leaving with unsaved changes ---- */
+
+/* Drafts already survive a reload, so this is not about losing text — it is
+ * about not believing you saved when you did not. A draft lives in this
+ * browser's localStorage and nowhere else: it is invisible to the judge, gone
+ * on another machine, and the chips (a problem's types) are not in it at all,
+ * because they are not form controls. Walking away from a half-edited problem
+ * and assuming it is live is the mistake worth interrupting. */
+
+/** Set by the editor to a function reporting whether the form has diverged
+ *  from what the server last gave us. Null whenever no editor is on screen. */
+let unsavedCheck = null;
+/** True while the app itself is reloading on purpose. */
+let leavingOnPurpose = false;
+
+const watchUnsaved = (isDirty) => { unsavedCheck = isDirty; };
+const stopWatchingUnsaved = () => { unsavedCheck = null; };
+
+function hasUnsavedChanges() {
+  // A torn-down form must never claim to be dirty; its inputs are gone.
+  try { return Boolean(unsavedCheck && unsavedCheck()); } catch { return false; }
+}
+
+/** A reload the app chose: the update refresh and the member-view toggle.
+ *  The guard is for accidents, and neither of those is one. */
+function reloadIntentionally() {
+  leavingOnPurpose = true;
+  location.reload();
+}
+
+window.addEventListener('beforeunload', (event) => {
+  if (leavingOnPurpose || !hasUnsavedChanges()) return;
+  // The wording is the browser's; ours is ignored. Both properties are set
+  // because browsers disagree about which one arms the dialog.
+  event.preventDefault();
+  event.returnValue = '';
+});
+
+/* In-app navigation is the common way to walk away from an edit — a link to
+ * Problems loses the form just as thoroughly as closing the tab, and the
+ * browser has no opinion about it. Registered at load, so it runs before the
+ * router's own hashchange listener and can stop the route from happening. */
+let currentHash = location.hash;
+let rollingBack = false;
+
+window.addEventListener('hashchange', (event) => {
+  if (rollingBack) {
+    // Our own correction. Stop it reaching the router, or the editor would
+    // re-render and throw away the very edits we just kept.
+    rollingBack = false;
+    event.stopImmediatePropagation();
+    return;
+  }
+  if (hasUnsavedChanges()
+      && !confirm('You have unsaved changes. Leave this page and discard them?')) {
+    rollingBack = true;
+    event.stopImmediatePropagation();
+    location.hash = currentHash;
+    return;
+  }
+  currentHash = location.hash;
+});
 
 function keepDraft(name, fields) {
   const key = FORM_DRAFT_PREFIX + name;
@@ -1598,7 +1665,7 @@ function setViewAsUser(on) {
     : `${VIEW_AS_COOKIE}=; path=/; Max-Age=0; SameSite=Lax`;
   // A full reload rather than a re-route: every cached payload on the page was
   // fetched with the other set of privileges.
-  location.reload();
+  reloadIntentionally();
 }
 
 /* ---- how ranks and rating work ---- */
@@ -2350,6 +2417,21 @@ async function viewAdminEditor(kind, slug) {
   form.fields.filter((f) => f.type === 'chips').forEach((f) => bindTypeChips(`f-${f.k}`));
   if (extra && extra.bind) extra.bind();
 
+  /* Everything the form holds, as one comparable string. Reads the DOM rather
+   * than closing over the bound helpers so it can be called before they exist.
+   * Chips are included even though the draft leaves them out — the warning has
+   * to be right about the whole form, not just the drafted part of it. */
+  const formSnapshot = () => JSON.stringify({
+    slug: creating ? $('#f-slug').value.trim() : slug,
+    body: $('.md-src').value,
+    fields: form.fields.map((f) => readField(f)),
+  });
+
+  /* Taken before the draft is restored, so the baseline is what the server
+   * last gave us. A restored draft is unsaved work by definition, and should
+   * be reported as such rather than treated as the starting point. */
+  let pristine = formSnapshot();
+
   // A forced refresh must not cost an author their half-written statement.
   // Chips are not form controls, so they sit this out.
   const kept = { [form.body.k]: $('.md-src') };
@@ -2360,6 +2442,8 @@ async function viewAdminEditor(kind, slug) {
   // After the draft, so a restored value is what the bar paints itself from.
   if (vis) bindVisibility(vis);
   const src = bindMarkdownPane($('#md'));
+
+  watchUnsaved(() => formSnapshot() !== pristine);
 
   // The slug is the permalink; keep it following the title until someone types
   // one by hand — including across a restored draft that already has one.
@@ -2385,6 +2469,7 @@ async function viewAdminEditor(kind, slug) {
       await form.save(values, slug);
       if (extra && extra.after) await extra.after(values.slug);
       draft.clear();
+      pristine = formSnapshot();
       if (creating) {
         // testDataPanel toasts its own outcome, since only it knows whether
         // the problem came with test data.
@@ -2735,7 +2820,7 @@ const RELOAD_MARK = 'stroj:reloaded-for';
 function refreshForUpdate(target) {
   if (sessionStorage.getItem(RELOAD_MARK) === target) return false;
   try { sessionStorage.setItem(RELOAD_MARK, target); } catch { /* private mode */ }
-  location.reload();
+  reloadIntentionally();
   return true;
 }
 
@@ -2785,7 +2870,7 @@ async function checkVersions() {
   // likely running the frontend from before the update, and drafts are saved
   // to localStorage on every keystroke, so nothing is lost by doing so.
   if (blockedByUpdate || bootGaveUp) {
-    location.reload();
+    reloadIntentionally();
     return verdict;
   }
   if (verdict === 'stale') refreshForUpdate(frontend);
