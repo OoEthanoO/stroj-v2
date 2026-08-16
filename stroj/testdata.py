@@ -80,12 +80,16 @@ def _resolve_percentages(declared: dict[int, int | None]) -> dict[int, int]:
     return out
 
 
-def parse_zip(data: bytes) -> ParsedTestData:
+def parse_zip(data: bytes, prefix: str = "") -> ParsedTestData:
     """Pull ``name.in`` / ``name.out`` pairs out of a zip archive.
 
     Files are paired by stem and ordered naturally, so ``2.in`` sorts before
     ``10.in``. A directory called ``subtask1`` (optionally ``subtask1-30`` to
     declare its worth) groups its tests into a scoring subtask.
+
+    ``prefix`` narrows the read to one directory and strips it, so an express
+    package's ``tests/`` subtree parses exactly as a bare test archive would —
+    subtask directories and sample names are then relative to it.
     """
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
@@ -100,7 +104,9 @@ def parse_zip(data: bytes) -> ParsedTestData:
     for info in archive.infolist():
         if info.is_dir():
             continue
-        path = Path(info.filename)
+        if prefix and not info.filename.startswith(prefix):
+            continue
+        path = Path(info.filename[len(prefix):])
         if path.name.startswith(".") or "__MACOSX" in info.filename:
             continue
         suffix = path.suffix.lower()
@@ -118,8 +124,9 @@ def parse_zip(data: bytes) -> ParsedTestData:
             answers[key] = archive.read(info).decode("utf-8", "replace")
 
     if not inputs:
+        where = f"inside {prefix}" if prefix else "inside the zip"
         raise TestDataError(
-            "No input files found. Expected pairs like 1.in / 1.out inside the zip."
+            f"No input files found. Expected pairs like 1.in / 1.out {where}."
         )
     missing = sorted(set(inputs) - set(answers), key=_natural_key)
     if missing:

@@ -164,6 +164,80 @@ share of individual tests passed — 10 of 20 earns half.
 **Hidden problems.** `visible: false` keeps a problem off the public list. It
 becomes readable automatically once a contest containing it starts.
 
+## Express authoring
+
+One zip, one paste. The **Express** card on the admin page takes a package
+holding everything a problem is made of, creates it hidden, attaches the test
+data, and submits the intended solutions as practice runs — then hands back
+what they measured, so the limits can be set from real numbers instead of the
+scaling table above.
+
+```
+package.zip
+├── problem.json     ← the metadata form, as JSON
+├── statement.md     ← markdown, `$…$` for maths
+├── tests/           ← exactly what a test upload holds: samples, subtask dirs
+│   ├── sample1.in / .ans
+│   └── subtask1-40/ …
+└── solutions/       ← one intended solution per language
+    ├── sol.cpp
+    ├── main.py
+    └── Main.java
+```
+
+```json
+{
+  "slug": "repair-shop",
+  "title": "Repair Shop",
+  "points": 400,
+  "types": ["greedy", "sorting", "heaps"],
+  "checker": "token",
+  "partial": true,
+  "time_limit_ms": 1000,
+  "memory_limit_mb": 256
+}
+```
+
+`float_eps` is required when the checker is `float` — defaulting it would let a
+problem that needs `1e-9` pass its own calibration and fail its solvers. There
+is no `visible`: an express problem is always created hidden, so a package with
+a mistake in it is never public, and publishing stays a deliberate click. A
+field the manifest does not know is an error rather than a silently ignored
+default, since `type` for `types` is the usual slip. Anything rejected leaves
+nothing behind — a testless half-problem is worse than a failed upload.
+
+When the runs finish, the report lands in the box and on the clipboard:
+
+```
+stroj express calibration
+problem: repair-shop — Repair Shop
+points: 400 (partial scoring)
+tests: 40 (2 samples, 4 subtasks)
+base limits: 1000 ms / 256 MiB
+
+language  verdict  score  time    memory     allowed now
+cpp       AC       100%   34 ms   9.1 MiB    1000 ms / 256 MiB (derived)
+python3   AC       100%   212 ms  66.4 MiB   3200 ms / 288 MiB (derived)
+java      AC       100%   480 ms  210.0 MiB  2500 ms / 576 MiB (derived)
+```
+
+Decide the limits from it, and paste them straight back into the box below:
+
+```
+limits repair-shop
+base 1500ms 256MiB
+cpp 1500ms 256MiB
+python3 4000ms 320MiB
+java 3000ms 640MiB
+```
+
+`base` sets the problem's own limit; a language sets its override, and
+`python3 clear` drops that language back to the derived one. Units are optional
+(`4s`, `4000ms`, `4000` all mean the same; `1gb` is 1024 MiB). The first line
+names the problem on purpose — these numbers arrive by paste, long after the
+run that produced them, and applying them to whichever problem happens to be
+open is the mistake worth making impossible.
+
 ## Contests
 
 A contest has a window, a scoring system, and a labelled problem set that stays
@@ -228,7 +302,9 @@ GET    /api/contests/{slug}/scoreboard
 
 Admin routes live under `/api/admin/` — problems (`POST`/`PATCH`/`DELETE`), test
 data (`PUT .../tests`, `POST .../tests/upload`), contests, `rejudge`, and user
-roles. Interactive docs at `/docs`.
+roles. Express authoring is `POST /api/admin/problems/express`,
+`GET /api/admin/problems/{slug}/express-report`, and
+`POST /api/admin/limits/express`. Interactive docs at `/docs`.
 
 ## Tests
 

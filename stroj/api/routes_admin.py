@@ -22,9 +22,9 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
-from .. import config, contest as contest_mod, db, testdata
+from .. import config, contest as contest_mod, db, express, testdata
 from ..judge import checkers, languages, worker
-from ..judge.runner import PENDING, validate_source
+from ..judge.runner import JUDGING, PENDING, validate_source
 from .deps import get_contest, require_admin
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -481,10 +481,36 @@ async def bulk_submit(
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="That is not a zip file.") from None
 
+    submitted, skipped = _queue_sources(problem, bundle, user)
+    if not submitted:
+        detail = "; ".join(f"{s['file']}: {s['reason']}" for s in skipped[:4])
+        raise HTTPException(
+            status_code=400,
+            detail=f"No submittable source files in that archive. {detail}".strip(),
+        )
+
+    worker.notify()
+    return {"submitted": submitted, "skipped": skipped}
+
+
+def _queue_sources(
+    problem: sqlite3.Row,
+    bundle: zipfile.ZipFile,
+    user: sqlite3.Row,
+    infos: list[zipfile.ZipInfo] | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Insert one practice submission per source file. Returns (queued, skipped).
+
+    Shared by the bulk upload and by express creation, which passes the
+    `solutions/` entries of a larger package as `infos`. Neither notifies the
+    worker — the caller does, once, after it has finished writing.
+    """
     submitted: list[dict] = []
     skipped: list[dict] = []
 
-    for info in sorted(bundle.infolist(), key=lambda i: i.filename):
+    if infos is None:
+        infos = bundle.infolist()
+    for info in sorted(infos, key=lambda i: i.filename):
         name = pathlib.PurePosixPath(info.filename).name
         if info.is_dir() or name.startswith(".") or "__MACOSX" in info.filename:
             continue
@@ -520,15 +546,246 @@ async def bulk_submit(
         )
         submitted.append({"file": name, "language": language_id, "id": submission_id})
 
-    if not submitted:
-        detail = "; ".join(f"{s['file']}: {s['reason']}" for s in skipped[:4])
-        raise HTTPException(
-            status_code=400,
-            detail=f"No submittable source files in that archive. {detail}".strip(),
+    return submitted, skipped
+
+
+@router.post("/problems/express")
+async def express_create(
+    archive: UploadFile = File(...),
+    user: sqlite3.Row = Depends(require_admin),
+):
+    """Create a whole problem from one package, and start its calibration runs.
+
+    The manual route is four screens — the form, the test upload, the editor
+    once per language — and the last three only exist to measure limits that
+    the first one has to be revisited to record. This is all of it in one file:
+    metadata, statement, test data, intended solutions.
+
+    Always hidden, always calibrated. The submissions go in as practice runs
+    the moment the problem exists, so the numbers needed to set the limits are
+    already being measured while the author is still reading the confirmation.
+    """
+    data = await archive.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Archive is too large.")
+
+    try:
+        package = express.parse_package(data)
+    except express.ExpressError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    # Everything that can be checked without writing is checked first: a
+    # package rejected here leaves nothing behind to clean up.
+    _check_slug(package.slug)
+    types = _clean_types(package.types)
+    author_id = _author_id(package.author, user)
+    try:
+        parsed = testdata.parse_zip(data, prefix=express.TESTS_DIR)
+    except testdata.TestDataError as exc:
+        raise HTTPException(status_code=400, detail=f"{express.TESTS_DIR}: {exc}") from None
+
+    try:
+        problem_id = db.insert(
+            "INSERT INTO problems (slug, title, statement, time_limit_ms,"
+            " memory_limit_mb, checker, float_eps, partial, visible, points,"
+            " author_id, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+            (
+                package.slug,
+                package.title,
+                package.statement,
+                package.time_limit_ms,
+                package.memory_limit_mb,
+                package.checker,
+                package.float_eps,
+                int(package.partial),
+                package.points,
+                author_id,
+                db.utcnow(),
+            ),
         )
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="That slug is taken.") from None
+
+    # From here on the problem exists, so every failure has to take it back
+    # out again rather than leave a testless half-problem in the list.
+    try:
+        _set_types(problem_id, types)
+        try:
+            tests = testdata.replace_testcases(
+                problem_id, package.slug, parsed.tests, parsed.subtasks
+            )
+        except testdata.TestDataError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        problem = _problem_or_404(package.slug)
+        submitted, skipped = _queue_sources(
+            problem, package.bundle, user, package.solutions
+        )
+        if not submitted:
+            detail = "; ".join(f"{s['file']}: {s['reason']}" for s in skipped[:4])
+            raise HTTPException(
+                status_code=400,
+                detail=f"Nothing in {express.SOLUTIONS_DIR} could be submitted. "
+                f"{detail}".strip(),
+            )
+    except Exception:
+        db.execute("DELETE FROM problems WHERE id = ?", (problem_id,))
+        testdata.delete_testdata(package.slug)
+        raise
 
     worker.notify()
-    return {"submitted": submitted, "skipped": skipped}
+    return {
+        "slug": package.slug,
+        "title": package.title,
+        "points": package.points,
+        "types": types,
+        "checker": package.checker,
+        "partial": package.partial,
+        "visible": False,
+        "tests": tests,
+        "samples": sum(1 for t in parsed.tests if t["is_sample"]),
+        "subtasks": parsed.subtasks,
+        "submitted": submitted,
+        "skipped": skipped,
+    }
+
+
+@router.get("/problems/{slug}/express-report")
+def express_report(slug: str, ids: str = ""):
+    """The calibration runs' results, formatted for copying out.
+
+    `ids` names the submissions the express upload started. Without it the
+    latest run per language is used, so the report survives a reload of the
+    page that was waiting on it.
+    """
+    problem = _problem_or_404(slug)
+    wanted = [int(part) for part in ids.replace(",", " ").split() if part.strip().isdigit()]
+    if wanted:
+        placeholders = ", ".join("?" * len(wanted))
+        rows = db.query(
+            f"SELECT * FROM submissions WHERE problem_id = ? AND id IN ({placeholders})"
+            " ORDER BY id",
+            (problem["id"], *wanted),
+        )
+    else:
+        rows = db.query(
+            "SELECT * FROM submissions s WHERE s.problem_id = ? AND s.id ="
+            "   (SELECT MAX(id) FROM submissions WHERE problem_id = s.problem_id"
+            "     AND language = s.language)"
+            " ORDER BY s.id",
+            (problem["id"],),
+        )
+
+    limits = get_limits(slug)["limits"]
+    report_rows = []
+    for row in rows:
+        limit = limits.get(row["language"], {})
+        report_rows.append({
+            "id": row["id"],
+            "language": row["language"],
+            "verdict": row["verdict"],
+            "judged": row["verdict"] not in (PENDING, JUDGING),
+            "score_percent": row["earned_percent"],
+            "time_ms": row["time_ms"],
+            "memory_kb": row["memory_kb"],
+            "limit_time_ms": limit.get("time_limit_ms", problem["time_limit_ms"]),
+            "limit_memory_mb": limit.get("memory_limit_mb", problem["memory_limit_mb"]),
+            "measured": limit.get("measured", False),
+        })
+    # Language order, not submission order: the report is read as a comparison
+    # between runtimes, and the archive's filenames decide the latter. The
+    # default language leads, because every other row is judged against it.
+    order = [languages.DEFAULT_LANGUAGE] + [
+        lang for lang in languages.LANGUAGES if lang != languages.DEFAULT_LANGUAGE
+    ]
+    report_rows.sort(key=lambda r: (order.index(r["language"])
+                                    if r["language"] in order else len(order), r["id"]))
+
+    counts = db.one(
+        "SELECT COUNT(*) AS tests, COALESCE(SUM(is_sample), 0) AS samples"
+        "  FROM testcases WHERE problem_id = ?",
+        (problem["id"],),
+    )
+    subtasks = db.one(
+        "SELECT COUNT(*) AS n FROM problem_subtasks WHERE problem_id = ?",
+        (problem["id"],),
+    )
+    summary = {
+        "slug": slug,
+        "title": problem["title"],
+        "points": problem["points"],
+        "partial": bool(problem["partial"]),
+        "tests": counts["tests"],
+        "samples": counts["samples"],
+        "subtasks": subtasks["n"],
+        "time_limit_ms": problem["time_limit_ms"],
+        "memory_limit_mb": problem["memory_limit_mb"],
+    }
+    pending = [r for r in report_rows if not r["judged"]]
+    return {
+        "done": bool(report_rows) and not pending,
+        "pending": len(pending),
+        "rows": report_rows,
+        "summary": summary,
+        "report": express.format_report(summary, report_rows),
+    }
+
+
+class ExpressLimitsBody(BaseModel):
+    #: The pasted block. See `express.parse_limits` for the grammar.
+    text: str
+
+
+@router.post("/limits/express")
+def express_limits(body: ExpressLimitsBody):
+    """Apply a pasted limits block: the base limit and any per-language ones.
+
+    The paste names its own problem, so this is one endpoint rather than a
+    slug in the path — the numbers and the problem they belong to travel
+    together, and pasting yesterday's block into today's problem cannot happen.
+    """
+    try:
+        plan = express.parse_limits(body.text)
+    except express.ExpressError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    problem = _problem_or_404(plan.slug)
+    writes = [
+        (problem["id"], lang, pair[0], pair[1])
+        for lang, pair in plan.languages.items()
+        if pair is not None
+    ]
+    clears = [lang for lang, pair in plan.languages.items() if pair is None]
+
+    with db.transaction() as conn:
+        if plan.base is not None:
+            conn.execute(
+                "UPDATE problems SET time_limit_ms = ?, memory_limit_mb = ? WHERE id = ?",
+                (plan.base[0], plan.base[1], problem["id"]),
+            )
+        for lang in clears:
+            conn.execute(
+                "DELETE FROM problem_limits WHERE problem_id = ? AND language = ?",
+                (problem["id"], lang),
+            )
+        conn.executemany(
+            "INSERT INTO problem_limits"
+            " (problem_id, language, time_limit_ms, memory_limit_mb)"
+            " VALUES (?, ?, ?, ?)"
+            " ON CONFLICT (problem_id, language) DO UPDATE SET"
+            "   time_limit_ms = excluded.time_limit_ms,"
+            "   memory_limit_mb = excluded.memory_limit_mb",
+            writes,
+        )
+
+    return {
+        "slug": plan.slug,
+        "base": None if plan.base is None
+        else {"time_limit_ms": plan.base[0], "memory_limit_mb": plan.base[1]},
+        "set": [w[1] for w in writes],
+        "cleared": clears,
+        "limits": get_limits(plan.slug)["limits"],
+    }
 
 
 #: Inspected archives wait here for the Create button. A real test set runs to

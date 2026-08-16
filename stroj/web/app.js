@@ -2547,6 +2547,168 @@ async function viewAdminEditor(kind, slug) {
   };
 }
 
+/* ----------------------------------------------------------------- express */
+
+/* Copy without assuming a secure context: the judge is often served over plain
+ * http on a LAN, where navigator.clipboard does not exist at all. */
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* fall through to the selection trick */ }
+  const scratch = document.createElement('textarea');
+  scratch.value = text;
+  scratch.setAttribute('readonly', '');
+  scratch.style.position = 'fixed';
+  scratch.style.opacity = '0';
+  document.body.appendChild(scratch);
+  try {
+    scratch.select();
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    scratch.remove();
+  }
+}
+
+/* Express authoring. One zip becomes a hidden problem with its test data and
+ * its calibration runs already queued; the report those runs produce is the
+ * input to the limits box below it, which takes the numbers straight back.
+ *
+ * The report is shown as well as copied. Clipboard writes are refused often
+ * enough — insecure origin, a permission prompt, the tab losing focus during
+ * the wait — that a panel which only copied would sometimes silently deliver
+ * nothing. */
+function expressPanel() {
+  let report = '';
+
+  async function waitForRuns(slug, ids, status) {
+    const url = `/api/admin/problems/${encodeURIComponent(slug)}/express-report`
+      + `?ids=${ids.join(',')}`;
+    // Long enough for three real solutions over a full test set; the page is
+    // free to be closed and reopened, which picks the report back up.
+    for (let tick = 0; tick < 900; tick++) {
+      const found = await api(url);
+      if (!$('#x-status')) return null;          // navigated away mid-wait
+      if (found.done) return found;
+      const done = ids.length - found.pending;
+      status.textContent = `Judging ${ids.length} calibration run(s) — ${done} done…`;
+      await sleep(2000);
+    }
+    throw new Error('Still judging. Reopen the admin page to pick the report up.');
+  }
+
+  function showReport(text) {
+    report = text;
+    $('#x-report').value = text;
+    $('#x-report').hidden = false;
+    $('#x-report-actions').hidden = false;
+  }
+
+  return {
+    html: `
+      <div class="row section-head"><h2>Express</h2></div>
+      <div class="card">
+        <label>Problem package (.zip)
+          <input type="file" id="x-package" accept=".zip" style="max-width:340px"></label>
+        <p class="small muted" style="margin:0">One zip holding
+          <code>problem.json</code>, <code>statement.md</code>,
+          <code>tests/</code> and <code>solutions/</code>. The problem is created
+          hidden, the test data is attached, and every solution is submitted as a
+          practice run. When those finish, their times and memory land in the box
+          below — and on your clipboard.</p>
+        <p class="small" id="x-status" style="margin:0"></p>
+        <textarea id="x-report" class="mono" rows="12" wrap="off" readonly hidden></textarea>
+        <div class="row end" id="x-report-actions" hidden>
+          <div class="spacer"></div>
+          <button class="small" id="x-copy">Copy report</button>
+        </div>
+      </div>
+      <div class="card">
+        <label>Measured limits — paste and apply
+          <textarea id="x-limits" class="mono" rows="6"
+            placeholder="limits my-problem&#10;base 1500ms 256MiB&#10;cpp 1500ms 256MiB&#10;python3 4000ms 320MiB&#10;java 3000ms 640MiB"></textarea></label>
+        <p class="small muted" style="margin:0">The first line names the problem, so
+          a block always applies to the run it came from. <code>base</code> sets the
+          problem's own limit; a language sets its override, and
+          <code>&lt;language&gt; clear</code> drops back to the derived one.</p>
+        <div class="row end">
+          <span class="small muted spacer" id="x-limits-status"></span>
+          <button class="small primary" id="x-apply">Apply limits</button>
+        </div>
+      </div>`,
+
+    bind() {
+      $('#x-package').onchange = async () => {
+        const input = $('#x-package');
+        const status = $('#x-status');
+        if (!input.files.length) return;
+        $('#x-report').hidden = true;
+        $('#x-report-actions').hidden = true;
+        status.className = 'small';
+        status.style.color = '';
+        status.textContent = 'Creating…';
+        input.disabled = true;
+        try {
+          const form = new FormData();
+          form.append('archive', input.files[0]);
+          const made = await api('/api/admin/problems/express', { method: 'POST', form });
+          const ids = made.submitted.map((s) => s.id);
+          toast(`Created ${made.slug} (hidden) with ${made.tests} test(s).`, 'good');
+          status.textContent = `Judging ${ids.length} calibration run(s)…`;
+          const found = await waitForRuns(made.slug, ids, status);
+          if (!found) return;
+          showReport(found.report);
+          const copied = await copyText(found.report);
+          status.style.color = 'var(--ok)';
+          status.textContent = copied
+            ? `${made.slug} is ready — the report is on your clipboard.`
+            : `${made.slug} is ready — press Copy report to take it with you.`;
+          input.value = '';
+        } catch (err) {
+          status.className = 'small error';
+          status.textContent = err.message;
+        } finally {
+          input.disabled = false;
+        }
+      };
+
+      $('#x-copy').onclick = async () => {
+        const copied = await copyText(report);
+        toast(copied ? 'Copied.' : 'Copy failed — select the text instead.',
+          copied ? 'good' : 'bad');
+      };
+
+      $('#x-apply').onclick = async () => {
+        const button = $('#x-apply');
+        const status = $('#x-limits-status');
+        const text = $('#x-limits').value;
+        button.disabled = true;
+        status.textContent = '';
+        try {
+          const done = await api('/api/admin/limits/express', {
+            method: 'POST', body: { text },
+          });
+          const parts = [];
+          if (done.base) parts.push(`base ${done.base.time_limit_ms} ms / ${done.base.memory_limit_mb} MiB`);
+          if (done.set.length) parts.push(`set ${done.set.join(', ')}`);
+          if (done.cleared.length) parts.push(`cleared ${done.cleared.join(', ')}`);
+          status.textContent = `${done.slug}: ${parts.join('; ')}.`;
+          toast('Limits applied.', 'good');
+        } catch (err) {
+          status.textContent = '';
+          toast(err.message, 'bad');
+        } finally {
+          button.disabled = false;
+        }
+      };
+    },
+  };
+}
+
 /* ------------------------------------------------------------- admin index */
 
 async function viewAdmin() {
@@ -2618,8 +2780,12 @@ async function viewAdmin() {
       </td>
     </tr>`).join('');
 
+  const express = expressPanel();
+
   setView(`
     <div class="page-head"><h1>Admin</h1></div>
+
+    ${express.html}
 
     ${head('Posts', 'post')}
     <div class="table-wrap"><table>
@@ -2647,6 +2813,8 @@ async function viewAdmin() {
           <td><button class="small" data-role="${esc(u.username)}" data-next="${u.role === 'admin' ? 'user' : 'admin'}">
             Make ${u.role === 'admin' ? 'user' : 'admin'}</button></td>
         </tr>`).join('')}</tbody></table></div>`, { wide: true });
+
+  express.bind();
 
   const guard = (fn) => async (...args) => {
     try { await fn(...args); } catch (err) { toast(err.message, 'bad'); }
