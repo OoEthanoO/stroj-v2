@@ -1682,8 +1682,9 @@ function ratingGraph(history, ladder) {
 
 /** Every rated contest a competitor has entered, newest first.
  *
- * Shown as a list rather than a chart: with weekly contests the interesting
- * question is "what happened at that one", which a line graph hides. */
+ * Shown as a list rather than a chart: with a dozen-odd contests in a season
+ * the interesting question is "what happened at that one", which a line graph
+ * hides. */
 function ratingHistory(history) {
   if (!history || !history.length) return '';
   const rows = [...history].reverse().map((h) => `
@@ -1785,7 +1786,8 @@ async function viewRanks() {
         <h2>How far one contest moves you</h2>
         <div class="card"><div class="table-wrap"><table><tbody>${movement}</tbody></table></div>
           <p class="muted small" style="margin-bottom:0">A division is
-            ${info.rank_width} points, so a regular week is worth about one.</p></div>
+            ${info.rank_width} points, so a good round is worth about one of
+            them and a great one about two.</p></div>
 
         <h2>How the number is worked out</h2>
         <div class="card statement">
@@ -1795,11 +1797,11 @@ async function viewRanks() {
         finishing above someone rated lower, because the first was less
         expected.</p>
       <p>The result is averaged over the field, so a contest is worth about the
-        same whether four people enter or forty. A quiet week is not a cheap
-        week, and a busy one is not a jackpot.</p>
+        same whether four people enter or forty. A quiet round is not a cheap
+        round, and a busy one is not a jackpot.</p>
       <p>How far you actually move depends on how well the judge knows you. Your
         first ${info.placement_contests} contests move you a long way, because it
-        has no idea yet. After that your rating settles and each week nudges it,
+        has no idea yet. After that your rating settles and each round nudges it,
         so one bad contest cannot undo a term.</p>
       <p><strong>Missing contests costs you nothing.</strong> Your rating does not
         decay while you are away. What changes is certainty: after a few weeks

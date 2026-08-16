@@ -115,9 +115,9 @@ class TestDeviationOverTime:
             rating.DEVIATION_NEW, abs=1)
 
     def test_uncertainty_grows_with_the_root_of_time(self):
-        """Two weeks off is not twice as forgetful as one."""
-        one = rating.grown_deviation(rating.DEVIATION_MIN, 7)
-        two = rating.grown_deviation(rating.DEVIATION_MIN, 14)
+        """Missing two rounds is not twice as forgetful as missing one."""
+        one = rating.grown_deviation(rating.DEVIATION_MIN, rating.PERIOD_DAYS)
+        two = rating.grown_deviation(rating.DEVIATION_MIN, 2 * rating.PERIOD_DAYS)
         assert two < 2 * one
 
     def test_a_first_timer_is_not_punished_for_having_no_history(self):
@@ -136,12 +136,16 @@ class TestTimingChangesHowFarYouMove:
     def test_a_newcomer_moves_furthest(self):
         assert self.contest(rating.DEVIATION_NEW, None) == pytest.approx(60, abs=1)
 
-    def test_a_weekly_regular_moves_in_small_steps(self):
-        assert self.contest(rating.DEVIATION_MIN, 7) < 20
+    def test_a_regular_moves_in_small_steps(self):
+        """Someone who enters every round, a fortnight apart, is moved a
+        fraction of what a newcomer is — one bad Saturday cannot undo a term."""
+        regular = self.contest(rating.DEVIATION_MIN, rating.PERIOD_DAYS)
+        newcomer = self.contest(rating.DEVIATION_NEW, None)
+        assert regular < 0.4 * newcomer
 
     def test_returning_after_months_moves_you_more_than_a_regular(self):
-        regular = self.contest(rating.DEVIATION_MIN, 7)
-        returner = self.contest(rating.DEVIATION_MIN, 70)
+        regular = self.contest(rating.DEVIATION_MIN, rating.PERIOD_DAYS)
+        returner = self.contest(rating.DEVIATION_MIN, 140)
         assert returner > regular * 2
 
     def test_missing_contests_costs_nothing_by_itself(self):
@@ -216,14 +220,16 @@ class TestRankBrackets:
 
 class TestTheLadderFitsOneSeason:
     """September to May is the only span anyone at this club has, so the ladder
-    is sized to it. These are the landmarks measured across forty simulated
-    clubs of sixteen playing twenty-eight weekly contests; if `RANK_WIDTH` or
-    `RANK_FLOOR` moves, the ladder stops describing a season and these fail."""
+    is sized to it. These are the landmarks `scripts/simulate-season.py` measures
+    across forty simulated clubs of sixteen playing **fourteen biweekly
+    contests**; if `RANK_WIDTH` or `RANK_FLOOR` moves, the ladder stops
+    describing a season and these fail. Re-run that script and update these
+    numbers together whenever the contest calendar changes."""
 
-    WEAKEST = 741
+    WEAKEST = 793
     STARTING = rating.START_RATING
-    BEST_TYPICAL = 1289
-    BEST_STANDOUT = 1324
+    BEST_TYPICAL = 1210
+    BEST_STANDOUT = 1253
 
     def test_the_weakest_member_lands_at_the_bottom_rung(self):
         assert rating.rank_for(self.WEAKEST).tier == "Novice"

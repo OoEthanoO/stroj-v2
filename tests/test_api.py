@@ -2547,9 +2547,9 @@ class TestTheRankExplainer:
         plain Elo, so the page has to be able to show it."""
         moves = {m["who"]: m["max_move"] for m in self.body(client)["movement"]}
         first = next(v for k, v in moves.items() if "first contest" in k)
-        weekly = next(v for k, v in moves.items() if "every week" in k)
+        regular = next(v for k, v in moves.items() if "every round" in k)
         away = next(v for k, v in moves.items() if "term away" in k)
-        assert first > away > weekly
+        assert first > away > regular
 
     def test_the_numbers_match_the_module(self, client):
         from stroj import rating as module

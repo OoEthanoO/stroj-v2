@@ -11,8 +11,8 @@ K. Each competitor carries a rating *deviation*: high when their rating is a
 guess, low when it has been confirmed by recent contests. Deviation shrinks
 every time they compete and grows while they do not.
 
-That is what makes optional weekly contests work. Someone who enters every
-week has a settled rating and moves in small steps, so one bad Saturday does
+That is what makes optional biweekly contests work. Someone who enters every
+round has a settled rating and moves in small steps, so one bad Saturday does
 not undo a term. Someone who skips two months has a rating that no longer
 describes them, and the judge knows it: their deviation has grown, so their
 first contest back moves them a long way and they are quickly placed again.
@@ -62,7 +62,7 @@ TOP_TIER = "Legend"
 
 #: Bottom of Novice 1. Anything below still reads as Novice 1 — the floor of
 #: the ladder is a floor, not a hole.
-RANK_FLOOR = 720
+RANK_FLOOR = 785
 #: Rating points per division.
 #:
 #: Sized to **one season**, September to May, because that is the only span
@@ -70,18 +70,22 @@ RANK_FLOOR = 720
 #: over in May; a ladder whose top rungs need a second year is a ladder with
 #: five decorative rungs for everybody who will ever use it.
 #:
-#: Measured rather than guessed. Across forty simulated clubs of sixteen
-#: playing twenty-eight weekly contests at seventy percent attendance, the
-#: weakest member finishes near 720 and the best near 1290, with a genuine
-#: standout reaching about 1325. Twenty-four divisions of 25 points span
-#: exactly that: Novice 1 begins where the weakest finish, and Legend begins
-#: just under where a standout does — earned in a season, but only by someone
-#: who was clearly the best in the room all year.
+#: Measured rather than guessed, by `scripts/simulate-season.py`. Across forty
+#: simulated clubs of sixteen playing **fourteen biweekly contests** at seventy
+#: percent attendance, the weakest member finishes near 790 and the best near
+#: 1210, with a genuine standout reaching about 1250. Twenty-four divisions of
+#: 19 points span exactly that: Novice 1 begins where the weakest finish, and
+#: Legend begins just under where a standout does — earned in a season, but
+#: only by someone who was clearly the best in the room all year.
 #:
-#: Elo in a closed pool self-limits, which is why the range is this narrow:
-#: once you are expected to beat everyone, winning stops paying. Widening the
-#: divisions does not give people further to climb, it only empties the top.
-RANK_WIDTH = 25
+#: The band is narrower than the weekly calendar produced (720-1320) for the
+#: obvious reason: half as many contests is half as many chances to move. The
+#: fix is these narrower rungs rather than a bigger `K_SETTLED`, because Elo in
+#: a closed pool self-limits — once you are expected to beat everyone, winning
+#: stops paying. Simulating it says so plainly: doubling the settled K widens a
+#: season by about 35 points and improves how well the final table sorts the
+#: room by nothing at all. It buys volatility, not reach.
+RANK_WIDTH = 19
 #: 24 divisions, then Legend.
 LEGEND_AT = RANK_FLOOR + len(TIERS) * DIVISIONS * RANK_WIDTH
 
@@ -91,11 +95,16 @@ DEVIATION_NEW = 350.0
 #: a guess about a person who is still learning.
 DEVIATION_MIN = 50.0
 
-#: One rating period is a week, because that is how often contests run.
-PERIOD_DAYS = 7.0
-#: Weeks of silence that take a fully settled rating back to knowing nothing.
-#: Half a school year — long enough that a busy term does not reset you.
-PERIODS_TO_FORGET = 26.0
+#: One rating period is a fortnight, because that is how often contests run.
+PERIOD_DAYS = 14.0
+#: Periods of silence that take a fully settled rating back to knowing nothing.
+#: Thirteen fortnights is half a school year — long enough that a busy term does
+#: not reset you. Deliberately a span of *calendar* time rather than a count of
+#: missed contests: what makes a rating stale is the months passing, not the
+#: entry list going by, so halving the contest calendar must not halve the
+#: memory. (Both constants doubling and halving together is why the day-to-day
+#: decay below is unchanged by the move off weekly contests.)
+PERIODS_TO_FORGET = 13.0
 #: Per-period growth constant, from the two facts above.
 DEVIATION_GROWTH = math.sqrt(
     (DEVIATION_NEW**2 - DEVIATION_MIN**2) / PERIODS_TO_FORGET
@@ -304,14 +313,16 @@ def explain() -> dict:
     of the implementation rather than a second copy of it that some later
     tuning forgets to update.
     """
-    settled_weekly = grown_deviation(DEVIATION_MIN, PERIOD_DAYS)
+    settled_regular = grown_deviation(DEVIATION_MIN, PERIOD_DAYS)
     return {
         "start": START_RATING,
         "legend_at": LEGEND_AT,
         "rank_width": RANK_WIDTH,
         "placement_contests": placement_contests(),
         "period_days": int(PERIOD_DAYS),
-        "weeks_to_forget": int(PERIODS_TO_FORGET),
+        # Weeks, not periods: the page says "after about N weeks away", and a
+        # reader counts weeks whatever the contest calendar happens to be.
+        "weeks_to_forget": round(PERIODS_TO_FORGET * PERIOD_DAYS / 7),
         # What one contest can do to you, by how well you are known. The
         # spread between the first and last row is the whole timing mechanic.
         "movement": [
@@ -324,8 +335,8 @@ def explain() -> dict:
                 "max_move": round(k_factor(shrunk_deviation(DEVIATION_NEW, 15))),
             },
             {
-                "who": "Competing every week",
-                "max_move": round(k_factor(settled_weekly)),
+                "who": "Competing every round",
+                "max_move": round(k_factor(settled_regular)),
             },
             {
                 "who": "Back after a month away",
