@@ -3080,14 +3080,14 @@ async function route() {
                     user: 'users' }[parts[0]] || parts[0];
   $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === section));
 
-  // An account that has not confirmed its address is asked to, on sight — that
-  // is how accounts predating verification are brought over, since they arrive
-  // here with no address at all. Deliberately only on the routes that are
-  // *about* the account: reading problems, contests and profiles is public, and
-  // hijacking those would leave a half-signed-up member unable to see what they
-  // are signing up for.
-  const ACCOUNT_ROUTES = new Set(['submissions', 'submission', 'admin']);
-  if (state.user && !state.user.email_verified && ACCOUNT_ROUTES.has(parts[0])) {
+  // An account that has not confirmed its address is asked to, on sight, from
+  // wherever it lands — that is how accounts predating verification are brought
+  // over, since they arrive here with no address at all. Every route, not just
+  // the account ones: the server already treats an unconfirmed session as
+  // signed out, so leaving them on the problem list would show a page that
+  // silently disagrees with the badge in the corner. Signing out is the way to
+  // browse without finishing.
+  if (state.user && !state.user.email_verified && parts[0] !== 'verify') {
     location.hash = '#/verify';
     return;
   }

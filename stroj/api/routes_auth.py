@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from .. import auth, config, mailer
 from ..ratelimit import RateLimiter, client_key
-from .deps import current_user, require_account, user_public
+from .deps import require_account, session_user, user_public
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -140,7 +140,13 @@ def logout(request: Request, response: Response):
 
 @router.get("/me")
 def me(request: Request):
-    return {"user": user_public(current_user(request))}
+    """The signed-in account, confirmed or not.
+
+    Deliberately `session_user`: an unconfirmed account is nobody to the rest
+    of the site, but the page still has to know who is waiting so it can say
+    so and offer the link again.
+    """
+    return {"user": user_public(session_user(request))}
 
 
 @router.post("/email")
@@ -208,7 +214,7 @@ def verify(body: TokenBody, request: Request, response: Response):
     except auth.AuthError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
-    current = current_user(request)
+    current = session_user(request)
     if current is None or current["id"] != user["id"]:
         _set_session_cookie(response, auth.create_session(user["id"]))
     return {"user": user_public(user)}
