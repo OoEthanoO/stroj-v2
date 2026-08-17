@@ -67,7 +67,9 @@ class TestLoginThrottling:
     def test_brute_force_is_throttled(self, client, monkeypatch):
         monkeypatch.setattr(config, "LOGIN_ATTEMPTS", 10)
         client.post(
-            "/api/auth/register", json={"username": "victim", "password": "password123"}
+            "/api/auth/register",
+            json={"username": "victim", "password": "password123",
+                  "email": "victim@example.test"}
         )
         client.post("/api/auth/logout")
 
@@ -88,7 +90,9 @@ class TestLoginThrottling:
     def test_a_correct_password_still_works_under_load(self, client):
         """Only failures count, so one user's mistakes cannot lock out another."""
         client.post(
-            "/api/auth/register", json={"username": "steady", "password": "password123"}
+            "/api/auth/register",
+            json={"username": "steady", "password": "password123",
+                  "email": "steady@example.test"}
         )
         client.post("/api/auth/logout")
         for _ in range(6):
@@ -100,7 +104,9 @@ class TestLoginThrottling:
 
     def test_success_clears_the_counter(self, client):
         client.post(
-            "/api/auth/register", json={"username": "recover", "password": "password123"}
+            "/api/auth/register",
+            json={"username": "recover", "password": "password123",
+                  "email": "recover@example.test"}
         )
         client.post("/api/auth/logout")
         for _ in range(5):
@@ -119,7 +125,8 @@ class TestRegistrationThrottling:
         codes = []
         for i in range(config.REGISTER_LIMIT + 3):
             codes.append(client.post("/api/auth/register", json={
-                "username": f"spam{i}", "password": "password123"}).status_code)
+                "username": f"spam{i}", "password": "password123",
+                "email": f"spam{i}@example.test"}).status_code)
         assert 200 in codes
         assert codes[-1] == 429
 

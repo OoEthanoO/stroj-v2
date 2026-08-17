@@ -42,11 +42,59 @@ def cmd_adduser(args: argparse.Namespace) -> int:
     _init()
     password = args.password or getpass.getpass("password: ")
     try:
-        auth.create_user(args.username, password, role=args.role)
+        # An account made here is vouched for by whoever has shell access, so
+        # its address is confirmed on the spot. Made without one, it lands in
+        # the same "tell us your address" state as a pre-verification account.
+        auth.create_user(
+            args.username, password, role=args.role,
+            email=args.email, email_verified=bool(args.email),
+        )
     except auth.AuthError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(f"created {args.role} {args.username!r}")
+    print(f"created {args.role} {args.username!r}"
+          + (f" ({args.email}, confirmed)" if args.email
+             else " — it will be asked for an email address on first sign-in"))
+    return 0
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    """Confirm an account's address by hand.
+
+    The way back in when mail is not working: no SMTP server yet, a bounced
+    invitation, a member who cannot reach the address they signed up with.
+    """
+    _init()
+    user = db.one("SELECT * FROM users WHERE username = ?", (args.username,))
+    if user is None:
+        print(f"error: no user named {args.username!r}", file=sys.stderr)
+        return 1
+
+    email = user["email"]
+    if args.email:
+        try:
+            email = auth.set_email(user["id"], args.email)
+        except auth.AuthError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    if not email:
+        print(f"error: {args.username!r} has no email address; pass --email",
+              file=sys.stderr)
+        return 1
+
+    taken = db.one(
+        "SELECT username FROM users WHERE email = ? COLLATE NOCASE"
+        " AND email_verified = 1 AND id != ?",
+        (email, user["id"]),
+    )
+    if taken is not None:
+        print(f"error: {email} is already confirmed by {taken['username']!r}",
+              file=sys.stderr)
+        return 1
+
+    db.execute("UPDATE users SET email_verified = 1 WHERE id = ?", (user["id"],))
+    db.execute("DELETE FROM email_tokens WHERE user_id = ?", (user["id"],))
+    print(f"{args.username!r} confirmed as {email}")
     return 0
 
 
@@ -211,7 +259,17 @@ def build_parser() -> argparse.ArgumentParser:
     adduser.add_argument("username")
     adduser.add_argument("--password")
     adduser.add_argument("--role", choices=("user", "admin"), default="user")
+    adduser.add_argument(
+        "--email", help="confirmed address; omit and the account must supply one"
+    )
     adduser.set_defaults(func=cmd_adduser)
+
+    verify = sub.add_parser(
+        "verify", help="confirm an account's email address by hand"
+    )
+    verify.add_argument("username")
+    verify.add_argument("--email", help="set this address, then confirm it")
+    verify.set_defaults(func=cmd_verify)
 
     passwd = sub.add_parser("passwd", help="change an account's password")
     passwd.add_argument("username")

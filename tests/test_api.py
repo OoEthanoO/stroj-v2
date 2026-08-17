@@ -15,11 +15,24 @@ from stroj.judge import worker
 from tests.conftest import _admin_password as _admin_pw
 
 
-def register(client, username="user1", password="password123"):
+def register(client, username="user1", password="password123", verified=True):
+    """Create an account and, by default, confirm its address.
+
+    Confirmation is applied straight to the row rather than by following the
+    emailed link: every test using this helper predates email verification and
+    is about something else entirely. The link itself is exercised end to end
+    in `tests/test_email_verification.py`.
+    """
     response = client.post(
-        "/api/auth/register", json={"username": username, "password": password}
+        "/api/auth/register",
+        json={"username": username, "password": password,
+              "email": f"{username}@example.test"},
     )
     assert response.status_code == 200, response.text
+    if verified:
+        db.execute(
+            "UPDATE users SET email_verified = 1 WHERE username = ?", (username,)
+        )
     return response.json()["user"]
 
 
@@ -49,21 +62,26 @@ class TestAuth:
         register(client)
         client.post("/api/auth/logout")
         response = client.post(
-            "/api/auth/register", json={"username": "user1", "password": "password123"}
+            "/api/auth/register",
+            json={"username": "user1", "password": "password123",
+                  "email": "other@example.test"}
         )
         assert response.status_code == 400
         assert "taken" in response.json()["detail"]
 
     def test_short_password_is_rejected(self, client):
         response = client.post(
-            "/api/auth/register", json={"username": "shorty", "password": "abc"}
+            "/api/auth/register",
+            json={"username": "shorty", "password": "abc", "email": "s@example.test"}
         )
         assert response.status_code == 400
 
     @pytest.mark.parametrize("username", ["ab", "has space", "sym!bol", "x" * 40])
     def test_invalid_usernames(self, client, username):
         response = client.post(
-            "/api/auth/register", json={"username": username, "password": "password123"}
+            "/api/auth/register",
+            json={"username": username, "password": "password123",
+                  "email": "u@example.test"}
         )
         assert response.status_code == 400
 
@@ -495,7 +513,9 @@ class TestRegistrationModes:
         monkeypatch.setattr(config, "REGISTRATION", "closed")
         assert client.get("/api/config").json()["registration"] == "closed"
         response = client.post(
-            "/api/auth/register", json={"username": "sneaky", "password": "password123"}
+            "/api/auth/register",
+            json={"username": "sneaky", "password": "password123",
+                  "email": "sneaky@example.test"}
         )
         assert response.status_code == 403
         assert "closed" in response.json()["detail"].lower()
@@ -508,16 +528,20 @@ class TestRegistrationModes:
         assert client.get("/api/config").json()["registration"] == "invite"
 
         missing = client.post(
-            "/api/auth/register", json={"username": "student", "password": "password123"}
+            "/api/auth/register",
+            json={"username": "student", "password": "password123",
+                  "email": "student@example.test"}
         )
         assert missing.status_code == 403
 
         wrong = client.post("/api/auth/register", json={
-            "username": "student", "password": "password123", "invite": "guess"})
+            "username": "student", "password": "password123",
+            "email": "student@example.test", "invite": "guess"})
         assert wrong.status_code == 403
 
         right = client.post("/api/auth/register", json={
-            "username": "student", "password": "password123", "invite": "chess-club-2026"})
+            "username": "student", "password": "password123",
+            "email": "student@example.test", "invite": "chess-club-2026"})
         assert right.status_code == 200
         assert right.json()["user"]["username"] == "student"
 
@@ -529,7 +553,9 @@ class TestRegistrationModes:
         monkeypatch.setattr(config, "INVITE_CODE", "")
         assert config.registration_mode() == "closed"
         response = client.post(
-            "/api/auth/register", json={"username": "student", "password": "password123"}
+            "/api/auth/register",
+            json={"username": "student", "password": "password123",
+                  "email": "student@example.test"}
         )
         assert response.status_code == 403
 

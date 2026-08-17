@@ -238,6 +238,49 @@ names the problem on purpose — these numbers arrive by paste, long after the
 run that produced them, and applying them to whichever problem happens to be
 open is the mistake worth making impossible.
 
+## Accounts and email confirmation
+
+Signing up asks for an email address, and the account does nothing until a link
+sent to that address is opened. Until then the member can read the site — the
+problems, the contests, other people's profiles — but cannot submit, enter a
+contest, be rated, or use admin routes. The refusal carries
+`X-Stroj-Reason: email-unverified` so the page can send them to the right
+screen instead of guessing from the wording.
+
+**Accounts made before this existed** keep working: they sign in as always, and
+the first time they touch anything that needs an account they are asked to name
+an address and confirm it. Nothing about the account changes in the meantime —
+rating, role, submissions and history are all untouched.
+
+**Without an SMTP server** the link is written to the log instead of sent, so a
+judge on a laptop still works and an organiser can pass the link on by hand. It
+is a delivery route, not a bypass: the account stays unconfirmed until the link
+is used.
+
+```
+STROJ_BASE_URL       https://judge.example.org   # what goes in the link
+STROJ_SITE_NAME      stroj                       # what the email calls itself
+STROJ_SMTP_HOST      smtp.example.org            # unset ⇒ log the link instead
+STROJ_SMTP_PORT      587
+STROJ_SMTP_USER      judge@example.org
+STROJ_SMTP_PASSWORD  …
+STROJ_SMTP_STARTTLS  1                           # or STROJ_SMTP_SSL for 465
+STROJ_MAIL_FROM      judge@example.org           # defaults to SMTP_USER
+STROJ_ADMIN_EMAIL    you@example.org             # for the bootstrap admin
+```
+
+The first admin account is created already confirmed — it exists before any
+mail server does, and an administrator locked behind a link the judge cannot
+send has no way back in. Everything else goes through the flow.
+
+Two ways round it from a shell, for when mail is broken or an address is
+unreachable:
+
+```bash
+python -m stroj adduser alice --email alice@example.org   # created confirmed
+python -m stroj verify bob --email bob@example.org        # confirm by hand
+```
+
 ## Contests
 
 A contest has a window, a scoring system, and a labelled problem set that stays

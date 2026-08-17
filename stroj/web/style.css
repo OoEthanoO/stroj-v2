@@ -165,6 +165,11 @@ button.primary, .btn.primary { background: var(--accent); border-color: var(--ac
 button.primary:hover:not(:disabled), .btn.primary:hover { filter: brightness(1.08); background: var(--accent); }
 button.ghost { background: transparent; }
 button.danger { color: var(--bad); border-color: var(--bad); background: transparent; }
+/* An account that still has to confirm its email. Coloured like a warning
+   rather than an error: nothing is broken, something is unfinished. */
+button.warn, .btn.warn {
+  background: var(--warn-bg); color: var(--warn); border-color: transparent;
+}
 button.small, .btn.small { padding: 4px 9px; font-size: 13px; }
 
 input, select, textarea {
