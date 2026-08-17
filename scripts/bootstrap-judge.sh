@@ -119,6 +119,19 @@ docker run -d --name "$CONTAINER" \
     --env "STROJ_WORKERS=$WORKERS" \
     --env "STROJ_REGISTRATION=$REGISTRATION" \
     --env "STROJ_INVITE_CODE=$INVITE_CODE" \
+    `# Mail, for the confirmation links. All optional: with no SMTP host the
+     # judge logs the link instead of sending it. Note that this container has
+     # no working DNS and no egress by design, so a hostname here will not
+     # resolve — see "Mail" in DEPLOY.md.` \
+    --env "STROJ_BASE_URL=${STROJ_BASE_URL:-https://$DOMAIN}" \
+    --env "STROJ_SITE_NAME=${STROJ_SITE_NAME:-}" \
+    --env "STROJ_SMTP_HOST=${STROJ_SMTP_HOST:-}" \
+    --env "STROJ_SMTP_PORT=${STROJ_SMTP_PORT:-587}" \
+    --env "STROJ_SMTP_USER=${STROJ_SMTP_USER:-}" \
+    --env "STROJ_SMTP_PASSWORD=${STROJ_SMTP_PASSWORD:-}" \
+    --env "STROJ_SMTP_STARTTLS=${STROJ_SMTP_STARTTLS:-1}" \
+    --env "STROJ_SMTP_SSL=${STROJ_SMTP_SSL:-0}" \
+    --env "STROJ_MAIL_FROM=${STROJ_MAIL_FROM:-}" \
     --restart unless-stopped \
     --memory "${MEM_LIMIT_MB}m" \
     --pids-limit 512 \

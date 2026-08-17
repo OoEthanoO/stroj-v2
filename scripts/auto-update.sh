@@ -168,6 +168,18 @@ carry STROJ_REGISTRATION
 carry STROJ_INVITE_CODE
 carry STROJ_ADMIN_PASSWORD
 carry STROJ_WORKERS
+# Mail. Losing these across a redeploy would not fail loudly — the judge falls
+# back to writing confirmation links to its log, so signups would keep
+# "working" while nobody could finish one.
+carry STROJ_BASE_URL
+carry STROJ_SITE_NAME
+carry STROJ_SMTP_HOST
+carry STROJ_SMTP_PORT
+carry STROJ_SMTP_USER
+carry STROJ_SMTP_PASSWORD
+carry STROJ_SMTP_STARTTLS
+carry STROJ_SMTP_SSL
+carry STROJ_MAIL_FROM
 
 # --ff-only so a dirty or diverged checkout fails loudly instead of merging.
 git merge --ff-only "$remote_rev"
