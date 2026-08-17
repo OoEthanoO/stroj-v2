@@ -300,11 +300,61 @@ issued automatically.
 
 ---
 
+## Mail, and why it is awkward here
+
+Accounts are unusable until a link sent to their address is opened, so a public
+judge wants working mail. The container is deliberately hostile to it: it runs
+with `--dns 127.0.0.1` and behind a host egress rule, precisely so a submission
+cannot phone home. Those two controls also stop the judge itself from reaching
+`smtp.gmail.com`.
+
+Three ways out, in the order worth trying:
+
+**1. Do nothing.** With no `STROJ_SMTP_HOST` the judge writes each confirmation
+link to its log instead of sending it:
+
+```bash
+docker logs stroj-judge | grep 'verification link'
+```
+
+For a club of twenty this is genuinely fine — an organiser reads the link out,
+or confirms the account directly:
+
+```bash
+docker exec stroj-judge python -m stroj verify alice --email alice@example.org
+```
+
+**2. Relay through the host.** Run a mail relay on the host, listening on the
+`stroj0` bridge, and point the judge at the gateway address — no DNS lookup and
+no container egress:
+
+```bash
+-e STROJ_SMTP_HOST=172.18.0.1 -e STROJ_SMTP_PORT=25 -e STROJ_SMTP_STARTTLS=0
+```
+
+**3. Punch a hole for one host.** Allow egress to your provider's SMTP address
+and give `STROJ_SMTP_HOST` the literal IP rather than a hostname, since DNS
+still will not resolve. This is the option that most weakens the isolation
+story: read the egress test above before choosing it.
+
+Whatever you pick, set `STROJ_BASE_URL` to the public site
+(`https://stroj.ethanyanxu.com`) — it is what goes in the link, and an unset
+one sends every member to `127.0.0.1`. `bootstrap-judge.sh` passes all of these
+through and `auto-update.sh` carries them across redeploys; setting them with
+`docker run -e` by hand does not survive the next update.
+
 ## Verifying
 
 ```bash
 curl -fsS https://stroj.ethanyanxu.com/healthz            # proxied to the judge
 curl -fsS https://stroj.ethanyanxu.com/api/languages | head -c 200
+```
+
+After a deploy that introduces email confirmation, check that the accounts
+which predate it can still get in — starting with your own:
+
+```bash
+docker exec stroj-judge python -m stroj verify admin --email you@example.org
 ```
 
 Then open the site and check the footer: it should list the three languages and

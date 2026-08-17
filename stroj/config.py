@@ -63,6 +63,31 @@ REGISTER_WINDOW_S = _int("STROJ_REGISTER_WINDOW", 3600)
 SUBMIT_LIMIT = _int("STROJ_SUBMIT_LIMIT", 40)
 SUBMIT_WINDOW_S = _int("STROJ_SUBMIT_WINDOW", 300)
 
+# --- email verification ------------------------------------------------------
+# An account is not usable until its address is confirmed. With no SMTP server
+# configured the link is written to the log instead of sent, so a judge on a
+# laptop still works and an organiser can pass the link on by hand.
+SITE_NAME = os.environ.get("STROJ_SITE_NAME", "stroj").strip() or "stroj"
+#: Where the site is reachable, used to build the link in the email. Getting
+#: this wrong sends everyone a link to localhost, so it is worth setting.
+BASE_URL = os.environ.get("STROJ_BASE_URL", "http://127.0.0.1:8000").strip()
+SMTP_HOST = os.environ.get("STROJ_SMTP_HOST", "").strip()
+SMTP_PORT = _int("STROJ_SMTP_PORT", 587)
+SMTP_USER = os.environ.get("STROJ_SMTP_USER", "").strip()
+SMTP_PASSWORD = os.environ.get("STROJ_SMTP_PASSWORD", "")
+SMTP_STARTTLS = _flag("STROJ_SMTP_STARTTLS", True)
+SMTP_SSL = _flag("STROJ_SMTP_SSL", False)
+SMTP_TIMEOUT_S = _int("STROJ_SMTP_TIMEOUT", 15)
+MAIL_FROM = (
+    os.environ.get("STROJ_MAIL_FROM", "").strip()
+    or (SMTP_USER if SMTP_USER else "stroj@localhost")
+)
+#: How long a confirmation link stays good.
+EMAIL_TOKEN_HOURS = _int("STROJ_EMAIL_TOKEN_HOURS", 24)
+#: Confirmation mails one account may ask for, and over what window.
+VERIFY_SEND_LIMIT = _int("STROJ_VERIFY_SEND_LIMIT", 5)
+VERIFY_SEND_WINDOW_S = _int("STROJ_VERIFY_SEND_WINDOW", 900)
+
 SESSION_TTL_DAYS = _int("STROJ_SESSION_TTL_DAYS", 14)
 # Mark session cookies `Secure`. Turn this on for any HTTPS deployment; it is
 # off by default so local http://127.0.0.1 development still works.

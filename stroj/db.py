@@ -78,6 +78,23 @@ _ADDED_COLUMNS: list[tuple[str, str, str]] = [
     ("users", "rating_deviation", "REAL NOT NULL DEFAULT 350.0"),
     ("users", "rated_contests", "INTEGER NOT NULL DEFAULT 0"),
     ("users", "last_rated_at", "TEXT"),
+    # Accounts that predate verification keep a NULL address and an unverified
+    # flag, which is exactly the state the app prompts them to leave.
+    ("users", "email", "TEXT"),
+    ("users", "email_verified", "INTEGER NOT NULL DEFAULT 0"),
+]
+
+
+#: Indexes over columns that `_ADDED_COLUMNS` retrofits. They cannot live in
+#: `schema.sql`, which runs *before* the migration: on an older database the
+#: column does not exist yet and the whole script fails.
+_ADDED_INDEXES: list[str] = [
+    # One address may be confirmed by one account. Unconfirmed claims are
+    # deliberately not unique — otherwise typing somebody else's address into
+    # the signup form would lock the real owner out of their own email, a
+    # denial of service anyone could run without proving anything.
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_verified_email"
+    " ON users(email COLLATE NOCASE) WHERE email IS NOT NULL AND email_verified = 1",
 ]
 
 
@@ -88,6 +105,8 @@ def _migrate(conn: sqlite3.Connection) -> list[str]:
         if existing and column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
             applied.append(f"{table}.{column}")
+    for statement in _ADDED_INDEXES:
+        conn.execute(statement)
     return applied
 
 

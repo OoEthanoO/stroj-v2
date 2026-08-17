@@ -39,10 +39,39 @@ def current_user(request: Request) -> sqlite3.Row | dict | None:
     return demoted
 
 
-def require_user(request: Request) -> sqlite3.Row:
+def require_account(request: Request) -> sqlite3.Row:
+    """Signed in, whether or not the address is confirmed.
+
+    Only the handful of endpoints that *are* the confirmation flow use this —
+    reading your own account, naming an address, asking for another link. If a
+    new endpoint is tempted to use it, that endpoint is letting an unconfirmed
+    account act, which is the thing being prevented.
+    """
     user = current_user(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Sign in to do that.")
+    return user
+
+
+def require_user(request: Request) -> sqlite3.Row:
+    """Signed in *and* confirmed — the gate every real action passes through.
+
+    An unconfirmed account is refused here rather than at the door, so somebody
+    part-way through signing up can still see the site, read problems and reach
+    the page that finishes the job. What they cannot do is anything that leaves
+    a mark: submit, enter a contest, be rated, administer.
+    """
+    user = require_account(request)
+    if not auth.is_verified(user):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Confirm your email address first — we sent you a link."
+                if user["email"] else
+                "Add an email address to your account first."
+            ),
+            headers={"X-Stroj-Reason": "email-unverified"},
+        )
     return user
 
 
@@ -111,11 +140,18 @@ def get_contest(slug: str) -> sqlite3.Row:
 def user_public(user: sqlite3.Row | None) -> dict | None:
     if user is None:
         return None
+    keys = user.keys() if hasattr(user, "keys") else user
     return {
         "id": user["id"],
         "username": user["username"],
         "role": user["role"],
         "is_admin": user["role"] == "admin",
+        # Their own address, and whether it is confirmed. Safe to include
+        # because every caller of this serializer renders the *viewer's own*
+        # account — login, `/auth/me`, `/users/me/profile`. The public profile
+        # at `/users/{name}` builds its own dict and must keep doing so.
+        "email": user["email"] if "email" in keys else None,
+        "email_verified": auth.is_verified(user),
         "rating": user["rating"],
         # `rating_rank`, not `rank`: `rank` already means leaderboard position
         # on the profile and the standings, and shadowing it silently replaced

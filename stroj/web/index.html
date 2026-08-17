@@ -46,6 +46,7 @@
   <form method="dialog" id="auth-form">
     <h2 id="auth-title">Sign in</h2>
     <label>Username <input name="username" autocomplete="username" required minlength="3" maxlength="32"></label>
+    <label id="email-field" hidden>Email <input name="email" type="email" autocomplete="email" maxlength="254"></label>
     <label>Password <input name="password" type="password" autocomplete="current-password" required minlength="8"></label>
     <label id="invite-field" hidden>Invite code <input name="invite" autocomplete="off"></label>
     <p class="error" id="auth-error" hidden></p>

@@ -5,6 +5,10 @@ CREATE TABLE IF NOT EXISTS users (
     username      TEXT    NOT NULL UNIQUE,
     password_hash TEXT    NOT NULL,
     role          TEXT    NOT NULL DEFAULT 'user',   -- 'user' | 'admin'
+    -- Nullable on purpose: accounts that predate verification have no address
+    -- until their owner supplies one, and the app asks them for it on sight.
+    email          TEXT,
+    email_verified INTEGER NOT NULL DEFAULT 0,
     bio           TEXT    NOT NULL DEFAULT '',       -- markdown, shown on the profile
     -- Competitive standing. Kept here rather than derived on read because a
     -- rating is a running total over contests, not a function of the present.
@@ -19,6 +23,10 @@ CREATE TABLE IF NOT EXISTS users (
     created_at    TEXT    NOT NULL
 );
 
+-- The unique index over `users.email` is created by `db._ADDED_INDEXES`, not
+-- here: this script runs before the migration that adds the column, so an
+-- older database would fail on it.
+
 CREATE TABLE IF NOT EXISTS sessions (
     token      TEXT    PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -26,6 +34,22 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+-- Outstanding "click this link" tokens. The token is stored as a SHA-256
+-- digest: the plaintext only ever exists in the email, so a stolen database
+-- cannot be used to confirm somebody else's address.
+CREATE TABLE IF NOT EXISTS email_tokens (
+    token_hash TEXT    PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- The address this token confirms, recorded here rather than read from the
+    -- user row: a link must not confirm an address the account changed to
+    -- after the link was sent.
+    email      TEXT    NOT NULL,
+    created_at TEXT    NOT NULL,
+    expires_at TEXT    NOT NULL,
+    used_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_email_tokens_user ON email_tokens(user_id);
 
 -- Front-page announcements, written by admins.
 CREATE TABLE IF NOT EXISTS posts (

@@ -9,7 +9,15 @@ const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ESCAPES[c]);
 
 class ApiError extends Error {
-  constructor(message, status) { super(message); this.status = status; }
+  constructor(message, status, reason = null) {
+    super(message);
+    this.status = status;
+    // Machine-readable "why", when the server bothers to send one. Only
+    // `email-unverified` uses it so far: the page has to tell "you may not do
+    // this" apart from "you have not finished signing up", and matching on the
+    // wording of a message meant for humans would break the moment it changes.
+    this.reason = reason;
+  }
 }
 
 async function api(path, { method = 'GET', body, form } = {}) {
@@ -26,7 +34,8 @@ async function api(path, { method = 'GET', body, form } = {}) {
   if (!res.ok) {
     let detail = data && data.detail;
     if (Array.isArray(detail)) detail = detail.map((d) => d.msg || JSON.stringify(d)).join('; ');
-    throw new ApiError(detail || `${res.status} ${res.statusText}`, res.status);
+    throw new ApiError(detail || `${res.status} ${res.statusText}`, res.status,
+      res.headers.get('X-Stroj-Reason'));
   }
   return data;
 }
@@ -391,6 +400,8 @@ function renderAccount() {
     // marks admins identically rather than having its own private styling.
     box.innerHTML = `
       ${userLink(state.user.username, state.user.role)}
+      ${state.user.email_verified ? '' :
+        '<a class="btn small warn" href="#/verify" title="Your account is not usable until you confirm your email">Confirm email</a>'}
       ${viewingAsUser()
         ? '<button class="small" id="view-as-off">Leave member view</button>'
         : (state.user.is_admin
@@ -433,6 +444,11 @@ function openAuth(mode) {
   const needsInvite = !isLogin && state.config.registration === 'invite';
   $('#invite-field').hidden = !needsInvite;
   form.invite.required = needsInvite;
+  // Only asked for at signup. Existing accounts name their address on the
+  // confirmation page instead, which is also the migration path for accounts
+  // that predate this.
+  $('#email-field').hidden = isLogin;
+  form.email.required = !isLogin;
   const closed = state.config.registration === 'closed';
   $('#auth-switch').innerHTML = isLogin
     ? (closed
@@ -453,14 +469,23 @@ function openAuth(mode) {
     event.preventDefault();
     const body = { username: form.username.value.trim(), password: form.password.value };
     if (needsInvite) body.invite = form.invite.value.trim();
+    if (!isLogin) body.email = form.email.value.trim();
     try {
       const result = await api(`/api/auth/${mode}`, { method: 'POST', body });
       state.user = result.user;
       dialog.close();
       form.reset();
       renderAccount();
-      route();
-      toast(`Welcome, ${result.user.username}.`, 'good');
+      if (!result.user.email_verified) {
+        // Signed in, but nothing works until the address is confirmed — so the
+        // next screen is the one that finishes it, not the page they were on.
+        location.hash = '#/verify';
+        if (location.hash === '#/verify') route();
+        toast('Almost there — confirm your email address.', 'good');
+      } else {
+        route();
+        toast(`Welcome, ${result.user.username}.`, 'good');
+      }
     } catch (err) {
       const box = $('#auth-error');
       box.textContent = err.message;
@@ -473,6 +498,124 @@ function openAuth(mode) {
 function requireSignIn(message) {
   return `<div class="empty">${esc(message)}<br><br>
     <button class="primary" onclick="document.getElementById('show-login').click()">Sign in</button></div>`;
+}
+
+/* ---- confirming an email address ----
+ *
+ * One page doing three jobs, because they are the same job seen from different
+ * doors: someone who just signed up and is waiting, someone whose account
+ * predates verification and has no address on file at all, and someone
+ * arriving from the link in the mail. */
+async function viewVerify(params) {
+  const token = params.get('token');
+  if (token) {
+    setView('<div class="loading">Confirming…</div>');
+    try {
+      const result = await api('/api/auth/verify', { method: 'POST', body: { token } });
+      state.user = result.user;
+      renderAccount();
+      toast('Email confirmed — you are all set.', 'good');
+      location.hash = '#/home';
+      return;
+    } catch (err) {
+      // Fall through to the page below, which offers a fresh link — that is
+      // the remedy for every way a token can fail.
+      setView(`<div class="page-head"><h1>Confirm your email</h1></div>
+        <p class="error">${esc(err.message)}</p>
+        <div id="verify-body"></div>`);
+      renderVerifyBody();
+      return;
+    }
+  }
+
+  setView(`<div class="page-head"><h1>Confirm your email</h1></div>
+    <div id="verify-body"></div>`);
+  renderVerifyBody();
+}
+
+function renderVerifyBody() {
+  const box = $('#verify-body');
+  if (!state.user) {
+    box.innerHTML = requireSignIn('Sign in to confirm your address.');
+    return;
+  }
+  if (state.user.email_verified) {
+    box.innerHTML = `<div class="card"><p style="margin:0">Your address
+      <strong>${esc(state.user.email || '')}</strong> is confirmed. Nothing to do
+      here — <a href="#/problems">go and solve something</a>.</p></div>`;
+    return;
+  }
+
+  const has = !!state.user.email;
+  box.innerHTML = `
+    <div class="card statement" style="max-width:60ch">
+      ${has
+        ? `<p>We sent a link to <strong>${esc(state.user.email)}</strong>. Open it
+             and this account is ready to use. Until then you can read the site,
+             but not submit, enter a contest or be rated.</p>
+           <p class="muted small">Not there? Check spam, or send it again. The
+             link is good for a day.</p>`
+        : `<p>This account was made before we asked for email addresses, so it
+             does not have one yet. Add one and we will send you a link to
+             confirm it — after that everything works as it did.</p>`}
+      <label>Email address
+        <input id="verify-email" type="email" autocomplete="email" maxlength="254"
+          value="${esc(state.user.email || '')}" placeholder="you@example.com"></label>
+      <p class="small" id="verify-status" style="margin:0"></p>
+      <div class="row end" style="margin-top:10px">
+        ${has ? '<button class="small" id="verify-resend">Send it again</button>' : ''}
+        <button class="small primary" id="verify-save">${
+          has ? 'Use this address' : 'Send me a link'}</button>
+      </div>
+    </div>`;
+
+  const status = $('#verify-status');
+  const report = (result) => {
+    status.className = 'small';
+    status.style.color = 'var(--ok)';
+    // `logged` means the judge has no mail server configured; saying so is far
+    // better than "sent" when nothing left the building.
+    status.textContent = result.verification === 'logged'
+      ? 'This judge has no mail server set up — ask an organiser for your link.'
+      : result.verification === 'failed'
+        ? 'The mail server would not take it. Ask an organiser for your link.'
+        : `Link sent to ${result.email}.`;
+  };
+  const fail = (err) => {
+    status.className = 'small error';
+    status.style.color = '';
+    status.textContent = err.message;
+  };
+
+  $('#verify-save').onclick = async () => {
+    const button = $('#verify-save');
+    button.disabled = true;
+    try {
+      const result = await api('/api/auth/email', {
+        method: 'POST', body: { email: $('#verify-email').value.trim() },
+      });
+      state.user.email = result.email;
+      report(result);
+    } catch (err) {
+      fail(err);
+    } finally {
+      button.disabled = false;
+    }
+  };
+
+  const resend = $('#verify-resend');
+  if (resend) {
+    resend.onclick = async () => {
+      resend.disabled = true;
+      try {
+        report(await api('/api/auth/verify/resend', { method: 'POST' }));
+      } catch (err) {
+        fail(err);
+      } finally {
+        resend.disabled = false;
+      }
+    };
+  }
 }
 
 /* ------------------------------------------------------------------ views */
@@ -2937,8 +3080,21 @@ async function route() {
                     user: 'users' }[parts[0]] || parts[0];
   $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === section));
 
+  // An account that has not confirmed its address is asked to, on sight — that
+  // is how accounts predating verification are brought over, since they arrive
+  // here with no address at all. Deliberately only on the routes that are
+  // *about* the account: reading problems, contests and profiles is public, and
+  // hijacking those would leave a half-signed-up member unable to see what they
+  // are signing up for.
+  const ACCOUNT_ROUTES = new Set(['submissions', 'submission', 'admin']);
+  if (state.user && !state.user.email_verified && ACCOUNT_ROUTES.has(parts[0])) {
+    location.hash = '#/verify';
+    return;
+  }
+
   try {
     switch (parts[0]) {
+      case 'verify': await viewVerify(params); break;
       case 'home': await viewHome(); break;
       case 'post': await viewPost(decodeURIComponent(parts[1] || '')); break;
       case 'problems': await viewProblems(); break;
@@ -2972,6 +3128,7 @@ async function route() {
     }
   } catch (err) {
     if (err.status === 401) setView(requireSignIn('You need to sign in to see this.'));
+    else if (err.reason === 'email-unverified') location.hash = '#/verify';
     else setView(`<div class="empty"><strong>${esc(err.message)}</strong></div>`);
   }
 }
