@@ -340,3 +340,65 @@ class TestTheWayBackIn:
         assert cmd_verify(args) == 1
         assert db.one("SELECT email_verified FROM users WHERE username = 'thief'"
                       )["email_verified"] == 0
+
+
+class TestAnUnconfirmedAccountIsNobody:
+    """The gate is not "cannot act", it is "is not signed in".
+
+    Privilege is read off `current_user` in fourteen places, most of them
+    reads. A check that only guarded the endpoints which write left every one
+    of those reads answering as though the account were fully signed in — an
+    unconfirmed admin could list hidden problems, which on this judge means
+    next week's contest.
+    """
+
+    def admin_but_unconfirmed(self, client):
+        auth.create_user("ghost", "password123", role="admin")
+        db.execute("UPDATE users SET email = NULL, email_verified = 0"
+                   " WHERE username = 'ghost'")
+        client.post("/api/auth/login",
+                    json={"username": "ghost", "password": "password123"}).raise_for_status()
+
+    def test_it_cannot_see_hidden_problems(self, client, admin_client):
+        admin_client.post("/api/admin/problems", json={
+            "slug": "next-week", "title": "Next Week", "visible": False}).raise_for_status()
+        admin_client.post("/api/auth/logout")
+
+        self.admin_but_unconfirmed(client)
+        listed = [p["slug"] for p in client.get("/api/problems").json()["problems"]]
+        assert "next-week" not in listed
+        assert client.get("/api/problems/next-week").status_code == 404
+
+    def test_it_cannot_read_unpublished_posts(self, client, admin_client):
+        admin_client.post("/api/admin/posts", json={
+            "slug": "draft", "title": "Draft", "published": False}).raise_for_status()
+        admin_client.post("/api/auth/logout")
+
+        self.admin_but_unconfirmed(client)
+        assert [p["slug"] for p in client.get("/api/posts").json()["posts"]] == []
+        assert client.get("/api/posts/draft").status_code == 404
+
+    def test_the_site_answers_it_exactly_as_it_answers_a_stranger(self, client, admin_client):
+        admin_client.post("/api/admin/problems", json={
+            "slug": "shown", "title": "Shown"}).raise_for_status()
+        admin_client.post("/api/admin/problems", json={
+            "slug": "hidden-one", "title": "Hidden", "visible": False}).raise_for_status()
+        admin_client.post("/api/auth/logout")
+
+        stranger = client.get("/api/problems").json()
+        self.admin_but_unconfirmed(client)
+        assert client.get("/api/problems").json() == stranger
+
+    def test_it_is_not_offered_the_admin_page(self, client):
+        """`is_admin` means "may act as one now", so the page does not offer a
+        door the server will shut."""
+        self.admin_but_unconfirmed(client)
+        me = client.get("/api/auth/me").json()["user"]
+        assert me["role"] == "admin" and me["is_admin"] is False
+
+    def test_but_it_still_knows_whose_account_is_waiting(self, client):
+        """Otherwise the confirmation page could not name the address it is
+        waiting on, or offer to send the link again."""
+        self.admin_but_unconfirmed(client)
+        me = client.get("/api/auth/me").json()["user"]
+        assert me["username"] == "ghost" and me["email_verified"] is False

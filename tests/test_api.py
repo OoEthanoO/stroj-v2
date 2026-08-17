@@ -1659,8 +1659,8 @@ class TestProblemRanking:
         for name, verdict, earned, time_ms, memory_kb in rows:
             uid = db.one("SELECT id FROM users WHERE username = ?", (name,))
             if uid is None:
-                uid = db.insert("INSERT INTO users (username, password_hash, created_at)"
-                                " VALUES (?, 'x', ?)", (name, db.utcnow()))
+                uid = db.insert("INSERT INTO users (username, password_hash, email_verified, created_at)"
+                                " VALUES (?, 'x', 1, ?)", (name, db.utcnow()))
             else:
                 uid = uid["id"]
             ids[name] = db.insert(
@@ -1724,8 +1724,8 @@ class TestProblemRanking:
         make_problem(admin_client)
         pid = db.one("SELECT id FROM problems WHERE slug='a-plus-b'")["id"]
         for name, verdict, score, earned in (("old", "AC", 2, 0), ("new", "WA", 0, 30)):
-            uid = db.insert("INSERT INTO users (username, password_hash, created_at)"
-                            " VALUES (?, 'x', ?)", (name, db.utcnow()))
+            uid = db.insert("INSERT INTO users (username, password_hash, email_verified, created_at)"
+                            " VALUES (?, 'x', 1, ?)", (name, db.utcnow()))
             db.insert(
                 "INSERT INTO submissions (user_id, problem_id, language, source,"
                 " verdict, score, max_score, earned_percent, time_ms, memory_kb,"
@@ -1763,8 +1763,8 @@ class TestRankingRespectsAContestFreeze:
             " VALUES ('live','Live','',?,?,'icpc',20,?)",
             (iso(span[0]), iso(span[1]), db.utcnow()))
         pid = db.one("SELECT id FROM problems WHERE slug='a-plus-b'")["id"]
-        rival = db.insert("INSERT INTO users (username, password_hash, created_at)"
-                          " VALUES ('rival','x',?)", (db.utcnow(),))
+        rival = db.insert("INSERT INTO users (username, password_hash, email_verified, created_at)"
+                          " VALUES ('rival','x',1,?)", (db.utcnow(),))
         db.insert(
             "INSERT INTO submissions (user_id, problem_id, contest_id, language,"
             " source, verdict, score, max_score, earned_percent, time_ms,"
@@ -1819,8 +1819,8 @@ class TestTheSubmissionListRespectsALiveContest:
             " VALUES ('live','Live','',?,?,'icpc',20,?)",
             (iso(span[0]), iso(span[1]), db.utcnow()))
         pid = db.one("SELECT id FROM problems WHERE slug='a-plus-b'")["id"]
-        rival = db.insert("INSERT INTO users (username, password_hash, created_at)"
-                          " VALUES ('rival2','x',?)", (db.utcnow(),))
+        rival = db.insert("INSERT INTO users (username, password_hash, email_verified, created_at)"
+                          " VALUES ('rival2','x',1,?)", (db.utcnow(),))
         db.insert(
             "INSERT INTO submissions (user_id, problem_id, contest_id, language,"
             " source, verdict, score, max_score, earned_percent, time_ms,"
@@ -2191,8 +2191,8 @@ class TestBothSubmissionRoutesAgree:
         pid = db.one("SELECT id FROM problems WHERE slug='cprob'")["id"]
         db.execute("INSERT INTO contest_problems (contest_id, problem_id, label)"
                    " VALUES (?,?, 'A')", (cid, pid))
-        rival = db.insert("INSERT INTO users (username, password_hash, created_at)"
-                          " VALUES ('rival','x',?)", (db.utcnow(),))
+        rival = db.insert("INSERT INTO users (username, password_hash, email_verified, created_at)"
+                          " VALUES ('rival','x',1,?)", (db.utcnow(),))
         return db.insert(
             "INSERT INTO submissions (user_id, problem_id, contest_id, language,"
             " source, verdict, score, max_score, created_at)"
@@ -2346,8 +2346,8 @@ class TestTheActivityCalendarRespectsVisibility:
         pid = db.one("SELECT id FROM problems WHERE slug='cprob'")["id"]
         db.execute("INSERT INTO contest_problems (contest_id, problem_id, label)"
                    " VALUES (?,?, 'A')", (cid, pid))
-        rival = db.insert("INSERT INTO users (username, password_hash, created_at)"
-                          " VALUES ('rival','x',?)", (db.utcnow(),))
+        rival = db.insert("INSERT INTO users (username, password_hash, email_verified, created_at)"
+                          " VALUES ('rival','x',1,?)", (db.utcnow(),))
         for _ in range(count):
             db.insert(
                 "INSERT INTO submissions (user_id, problem_id, contest_id, language,"

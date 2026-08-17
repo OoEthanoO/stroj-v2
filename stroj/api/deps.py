@@ -14,20 +14,24 @@ from ..judge.runner import CE, VERDICT_NAMES
 VIEW_AS_COOKIE = "stroj_view_as"
 
 
-def current_user(request: Request) -> sqlite3.Row | dict | None:
-    """Who is making this request — possibly with their admin role set aside.
+def session_user(request: Request) -> sqlite3.Row | dict | None:
+    """Whose session this is, confirmed or not — possibly with the admin role
+    set aside.
 
     An admin cannot check what members can see by looking at their own screen,
     because the server has already decided they may see everything. The honest
     way to answer "is this leaking?" is to make the server answer as it would
-    for a member, which is what this cookie does: the role is dropped here,
-    once, so every `is_admin` check downstream simply comes out False. Hidden
-    problems vanish from listings, contest metadata seals, judge output goes
-    away, and `/api/admin/*` returns 403 — not because the page is pretending,
-    but because the request really is an ordinary one now.
+    for a member, which is what the view-as cookie does: the role is dropped
+    here, once, so every `is_admin` check downstream simply comes out False.
+    Hidden problems vanish from listings, contest metadata seals, judge output
+    goes away, and `/api/admin/*` returns 403 — not because the page is
+    pretending, but because the request really is an ordinary one now.
 
     It can only ever take privilege away, and only from someone who had it, so
     a member setting the cookie by hand gains nothing.
+
+    Almost nothing should call this. It exists for the confirmation flow, which
+    has to know whose account is waiting; everything else wants `current_user`.
     """
     user = auth.user_for_token(request.cookies.get(auth.SESSION_COOKIE))
     if user is None or user["role"] != "admin":
@@ -39,6 +43,27 @@ def current_user(request: Request) -> sqlite3.Row | dict | None:
     return demoted
 
 
+def current_user(request: Request) -> sqlite3.Row | dict | None:
+    """Who is making this request, as far as the rest of the site is concerned.
+
+    An account whose address is not confirmed is **nobody**: the same as being
+    signed out. Not merely blocked from acting — invisible, because privilege
+    is read off this one value all over the codebase, and a check that only
+    guarded the endpoints which *write* would leave every read still answering
+    as though the account were fully signed in. That is not theoretical: it let
+    an unconfirmed admin list hidden problems, read unpublished posts, see
+    through a scoreboard freeze and open other people's submissions.
+
+    Signing up therefore buys nothing until the link is opened. What is still
+    visible is exactly what a signed-out visitor sees, which is the point — a
+    member part-way through signing up can still look at the site they are
+    joining, and the confirmation page reaches their account through
+    `session_user` instead.
+    """
+    user = session_user(request)
+    return user if auth.is_verified(user) else None
+
+
 def require_account(request: Request) -> sqlite3.Row:
     """Signed in, whether or not the address is confirmed.
 
@@ -47,7 +72,7 @@ def require_account(request: Request) -> sqlite3.Row:
     new endpoint is tempted to use it, that endpoint is letting an unconfirmed
     account act, which is the thing being prevented.
     """
-    user = current_user(request)
+    user = session_user(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Sign in to do that.")
     return user
@@ -56,10 +81,10 @@ def require_account(request: Request) -> sqlite3.Row:
 def require_user(request: Request) -> sqlite3.Row:
     """Signed in *and* confirmed — the gate every real action passes through.
 
-    An unconfirmed account is refused here rather than at the door, so somebody
-    part-way through signing up can still see the site, read problems and reach
-    the page that finishes the job. What they cannot do is anything that leaves
-    a mark: submit, enter a contest, be rated, administer.
+    Reached only by a confirmed account, since `current_user` has already
+    reduced an unconfirmed one to nobody. The explicit check below is what
+    turns that "nobody" into a message explaining which step is missing,
+    rather than a bare "sign in" for someone who plainly is.
     """
     user = require_account(request)
     if not auth.is_verified(user):
@@ -141,11 +166,15 @@ def user_public(user: sqlite3.Row | None) -> dict | None:
     if user is None:
         return None
     keys = user.keys() if hasattr(user, "keys") else user
+    verified = auth.is_verified(user)
     return {
         "id": user["id"],
         "username": user["username"],
         "role": user["role"],
-        "is_admin": user["role"] == "admin",
+        # "May act as an admin *now*", which an unconfirmed account may not —
+        # the server refuses it either way, and offering the admin page to
+        # someone it will then turn away is a lie the page tells itself.
+        "is_admin": user["role"] == "admin" and verified,
         # Their own address, and whether it is confirmed. Safe to include
         # because every caller of this serializer renders the *viewer's own*
         # account — login, `/auth/me`, `/users/me/profile`. The public profile
