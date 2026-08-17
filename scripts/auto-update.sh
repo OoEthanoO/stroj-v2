@@ -180,6 +180,8 @@ carry STROJ_SMTP_PASSWORD
 carry STROJ_SMTP_STARTTLS
 carry STROJ_SMTP_SSL
 carry STROJ_MAIL_FROM
+carry STROJ_MAIL_TRANSPORT
+carry STROJ_MAIL_SPOOL
 
 # --ff-only so a dirty or diverged checkout fails loudly instead of merging.
 git merge --ff-only "$remote_rev"

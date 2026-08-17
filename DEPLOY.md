@@ -300,48 +300,85 @@ issued automatically.
 
 ---
 
-## Mail, and why it is awkward here
+## Mail
 
 Accounts are unusable until a link sent to their address is opened, so a public
-judge wants working mail. The container is deliberately hostile to it: it runs
-with `--dns 127.0.0.1` and behind a host egress rule, precisely so a submission
-cannot phone home. Those two controls also stop the judge itself from reaching
+judge needs working mail. The container is deliberately hostile to it: it runs
+with `--dns 127.0.0.1` behind a blanket egress drop on its bridge, precisely so
+a submission cannot phone home. Those same two controls stop the judge reaching
 `smtp.gmail.com`.
 
-Three ways out, in the order worth trying:
+The way through is not to weaken them. The judge writes each message to a
+directory on its volume, and the **host** — which does have DNS and egress —
+sends it. The container needs no network at all and never holds the mail
+credentials.
 
-**1. Do nothing.** With no `STROJ_SMTP_HOST` the judge writes each confirmation
-link to its log instead of sending it:
-
-```bash
-docker logs stroj-judge | grep 'verification link'
-```
-
-For a club of twenty this is genuinely fine — an organiser reads the link out,
-or confirms the account directly:
+**On the host, once:**
 
 ```bash
-docker exec stroj-judge python -m stroj verify alice --email alice@example.org
+apt install msmtp msmtp-mta          # or any sendmail-compatible client
+cat > /etc/msmtprc <<'CONF'
+defaults
+auth           on
+tls            on
+account        judge
+host           smtp.gmail.com
+port           587
+from           judge@ethanyanxu.com
+user           judge@ethanyanxu.com
+password       <an app password, not your account password>
+account default : judge
+CONF
+chmod 600 /etc/msmtprc
 ```
 
-**2. Relay through the host.** Run a mail relay on the host, listening on the
-`stroj0` bridge, and point the judge at the gateway address — no DNS lookup and
-no container egress:
+Then drain the outbox on a timer:
 
 ```bash
--e STROJ_SMTP_HOST=172.18.0.1 -e STROJ_SMTP_PORT=25 -e STROJ_SMTP_STARTTLS=0
+install -m 755 scripts/send-outbox.sh /usr/local/bin/stroj-send-outbox
+
+cat > /etc/systemd/system/stroj-outbox.service <<'UNIT'
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/stroj-send-outbox
+UNIT
+
+cat > /etc/systemd/system/stroj-outbox.timer <<'UNIT'
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+[Install]
+WantedBy=timers.target
+UNIT
+
+systemctl enable --now stroj-outbox.timer
 ```
 
-**3. Punch a hole for one host.** Allow egress to your provider's SMTP address
-and give `STROJ_SMTP_HOST` the literal IP rather than a hostname, since DNS
-still will not resolve. This is the option that most weakens the isolation
-story: read the egress test above before choosing it.
+Finally, tell the judge to spool and redeploy:
 
-Whatever you pick, set `STROJ_BASE_URL` to the public site
-(`https://stroj.ethanyanxu.com`) — it is what goes in the link, and an unset
-one sends every member to `127.0.0.1`. `bootstrap-judge.sh` passes all of these
-through and `auto-update.sh` carries them across redeploys; setting them with
-`docker run -e` by hand does not survive the next update.
+```bash
+STROJ_MAIL_TRANSPORT=spool STROJ_MAIL_FROM=judge@ethanyanxu.com \
+  ./scripts/bootstrap-judge.sh judge.ethanyanxu.com
+```
+
+`auto-update.sh` carries both across future deploys. Check it took with
+`docker exec stroj-judge python -m stroj doctor`, which prints where mail goes
+and how many messages are waiting.
+
+**The two alternatives**, for completeness. `STROJ_MAIL_TRANSPORT=smtp` with a
+relay reachable on the local network works if you would rather run one — point
+`STROJ_SMTP_HOST` at the bridge gateway
+(`docker network inspect stroj-net -f '{{(index .IPAM.Config 0).Gateway}}'`) and
+allow that one destination through the egress drop. And with nothing configured
+at all the judge logs each link instead, which an organiser can read out:
+
+```bash
+docker logs stroj-judge | grep -A1 'verification link'
+```
+
+Whatever you choose, set `STROJ_BASE_URL` to the public site — it is what goes
+in the link, and an unset one sends every member to `127.0.0.1`.
+`bootstrap-judge.sh` defaults it to the domain you pass in.
 
 ## Verifying
 

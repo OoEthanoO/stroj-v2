@@ -402,3 +402,82 @@ class TestAnUnconfirmedAccountIsNobody:
         self.admin_but_unconfirmed(client)
         me = client.get("/api/auth/me").json()["user"]
         assert me["username"] == "ghost" and me["email_verified"] is False
+
+
+class TestTheOutbox:
+    """The judge cannot reach a mail server from inside its own container, so
+    it writes messages to a directory and something on the host sends them."""
+
+    def spooling(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mailer, "send_verification", _REAL_SEND)
+        monkeypatch.setattr(config, "MAIL_TRANSPORT", "spool")
+        monkeypatch.setattr(config, "MAIL_SPOOL", tmp_path / "outbox")
+        monkeypatch.setattr(config, "BASE_URL", "https://judge.example.org")
+        return tmp_path / "outbox"
+
+    def test_a_signup_leaves_a_message_in_the_outbox(self, client, monkeypatch, tmp_path):
+        outbox = self.spooling(monkeypatch, tmp_path)
+        assert signup(client).json()["verification"] == "spooled"
+        assert len(list(outbox.glob("*.eml"))) == 1
+
+    def test_the_message_is_a_real_email_with_a_working_link(
+            self, client, monkeypatch, tmp_path):
+        """Long URLs get quoted-printable encoded, so the link has to survive
+        being decoded — a check on the raw bytes would pass a broken one."""
+        import email
+        import email.policy
+
+        outbox = self.spooling(monkeypatch, tmp_path)
+        signup(client, "posty", email="posty@example.org")
+        raw = next(outbox.glob("*.eml")).read_bytes()
+        message = email.message_from_bytes(raw, policy=email.policy.default)
+
+        assert message["To"] == "posty@example.org"
+        assert message["Subject"].startswith("Confirm your email")
+        assert message["Message-ID"] and message["Date"]
+        body = message.get_content()
+        assert "https://judge.example.org/#/verify?token=" in body
+
+    def test_the_link_in_it_actually_confirms_the_account(
+            self, client, monkeypatch, tmp_path):
+        import email
+        import email.policy
+        import re
+
+        outbox = self.spooling(monkeypatch, tmp_path)
+        signup(client, "posted", email="posted@example.org")
+        body = email.message_from_bytes(
+            next(outbox.glob("*.eml")).read_bytes(), policy=email.policy.default
+        ).get_content()
+        token = re.search(r"verify\?token=(\S+)", body).group(1)
+
+        assert client.post("/api/auth/verify", json={"token": token}).status_code == 200
+        assert client.get("/api/auth/me").json()["user"]["email_verified"] is True
+
+    def test_a_queued_message_is_not_world_readable(
+            self, client, monkeypatch, tmp_path):
+        """It holds a confirmation link, which *is* the credential it protects."""
+        outbox = self.spooling(monkeypatch, tmp_path)
+        signup(client)
+        spooled = next(outbox.glob("*.eml"))
+        assert spooled.stat().st_mode & 0o777 == 0o600
+        assert outbox.stat().st_mode & 0o777 == 0o700
+
+    def test_nothing_half_written_is_left_where_a_sender_would_find_it(
+            self, client, monkeypatch, tmp_path):
+        """The host drains this on a timer; a partial file would go out
+        truncated exactly once and then be deleted."""
+        outbox = self.spooling(monkeypatch, tmp_path)
+        signup(client)
+        assert not list(outbox.glob("*.tmp"))
+        assert not [p for p in outbox.iterdir() if p.name.startswith(".")]
+
+    def test_the_transport_is_reported_for_doctor(self, monkeypatch, tmp_path):
+        self.spooling(monkeypatch, tmp_path)
+        assert mailer.transport() == "spool" and mailer.configured()
+        assert "spooled to" in mailer.describe()
+
+        monkeypatch.setattr(config, "MAIL_TRANSPORT", "auto")
+        monkeypatch.setattr(config, "SMTP_HOST", "")
+        assert mailer.transport() == "log" and not mailer.configured()
+        assert "written to the log" in mailer.describe()

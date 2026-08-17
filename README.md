@@ -252,10 +252,14 @@ the first time they touch anything that needs an account they are asked to name
 an address and confirm it. Nothing about the account changes in the meantime —
 rating, role, submissions and history are all untouched.
 
-**Without an SMTP server** the link is written to the log instead of sent, so a
-judge on a laptop still works and an organiser can pass the link on by hand. It
-is a delivery route, not a bypass: the account stays unconfirmed until the link
-is used.
+**How the mail gets out** is one of three routes, set by
+`STROJ_MAIL_TRANSPORT`. `smtp` talks to a mail server directly, which suits a
+laptop. `spool` writes each message to a directory for something on the host to
+send — the route a deployed judge wants, because its container has no DNS and no
+egress by design. With neither configured the link is written to the log, so a
+judge on a laptop still works and an organiser can pass it on by hand; that is a
+delivery route, not a bypass, and the account stays unconfirmed until the link
+is used. `python -m stroj doctor` prints which one is in force.
 
 ```
 STROJ_BASE_URL       https://judge.example.org   # what goes in the link
@@ -267,7 +271,13 @@ STROJ_SMTP_PASSWORD  …
 STROJ_SMTP_STARTTLS  1                           # or STROJ_SMTP_SSL for 465
 STROJ_MAIL_FROM      judge@example.org           # defaults to SMTP_USER
 STROJ_ADMIN_EMAIL    you@example.org             # for the bootstrap admin
+STROJ_MAIL_TRANSPORT auto | smtp | spool | log
+STROJ_MAIL_SPOOL     /data/outbox                # where `spool` queues mail
 ```
+
+For a deployed judge see **Mail** in DEPLOY.md: the container cannot reach a
+mail server, so it spools and `scripts/send-outbox.sh` drains the queue from
+the host on a timer.
 
 The first admin account is created already confirmed — it exists before any
 mail server does, and an administrator locked behind a link the judge cannot

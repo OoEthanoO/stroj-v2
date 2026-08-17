@@ -132,6 +132,8 @@ docker run -d --name "$CONTAINER" \
     --env "STROJ_SMTP_STARTTLS=${STROJ_SMTP_STARTTLS:-1}" \
     --env "STROJ_SMTP_SSL=${STROJ_SMTP_SSL:-0}" \
     --env "STROJ_MAIL_FROM=${STROJ_MAIL_FROM:-}" \
+    --env "STROJ_MAIL_TRANSPORT=${STROJ_MAIL_TRANSPORT:-auto}" \
+    --env "STROJ_MAIL_SPOOL=${STROJ_MAIL_SPOOL:-}" \
     --restart unless-stopped \
     --memory "${MEM_LIMIT_MB}m" \
     --pids-limit 512 \
