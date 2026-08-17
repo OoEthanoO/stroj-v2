@@ -84,6 +84,20 @@ MAIL_FROM = (
 )
 #: How long a confirmation link stays good.
 EMAIL_TOKEN_HOURS = _int("STROJ_EMAIL_TOKEN_HOURS", 24)
+#: How outgoing mail leaves the judge.
+#:
+#: ``auto``  SMTP when a host is configured, otherwise the log.
+#: ``smtp``  straight to a mail server — needs DNS and egress, which a judge
+#:           deployed the way DEPLOY.md recommends deliberately has neither.
+#: ``spool`` write each message to `MAIL_SPOOL` and let something on the host
+#:           send it. The container needs no network at all, and the mail
+#:           credentials never enter it.
+#: ``log``   write the link to the log and nothing else.
+MAIL_TRANSPORT = os.environ.get("STROJ_MAIL_TRANSPORT", "auto").strip().lower()
+#: Where ``spool`` leaves messages, as ordinary RFC 822 ``.eml`` files.
+MAIL_SPOOL = Path(
+    os.environ.get("STROJ_MAIL_SPOOL", "").strip() or (DATA_DIR / "outbox")
+)
 #: Confirmation mails one account may ask for, and over what window.
 VERIFY_SEND_LIMIT = _int("STROJ_VERIFY_SEND_LIMIT", 5)
 VERIFY_SEND_WINDOW_S = _int("STROJ_VERIFY_SEND_WINDOW", 900)
@@ -129,7 +143,7 @@ def registration_mode() -> str:
 
 
 def ensure_dirs() -> None:
-    for d in (DATA_DIR, PROBLEM_DIR, WORK_DIR):
+    for d in (DATA_DIR, PROBLEM_DIR, WORK_DIR, MAIL_SPOOL):
         d.mkdir(parents=True, exist_ok=True)
 
 
@@ -152,6 +166,9 @@ def data_dir_modes() -> list[tuple[Path, int]]:
         (DATA_DIR, 0o711),    # traverse only — see above
         (PROBLEM_DIR, 0o700), # answer files: not even traversable
         (WORK_DIR, 0o711),    # boxes are handed over individually
+        # A queued message holds a confirmation link, which *is* the credential
+        # it protects. Not traversable: submissions have no business here.
+        (MAIL_SPOOL, 0o700),
     ]
     # SQLite writes -wal and -shm alongside the database, and they hold recent
     # transactions. Now that /data can be traversed by name they need locking

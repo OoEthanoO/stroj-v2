@@ -7,7 +7,7 @@ import getpass
 import sys
 from pathlib import Path
 
-from . import auth, config, db, seed as seed_module
+from . import auth, config, db, mailer, seed as seed_module
 from .judge import languages, sandbox
 
 
@@ -204,6 +204,19 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     elif mode == "unshare-net":
         print("  ! Network namespaces only; there is no filesystem confinement.")
         print("    Run the judge inside a disposable container.")
+
+    # Whether accounts can actually be confirmed is invisible from outside
+    # otherwise: unconfigured mail does not fail, it quietly logs the link.
+    print(f"mail           : {mailer.describe()}")
+    if not mailer.configured():
+        print("  ! Nobody can finish signing up without an organiser reading the")
+        print("    link out of the log. See 'Mail' in DEPLOY.md.")
+    elif mailer.transport() == "spool":
+        queued = len(list(config.MAIL_SPOOL.glob("*.eml"))) if config.MAIL_SPOOL.exists() else 0
+        print(f"  queued       : {queued} message(s) waiting for the host to send")
+        if queued > 20:
+            print("  ! That is a backlog. Is send-outbox.sh running on the host?")
+
     print("languages:")
     ok = True
     for lang_id, lang in languages.LANGUAGES.items():
