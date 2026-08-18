@@ -74,6 +74,14 @@ class Standing:
 #: someone's profile and nudge every other solve down a rank.
 MIN_EARNED_PERCENT = 1
 
+#: What it takes to have *solved* a problem, as opposed to scored on it.
+#:
+#: Partial credit earns its share of the points, so it belongs in the score and
+#: on the profile list. It is not a solve, though: the "Solved" count answers
+#: "how many problems did you finish", and letting a 5% scrape answer it the
+#: same way a completed problem does makes the column meaningless.
+FULL_SOLVE_PERCENT = 100
+
 #: Hidden problems are worth nothing until they are published.
 #:
 #: A problem is hidden while it is being written and while it is a contest's
@@ -89,7 +97,17 @@ MIN_EARNED_PERCENT = 1
 PUBLISHED_ONLY = "p.visible = 1"
 
 
-def _solved_points_by_user() -> dict[int, tuple[str, str, list[int]]]:
+@dataclass
+class _Solves:
+    username: str
+    role: str
+    #: Earned value of each problem this user has scored on.
+    points: list[int]
+    #: How many of those they solved outright.
+    full: int = 0
+
+
+def _solved_points_by_user() -> dict[int, _Solves]:
     """Every user's earned value per problem, keyed by user id.
 
     A problem counts once however many times it is submitted, at the *best*
@@ -106,10 +124,14 @@ def _solved_points_by_user() -> dict[int, tuple[str, str, list[int]]]:
         " GROUP BY u.id, p.id",
         (MIN_EARNED_PERCENT,),
     )
-    out: dict[int, tuple[str, str, list[int]]] = {}
+    out: dict[int, _Solves] = {}
     for row in rows:
-        entry = out.setdefault(row["user_id"], (row["username"], row["role"], []))
-        entry[2].append(round(row["points"] * row["best"] / 100))
+        entry = out.setdefault(
+            row["user_id"], _Solves(row["username"], row["role"], [])
+        )
+        entry.points.append(round(row["points"] * row["best"] / 100))
+        if row["best"] >= FULL_SOLVE_PERCENT:
+            entry.full += 1
     return out
 
 
@@ -118,13 +140,13 @@ def leaderboard(limit: int | None = None) -> list[dict]:
     standings = [
         Standing(
             user_id=user_id,
-            username=username,
-            role=role,
-            score=weighted_score(points),
-            solved=len(points),
-            hardest=max(points) if points else 0,
+            username=entry.username,
+            role=entry.role,
+            score=weighted_score(entry.points),
+            solved=entry.full,
+            hardest=max(entry.points) if entry.points else 0,
         )
-        for user_id, (username, role, points) in _solved_points_by_user().items()
+        for user_id, entry in _solved_points_by_user().items()
     ]
     standings.sort(key=lambda s: (-s.score, -s.hardest, s.username))
 
@@ -176,6 +198,16 @@ def solved_problems(user_id: int) -> list[dict]:
         }
         for rank, row in enumerate(ordered)
     ]
+
+
+def full_solve_count(solved: list[dict]) -> int:
+    """How many rows of `solved_problems` are full solves rather than partials.
+
+    Takes the list a caller already has so a profile does not re-run the query
+    just to count it, and so the leaderboard's "Solved" column and the profile's
+    "Solved" stat can never disagree about what a solve is.
+    """
+    return sum(1 for row in solved if row["earned_percent"] >= FULL_SOLVE_PERCENT)
 
 
 def user_score(user_id: int) -> float:

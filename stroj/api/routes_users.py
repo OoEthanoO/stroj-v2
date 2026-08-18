@@ -146,7 +146,7 @@ def profile(username: str, request: Request):
         "score": round(scoring.user_score(row["id"]), 1),
         "rank": mine["rank"] if mine else None,
         "ranked_of": len(standings),
-        "solved_count": len(solved),
+        "solved_count": scoring.full_solve_count(solved),
         "solved": solved,
         "rating": row["rating"],
         "rating_rank": rating.rank_dict(row["rating"], row["rated_contests"]),

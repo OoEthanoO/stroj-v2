@@ -137,6 +137,27 @@ class TestLeaderboard:
         people["solve"]("challenger", "medium")
         assert [r["rank"] for r in scoring.leaderboard()] == [1, 1]
 
+    def test_partial_credit_scores_but_is_not_a_solve(self, people):
+        people["solve"]("grinder", "hard", verdict="WA", percent=50)
+        people["solve"]("grinder", "easy")
+        board = scoring.leaderboard()
+        # 300 earned on hard still ranks first and still counts toward the score.
+        assert board[0]["score"] == pytest.approx(300 + 50 * scoring.DECAY)
+        assert board[0]["hardest"] == 300
+        # ...but only the problem they finished is a solve.
+        assert board[0]["solved"] == 1
+
+    def test_a_best_result_short_of_full_never_counts_as_a_solve(self, people):
+        people["solve"]("grinder", "medium", verdict="WA", percent=99)
+        assert scoring.leaderboard()[0]["solved"] == 0
+
+    def test_full_solve_count_ignores_partials_on_the_solved_list(self, people):
+        people["solve"]("grinder", "hard", verdict="WA", percent=50)
+        people["solve"]("grinder", "easy")
+        rows = scoring.solved_problems(people["users"]["grinder"])
+        assert len(rows) == 2
+        assert scoring.full_solve_count(rows) == 1
+
     def test_solved_problems_show_their_contribution(self, people):
         people["solve"]("grinder", "hard")
         people["solve"]("grinder", "easy")
