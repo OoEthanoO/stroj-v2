@@ -123,6 +123,20 @@ class TestDeviationOverTime:
     def test_a_first_timer_is_not_punished_for_having_no_history(self):
         assert rating.grown_deviation(rating.DEVIATION_NEW, None) == rating.DEVIATION_NEW
 
+    def test_a_fortnightly_calendar_never_fully_settles(self):
+        """Competing shrinks the deviation and the fortnight's wait grows it
+        back, so the real cycle reaches a standoff well above DEVIATION_MIN —
+        `K_SETTLED` is not reachable on this calendar. Tested because the
+        shrink-only test above reads as though it were, and because a change to
+        PERIOD_DAYS or PERIODS_TO_FORGET would move the whole season's spread."""
+        deviation = rating.DEVIATION_NEW
+        for _ in range(14):
+            deviation = rating.shrunk_deviation(deviation, 11)
+            deviation = rating.grown_deviation(deviation, rating.PERIOD_DAYS)
+        assert deviation == pytest.approx(137, abs=6)
+        assert rating.k_factor(deviation) == pytest.approx(49, abs=4)
+        assert deviation > rating.DEVIATION_MIN * 2
+
 
 class TestTimingChangesHowFarYouMove:
     """The point of the deviation: when you compete decides how much a result
@@ -229,6 +243,9 @@ class TestTheLadderFitsOneSeason:
     WEAKEST = 793
     STARTING = rating.START_RATING
     BEST_TYPICAL = 1210
+    #: Upper quartile of the club winner's final rating over 1000 seasons. Not
+    #: a freak result — a strong season by the best member of a normal room.
+    BEST_STRONG = 1223
     BEST_STANDOUT = 1253
 
     def test_the_weakest_member_lands_at_the_bottom_rung(self):
@@ -245,8 +262,19 @@ class TestTheLadderFitsOneSeason:
         someone who is only here for one year, which is everybody."""
         assert rating.rank_for(self.BEST_STANDOUT).name == "Legend"
 
+    def test_a_strong_season_reaches_the_top_too(self):
+        """Legend fitted to the standout alone is a rank this club would see
+        about once in fifteen years, which is a decorative rung. A winner at
+        the upper quartile has to get there or the threshold is too high."""
+        assert rating.rank_for(self.BEST_STRONG).name == "Legend"
+
     def test_the_top_is_not_handed_to_a_merely_good_season(self):
         assert rating.rank_for(self.BEST_TYPICAL).name != "Legend"
+
+    def test_a_typical_winner_lands_one_rung_short(self):
+        """Close enough to be worth chasing, which is the whole point of
+        putting a rank above the one most winners reach."""
+        assert rating.rank_for(self.BEST_TYPICAL).index == rating.LADDER_SIZE - 2
 
     def test_a_season_uses_most_of_the_ladder(self):
         low = rating.rank_for(self.WEAKEST).index

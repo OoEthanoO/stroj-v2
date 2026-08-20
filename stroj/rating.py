@@ -73,10 +73,18 @@ RANK_FLOOR = 785
 #: Measured rather than guessed, by `scripts/simulate-season.py`. Across forty
 #: simulated clubs of sixteen playing **fourteen biweekly contests** at seventy
 #: percent attendance, the weakest member finishes near 790 and the best near
-#: 1210, with a genuine standout reaching about 1250. Twenty-four divisions of
-#: 19 points span exactly that: Novice 1 begins where the weakest finish, and
-#: Legend begins just under where a standout does — earned in a season, but
-#: only by someone who was clearly the best in the room all year.
+#: 1210. Novice 1 begins where the weakest finish, and twenty-four divisions
+#: reach from there to Legend.
+#:
+#: Width 18 rather than 19, which is where fitting to the *standout* — the best
+#: result across all forty clubs — first put it. That is a one-in-forty figure
+#: by construction, and it made Legend a rank one club running one season saw
+#: about once in fifteen years: the club's winner finishes at 1208 in a median
+#: season and 1236 at the ninth decile, against a threshold of 1241. Legend was
+#: decorative, which is the exact fault this comment warns about two paragraphs
+#: up. One point narrower puts the threshold at 1217, so the typical winner
+#: lands in Champion 3 one rung short and about a third of seasons crown
+#: somebody — special, but not mythical. Every rung stays occupied either way.
 #:
 #: The band is narrower than the weekly calendar produced (720-1320) for the
 #: obvious reason: half as many contests is half as many chances to move. The
@@ -85,7 +93,7 @@ RANK_FLOOR = 785
 #: stops paying. Simulating it says so plainly: doubling the settled K widens a
 #: season by about 35 points and improves how well the final table sorts the
 #: room by nothing at all. It buys volatility, not reach.
-RANK_WIDTH = 19
+RANK_WIDTH = 18
 #: 24 divisions, then Legend.
 LEGEND_AT = RANK_FLOOR + len(TIERS) * DIVISIONS * RANK_WIDTH
 
@@ -96,6 +104,20 @@ DEVIATION_NEW = 350.0
 DEVIATION_MIN = 50.0
 
 #: One rating period is a fortnight, because that is how often contests run.
+#:
+#: Which means every gap between contests costs exactly one period of
+#: forgetting, and so the deviation never reaches `DEVIATION_MIN`. Competing
+#: shrinks it, the fortnight's wait grows it back, and the two settle at a
+#: standoff around 137 — an effective K near 49 rather than the 20 below.
+#: `K_SETTLED` is not reachable on this calendar; on a weekly one the standoff
+#: sits at 97, on a monthly one at 193.
+#:
+#: That is the intended behaviour rather than a leak. Fourteen contests is few,
+#: and a rating that stopped moving after five of them would spend most of a
+#: season describing September. The cost is that one disastrous contest moves a
+#: leader about 45 points instead of 30 — a little over two rungs. The ladder
+#: above was fitted with this standoff in place, so the season's spread already
+#: accounts for it.
 PERIOD_DAYS = 14.0
 #: Periods of silence that take a fully settled rating back to knowing nothing.
 #: Thirteen fortnights is half a school year — long enough that a busy term does

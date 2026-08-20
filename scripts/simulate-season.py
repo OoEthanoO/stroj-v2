@@ -3,8 +3,8 @@
 
 `RANK_FLOOR` and `RANK_WIDTH` in `stroj/rating.py` are not guesses: they are
 fitted to where a season actually leaves people, so that the bottom rung is
-where the weakest member finishes and Legend is where a standout arrives — and
-every rung between them is reachable by somebody. That fit has to be redone
+where the weakest member finishes and Legend is where a strong season arrives —
+and every rung between them is reachable by somebody. That fit has to be redone
 whenever the contest calendar changes, because half as many contests is half as
 many chances to move.
 
@@ -16,7 +16,10 @@ latent skills, plays `--contests` rated contests `--spacing` days apart at
 * **weakest**   median across clubs of the lowest final rating — where the
                 bottom rung belongs;
 * **best**      median across clubs of the highest — a strong season;
-* **standout**  the best single result anywhere — where Legend belongs;
+* **strong**    upper quartile of the club winners — where Legend belongs, so
+                that a good season reaches it and a typical one does not;
+* **standout**  the best single result anywhere, for scale;
+* **crowned**   share of clubs whose winner reaches Legend as it stands;
 * **rho**       Spearman correlation between latent skill and final rating,
                 i.e. whether the table sorted the room correctly.
 
@@ -101,22 +104,34 @@ def season(seed, *, clubs, size, contests, spacing_days, attendance) -> dict:
         lowest.append(min(finals))
         highest.append(max(finals))
         correlations.append(spearman(skills, finals))
+    ranked = sorted(highest)
     return {
         "weakest": int(statistics.median(lowest)),
         "best": int(statistics.median(highest)),
+        "strong": int(ranked[int(0.75 * len(ranked)) - 1]),
         "standout": max(highest),
+        "crowned": sum(1 for h in highest if h >= rating.LEGEND_AT) / len(highest),
         "rho": statistics.mean(correlations),
     }
 
 
-def fit_ladder(weakest: int, standout: int) -> tuple[int, int]:
+def fit_ladder(weakest: int, strong: int) -> tuple[int, int]:
     """(RANK_FLOOR, RANK_WIDTH) that spans a season with every rung reachable.
 
-    Novice 1 starts where the weakest finish; Legend starts at or just below
-    where a standout arrives, so the top rung is winnable but not handed out.
+    Novice 1 starts where the weakest finish. Legend starts at or just below
+    where a *strong* season arrives — the upper quartile of club winners, not
+    the best result anywhere.
+
+    Fitting the top to the standout is the obvious move and it is wrong: the
+    standout is the maximum over every simulated club, so it rises with how
+    many clubs you simulate and describes nobody in particular. Aimed there,
+    Legend came out at 1241, which one club running one season reaches about
+    once in fifteen years — a rung on the ladder that no member will ever hold.
+    The upper quartile is a real member having a real good year, and it puts
+    the threshold where about a third of seasons crown somebody.
     """
     rungs = len(rating.TIERS) * rating.DIVISIONS
-    width = max(1, (standout - weakest) // rungs)
+    width = max(1, (strong - weakest) // rungs)
     return weakest, width
 
 
@@ -136,7 +151,9 @@ def main() -> None:
 
     print(f"{args.clubs} clubs of {args.size}, {args.contests} contests "
           f"{args.spacing} days apart, {args.attendance:.0%} attendance\n")
-    print(f"{'seed':>6} {'weakest':>8} {'best':>6} {'standout':>9} {'rho':>6}")
+    header = (f"{'seed':>6} {'weakest':>8} {'best':>6} {'strong':>7} "
+              f"{'standout':>9} {'crowned':>8} {'rho':>6}")
+    print(header)
     runs = []
     for seed in range(args.seeds):
         found = season(20260101 + seed, clubs=args.clubs, size=args.size,
@@ -144,16 +161,19 @@ def main() -> None:
                        attendance=args.attendance)
         runs.append(found)
         print(f"{seed:>6} {found['weakest']:>8} {found['best']:>6} "
-              f"{found['standout']:>9} {found['rho']:>6.3f}")
+              f"{found['strong']:>7} {found['standout']:>9} "
+              f"{found['crowned']:>7.0%} {found['rho']:>6.3f}")
 
     weakest = int(statistics.median(r["weakest"] for r in runs))
     best = int(statistics.median(r["best"] for r in runs))
+    strong = int(statistics.median(r["strong"] for r in runs))
     standout = int(statistics.median(r["standout"] for r in runs))
-    print(f"\n{'median':>6} {weakest:>8} {best:>6} {standout:>9} "
-          f"{statistics.mean(r['rho'] for r in runs):>6.3f}")
+    crowned = statistics.mean(r["crowned"] for r in runs)
+    print(f"\n{'median':>6} {weakest:>8} {best:>6} {strong:>7} {standout:>9} "
+          f"{crowned:>7.0%} {statistics.mean(r['rho'] for r in runs):>6.3f}")
 
     if args.fit:
-        floor, width = fit_ladder(weakest, standout)
+        floor, width = fit_ladder(weakest, strong)
         legend = floor + len(rating.TIERS) * rating.DIVISIONS * width
         print(f"\nfitted ladder: RANK_FLOOR = {floor}, RANK_WIDTH = {width}"
               f"  (Legend at {legend})")
