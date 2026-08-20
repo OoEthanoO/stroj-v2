@@ -410,3 +410,11 @@ class TestUpdatesAreNotDeferredForContests:
     def test_it_still_skips_when_already_current(self):
         """Removing the deferral must not turn every poll into a redeploy."""
         assert 'if [ "$deployed" = "$remote_rev" ]; then' in self.script()
+
+
+def test_admin_problems_suite():
+    """Run tests/test_admin_problems.js and surface its output on failure."""
+    result = subprocess.run(
+        ["node", str(Path(__file__).parent / "test_admin_problems.js")],
+        capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr

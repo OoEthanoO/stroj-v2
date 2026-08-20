@@ -943,7 +943,7 @@ async function viewProblem(slug, params) {
       ${problem.partial ? '<span class="pill">partial scoring</span>' : ''}
     </div>
 
-    <div class="grid-2">
+    <div class="problem-layout">
       <div>
         <div class="card"><div class="statement">${markdown(problem.statement)}</div></div>
         ${samples ? `<div class="card"><h2 style="margin-top:0">Samples</h2>${samples}</div>` : ''}
@@ -967,7 +967,7 @@ async function viewProblem(slug, params) {
               ${sealed ? 'the points' : `of the ${problem.points} points`}.</p>
           </div>` : '')}
       </div>
-      <div>
+      <div class="problem-work">
         <div class="card">
           <h2 style="margin-top:0">Submit</h2>
           ${state.user ? `
@@ -1003,7 +1003,7 @@ async function viewProblem(slug, params) {
         <div class="card" id="my-subs"><h2 style="margin-top:0">Your submissions</h2>
           <div class="loading">Loading…</div></div>
       </div>
-    </div>`);
+    </div>`, { wide: true });
 
   if (!state.user) return;
 
@@ -1066,7 +1066,7 @@ async function viewProblem(slug, params) {
   let lastMine = null;
   const refreshMine = async () => {
     const { submissions } = await api(
-      `/api/submissions?mine=true&problem=${encodeURIComponent(slug)}&limit=10`);
+      `/api/submissions?mine=true&problem=${encodeURIComponent(slug)}&limit=5`);
     const box = $('#my-subs');
     if (!box) return;
     // Skip the DOM write when nothing moved, so the panel does not flicker.
@@ -2727,7 +2727,10 @@ async function copyText(text) {
  * enough — insecure origin, a permission prompt, the tab losing focus during
  * the wait — that a panel which only copied would sometimes silently deliver
  * nothing. */
-function expressPanel() {
+/* `onCreated` is called the moment the problem exists, before the calibration
+ * runs are judged — the admin should see the new row while the runs are still
+ * going, not once the report lands. */
+function expressPanel(onCreated) {
   let report = '';
 
   async function waitForRuns(slug, ids, status) {
@@ -2803,6 +2806,11 @@ function expressPanel() {
           const made = await api('/api/admin/problems/express', { method: 'POST', form });
           const ids = made.submitted.map((s) => s.id);
           toast(`Created ${made.slug} (hidden) with ${made.tests} test(s).`, 'good');
+          // Show the new row now. A failure here is cosmetic — the problem was
+          // created either way — so it must not derail the calibration wait.
+          if (onCreated) {
+            try { await onCreated(); } catch { /* the list will catch up on reload */ }
+          }
           status.textContent = `Judging ${ids.length} calibration run(s)…`;
           const found = await waitForRuns(made.slug, ids, status);
           if (!found) return;
@@ -2856,47 +2864,18 @@ function expressPanel() {
 
 /* ------------------------------------------------------------- admin index */
 
-async function viewAdmin() {
-  if (!state.user || !state.user.is_admin) {
-    setView('<div class="empty">Admins only.</div>');
-    return;
-  }
-  const [{ problems }, { contests }, { users }, { posts }] = await Promise.all([
-    api('/api/problems'), api('/api/contests'), api('/api/admin/users'),
-    api('/api/posts?limit=100'),
-  ]);
+/* Hidden has to be legible scanning straight down the column, rather than by
+ * reading each word — it is the state an admin is looking for. */
+const statePill = (on, live, hidden) => (on
+  ? `<span class="pill">${live}</span>`
+  : `<span class="pill warn">${hidden}</span>`);
 
-  /* Hidden has to be legible scanning straight down the column, rather than by
-   * reading each word — it is the state an admin is looking for. */
-  const statePill = (on, live, hidden) => (on
-    ? `<span class="pill">${live}</span>`
-    : `<span class="pill warn">${hidden}</span>`);
-
-  const head = (title, kind) => `
-    <div class="row section-head">
-      <h2>${title}</h2>
-      <div class="spacer"></div>
-      <a class="btn small primary" href="#/admin/new/${kind}">+ New ${kind}</a>
-    </div>`;
-
-  const postRows = posts.map((p) => `
-    <tr>
-      <td class="wide"><a href="#/post/${encodeURIComponent(p.slug)}">${esc(p.title)}</a></td>
-      <td class="mono small muted">${esc(p.slug)}</td>
-      <td>${statePill(p.published, 'published', 'draft')}
-        ${p.pinned ? '<span class="pill">pinned</span>' : ''}</td>
-      <td class="muted small">${esc(relative(p.created_at))}</td>
-      <td>
-        <div class="row">
-          <a class="btn small" href="#/admin/post/${encodeURIComponent(p.slug)}">Edit</a>
-          <button class="small" data-publish="${esc(p.slug)}" data-published="${p.published ? 1 : 0}">${p.published ? 'Hide' : 'Publish'}</button>
-          <button class="small" data-pin="${esc(p.slug)}" data-pinned="${p.pinned ? 1 : 0}">${p.pinned ? 'Unpin' : 'Pin'}</button>
-          <button class="small danger" data-delete-post="${esc(p.slug)}">Delete</button>
-        </div>
-      </td>
-    </tr>`).join('');
-
-  const problemRows = problems.map((p) => `
+/* The problems table draws and binds on its own, away from `viewAdmin`, because
+ * express creation has to add a row to it without disturbing anything else on
+ * the page — the report and the limits box belong to a run in progress, and
+ * re-rendering the view would throw them away. */
+function adminProblemRows(problems) {
+  return problems.map((p) => `
     <tr>
       <td class="wide"><a href="#/problem/${encodeURIComponent(p.slug)}">${esc(p.title)}</a></td>
       <td class="mono small muted">${esc(p.slug)}</td>
@@ -2911,88 +2890,11 @@ async function viewAdmin() {
         </div>
       </td>
     </tr>`).join('');
+}
 
-  const contestRows = contests.map((c) => `
-    <tr>
-      <td class="wide"><a href="#/contest/${encodeURIComponent(c.slug)}">${esc(c.title)}</a></td>
-      <td class="mono small muted">${esc(c.slug)}</td>
-      <td><span class="badge state-${esc(c.state)}">${esc(STATE_LABEL[c.state])}</span></td>
-      <td>
-        <div class="row">
-          <a class="btn small" href="#/admin/contest/${encodeURIComponent(c.slug)}">Edit</a>
-          <button class="small danger" data-delete-contest="${esc(c.slug)}">Delete</button>
-        </div>
-      </td>
-    </tr>`).join('');
+const NO_PROBLEMS_ROW = '<tr><td colspan="4" class="muted">None yet.</td></tr>';
 
-  const express = expressPanel();
-
-  setView(`
-    <div class="page-head"><h1>Admin</h1></div>
-
-    ${express.html}
-
-    ${head('Posts', 'post')}
-    <div class="table-wrap"><table>
-      <thead><tr><th>Title</th><th>Slug</th><th>State</th><th>Posted</th><th>Actions</th></tr></thead>
-      <tbody>${postRows || '<tr><td colspan="5" class="muted">None yet.</td></tr>'}</tbody></table></div>
-
-    ${head('Problems', 'problem')}
-    <div class="table-wrap"><table>
-      <thead><tr><th>Title</th><th>Slug</th><th>State</th><th>Actions</th></tr></thead>
-      <tbody>${problemRows || '<tr><td colspan="4" class="muted">None yet.</td></tr>'}</tbody></table></div>
-
-    ${head('Contests', 'contest')}
-    <div class="table-wrap"><table>
-      <thead><tr><th>Title</th><th>Slug</th><th>State</th><th>Actions</th></tr></thead>
-      <tbody>${contestRows || '<tr><td colspan="4" class="muted">None yet.</td></tr>'}</tbody></table></div>
-
-    <h2>Users</h2>
-    <div class="table-wrap"><table>
-      <thead><tr><th>User</th><th>Role</th><th>Joined</th><th></th></tr></thead>
-      <tbody>${users.map((u) => `
-        <tr>
-          <td class="wide">${esc(u.username)}</td>
-          <td><span class="pill">${esc(u.role)}</span></td>
-          <td class="muted small">${esc(absolute(u.created_at))}</td>
-          <td><button class="small" data-role="${esc(u.username)}" data-next="${u.role === 'admin' ? 'user' : 'admin'}">
-            Make ${u.role === 'admin' ? 'user' : 'admin'}</button></td>
-        </tr>`).join('')}</tbody></table></div>`, { wide: true });
-
-  express.bind();
-
-  const guard = (fn) => async (...args) => {
-    try { await fn(...args); } catch (err) { toast(err.message, 'bad'); }
-  };
-
-  $$('[data-publish]').forEach((button) => {
-    button.onclick = guard(async () => {
-      await api(`/api/admin/posts/${encodeURIComponent(button.dataset.publish)}`, {
-        method: 'PATCH', body: { published: button.dataset.published !== '1' },
-      });
-      route();
-    });
-  });
-
-  $$('[data-pin]').forEach((button) => {
-    button.onclick = guard(async () => {
-      await api(`/api/admin/posts/${encodeURIComponent(button.dataset.pin)}`, {
-        method: 'PATCH', body: { pinned: button.dataset.pinned !== '1' },
-      });
-      route();
-    });
-  });
-
-  $$('[data-delete-post]').forEach((button) => {
-    button.onclick = guard(async () => {
-      const slug = button.dataset.deletePost;
-      if (!confirm(`Delete post "${slug}"?`)) return;
-      await api(`/api/admin/posts/${encodeURIComponent(slug)}`, { method: 'DELETE' });
-      toast('Deleted.');
-      route();
-    });
-  });
-
+function bindAdminProblemRows(guard) {
   $$('[data-upload]').forEach((input) => {
     input.onchange = guard(async () => {
       if (!input.files.length) return;
@@ -3042,6 +2944,134 @@ async function viewAdmin() {
       }
       if (!confirm(lines.join('\n'))) return;
       await api(`/api/admin/problems/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+      toast('Deleted.');
+      route();
+    });
+  });
+}
+
+async function viewAdmin() {
+  if (!state.user || !state.user.is_admin) {
+    setView('<div class="empty">Admins only.</div>');
+    return;
+  }
+  const [{ problems }, { contests }, { users }, { posts }] = await Promise.all([
+    api('/api/problems'), api('/api/contests'), api('/api/admin/users'),
+    api('/api/posts?limit=100'),
+  ]);
+
+  const head = (title, kind) => `
+    <div class="row section-head">
+      <h2>${title}</h2>
+      <div class="spacer"></div>
+      <a class="btn small primary" href="#/admin/new/${kind}">+ New ${kind}</a>
+    </div>`;
+
+  const postRows = posts.map((p) => `
+    <tr>
+      <td class="wide"><a href="#/post/${encodeURIComponent(p.slug)}">${esc(p.title)}</a></td>
+      <td class="mono small muted">${esc(p.slug)}</td>
+      <td>${statePill(p.published, 'published', 'draft')}
+        ${p.pinned ? '<span class="pill">pinned</span>' : ''}</td>
+      <td class="muted small">${esc(relative(p.created_at))}</td>
+      <td>
+        <div class="row">
+          <a class="btn small" href="#/admin/post/${encodeURIComponent(p.slug)}">Edit</a>
+          <button class="small" data-publish="${esc(p.slug)}" data-published="${p.published ? 1 : 0}">${p.published ? 'Hide' : 'Publish'}</button>
+          <button class="small" data-pin="${esc(p.slug)}" data-pinned="${p.pinned ? 1 : 0}">${p.pinned ? 'Unpin' : 'Pin'}</button>
+          <button class="small danger" data-delete-post="${esc(p.slug)}">Delete</button>
+        </div>
+      </td>
+    </tr>`).join('');
+
+  const contestRows = contests.map((c) => `
+    <tr>
+      <td class="wide"><a href="#/contest/${encodeURIComponent(c.slug)}">${esc(c.title)}</a></td>
+      <td class="mono small muted">${esc(c.slug)}</td>
+      <td><span class="badge state-${esc(c.state)}">${esc(STATE_LABEL[c.state])}</span></td>
+      <td>
+        <div class="row">
+          <a class="btn small" href="#/admin/contest/${encodeURIComponent(c.slug)}">Edit</a>
+          <button class="small danger" data-delete-contest="${esc(c.slug)}">Delete</button>
+        </div>
+      </td>
+    </tr>`).join('');
+
+  const guard = (fn) => async (...args) => {
+    try { await fn(...args); } catch (err) { toast(err.message, 'bad'); }
+  };
+
+  /* Redraw only the problems table. `route()` — what every other action on
+   * this page calls — would re-render the express panel too, taking the report
+   * and the limits box with it while a run is still in flight. */
+  const refreshProblems = async () => {
+    const body = $('#admin-problems');
+    if (!body) return;
+    const fresh = await api('/api/problems');
+    body.innerHTML = adminProblemRows(fresh.problems) || NO_PROBLEMS_ROW;
+    bindAdminProblemRows(guard);
+  };
+
+  const express = expressPanel(refreshProblems);
+
+  setView(`
+    <div class="page-head"><h1>Admin</h1></div>
+
+    ${express.html}
+
+    ${head('Posts', 'post')}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Title</th><th>Slug</th><th>State</th><th>Posted</th><th>Actions</th></tr></thead>
+      <tbody>${postRows || '<tr><td colspan="5" class="muted">None yet.</td></tr>'}</tbody></table></div>
+
+    ${head('Problems', 'problem')}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Title</th><th>Slug</th><th>State</th><th>Actions</th></tr></thead>
+      <tbody id="admin-problems">${adminProblemRows(problems) || NO_PROBLEMS_ROW}</tbody></table></div>
+
+    ${head('Contests', 'contest')}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Title</th><th>Slug</th><th>State</th><th>Actions</th></tr></thead>
+      <tbody>${contestRows || '<tr><td colspan="4" class="muted">None yet.</td></tr>'}</tbody></table></div>
+
+    <h2>Users</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>User</th><th>Role</th><th>Joined</th><th></th></tr></thead>
+      <tbody>${users.map((u) => `
+        <tr>
+          <td class="wide">${esc(u.username)}</td>
+          <td><span class="pill">${esc(u.role)}</span></td>
+          <td class="muted small">${esc(absolute(u.created_at))}</td>
+          <td><button class="small" data-role="${esc(u.username)}" data-next="${u.role === 'admin' ? 'user' : 'admin'}">
+            Make ${u.role === 'admin' ? 'user' : 'admin'}</button></td>
+        </tr>`).join('')}</tbody></table></div>`, { wide: true });
+
+  express.bind();
+  bindAdminProblemRows(guard);
+
+  $$('[data-publish]').forEach((button) => {
+    button.onclick = guard(async () => {
+      await api(`/api/admin/posts/${encodeURIComponent(button.dataset.publish)}`, {
+        method: 'PATCH', body: { published: button.dataset.published !== '1' },
+      });
+      route();
+    });
+  });
+
+  $$('[data-pin]').forEach((button) => {
+    button.onclick = guard(async () => {
+      await api(`/api/admin/posts/${encodeURIComponent(button.dataset.pin)}`, {
+        method: 'PATCH', body: { pinned: button.dataset.pinned !== '1' },
+      });
+      route();
+    });
+  });
+
+  $$('[data-delete-post]').forEach((button) => {
+    button.onclick = guard(async () => {
+      const slug = button.dataset.deletePost;
+      if (!confirm(`Delete post "${slug}"?`)) return;
+      await api(`/api/admin/posts/${encodeURIComponent(slug)}`, { method: 'DELETE' });
       toast('Deleted.');
       route();
     });
