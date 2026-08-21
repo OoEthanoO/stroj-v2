@@ -464,8 +464,11 @@ function openAuth(mode) {
     };
   }
 
+  $('#auth-cancel').onclick = () => dialog.close();
+
   form.onsubmit = async (event) => {
-    if (event.submitter && event.submitter.value === 'cancel') return;
+    // Always, on every path. The form is method="dialog", so a submit that
+    // reaches the browser closes the dialog and throws away what was typed.
     event.preventDefault();
     const body = { username: form.username.value.trim(), password: form.password.value };
     if (needsInvite) body.invite = form.invite.value.trim();

@@ -418,3 +418,9 @@ def test_admin_problems_suite():
         ["node", str(Path(__file__).parent / "test_admin_problems.js")],
         capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
+def test_auth_dialog_suite():
+    """Run tests/test_auth_dialog.js and surface its output on failure."""
+    result = subprocess.run(
+        ["node", str(Path(__file__).parent / "test_auth_dialog.js")],
+        capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr

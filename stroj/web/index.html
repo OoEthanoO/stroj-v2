@@ -51,7 +51,10 @@
     <label id="invite-field" hidden>Invite code <input name="invite" autocomplete="off"></label>
     <p class="error" id="auth-error" hidden></p>
     <div class="row">
-      <button value="cancel" class="ghost" type="submit" formnovalidate>Cancel</button>
+      <!-- Not a submit button. Pressing Enter in a field submits through the
+           form's *first* submit button, so a Cancel that submits sits in front
+           of Sign in and swallows the keystroke. -->
+      <button class="ghost" type="button" id="auth-cancel">Cancel</button>
       <button value="ok" class="primary" id="auth-submit">Sign in</button>
     </div>
     <p class="muted small" id="auth-switch"></p>
