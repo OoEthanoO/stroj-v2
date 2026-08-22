@@ -2695,9 +2695,10 @@ def test_a_type_used_only_by_hidden_problems_reaches_no_member(client, admin_cli
     assert "segment tree" not in vocabulary and "flows" not in vocabulary
 
 
-class TestAProblemNamesTheContestItCameFrom:
-    """An archived problem carries where it was set and as which letter, so it
-    reads as "B from the March round" rather than as an unplaced statement."""
+class TestAProblemNamesTheContestsItIsIn:
+    """A problem carries the rounds it belongs to and its letter in each, so it
+    reads as "B from the March round" rather than as an unplaced statement.
+    Rounds still to come are named too; only a running one is withheld."""
 
     SPANS = {
         "long ended": (-9, -7),
@@ -2724,7 +2725,7 @@ class TestAProblemNamesTheContestItCameFrom:
             (contest_id, problem_id, label),
         )
 
-    def origins(self, client, slug="a-plus-b"):
+    def appearances(self, client, slug="a-plus-b"):
         response = client.get(f"/api/problems/{slug}")
         assert response.status_code == 200, response.text
         return response.json()["contests"]
@@ -2735,20 +2736,20 @@ class TestAProblemNamesTheContestItCameFrom:
         self.add_to_contest(label="C")
         admin_client.post("/api/auth/logout")
         register(client, "reader")
-        origins = self.origins(client)
-        assert len(origins) == 1
-        assert origins[0]["slug"] == "march"
-        assert origins[0]["title"] == "March Round"
-        assert origins[0]["label"] == "C"
+        appearances = self.appearances(client)
+        assert len(appearances) == 1
+        assert appearances[0]["slug"] == "march"
+        assert appearances[0]["title"] == "March Round"
+        assert appearances[0]["label"] == "C"
         # Carried so the page can say how long ago, without a second request.
-        assert origins[0]["ends_at"] == db.one(
+        assert appearances[0]["ends_at"] == db.one(
             "SELECT ends_at FROM contests WHERE slug = 'march'")["ends_at"]
 
     def test_a_problem_set_for_nothing_names_nothing(self, client, admin_client):
         make_problem(admin_client)
         admin_client.post("/api/auth/logout")
         register(client, "reader2")
-        assert self.origins(client) == []
+        assert self.appearances(client) == []
 
     def test_a_running_contest_is_not_named(self, client, admin_client):
         """The case the feature is defined against: read during the contest, the
@@ -2758,39 +2759,69 @@ class TestAProblemNamesTheContestItCameFrom:
         self.add_to_contest(state="running")
         admin_client.post("/api/auth/logout")
         register(client, "contestant")
-        assert self.origins(client) == []
+        assert self.appearances(client) == []
 
-    def test_a_contest_that_has_not_started_is_not_named(self, client, admin_client):
-        """Naming it would publish next week's problem set from the archive."""
+    def test_a_contest_that_has_not_started_is_named_as_upcoming(
+            self, client, admin_client):
+        """A scheduled reappearance is something to be able to see from the
+        problem. The state travels with it so the page can say which it is —
+        unmarked beside a finished round it would read as history."""
         make_problem(admin_client)
         self.add_to_contest(state="before")
         admin_client.post("/api/auth/logout")
         register(client, "early")
-        assert self.origins(client) == []
+        appearances = self.appearances(client)
+        assert [(c["slug"], c["label"]) for c in appearances] == [("march", "C")]
+        assert appearances[0]["state"] == "before"
 
-    def test_a_reused_problem_names_every_finished_round_oldest_first(
+    def test_a_finished_round_is_marked_as_finished(self, client, admin_client):
+        make_problem(admin_client)
+        self.add_to_contest()
+        admin_client.post("/api/auth/logout")
+        register(client, "later")
+        assert self.appearances(client)[0]["state"] == "ended"
+
+    def test_a_problem_reachable_only_through_an_unstarted_round_stays_hidden(
             self, client, admin_client):
-        """Chronological, because that is how a problem's history reads: the
-        round it was written for, then the rounds it was borrowed for."""
+        """What bounds the hole this opens in the unstarted problem set: a
+        problem written for that round is hidden, and its page 404s until the
+        clock starts, so there is nothing for the pill to appear on."""
+        make_problem(admin_client, slug="secret", visible=False)
+        self.add_to_contest(slug="secret", state="before")
+        admin_client.post("/api/auth/logout")
+        register(client, "prying")
+        assert client.get("/api/problems/secret").status_code == 404
+
+    def test_a_reused_problem_names_every_round_oldest_first(
+            self, client, admin_client):
+        """Chronological, because that is how a problem's life reads: the round
+        it was written for, the rounds it was borrowed for, then the one it is
+        booked into next."""
         make_problem(admin_client)
         self.add_to_contest(contest="march", title="March Round", label="C",
                             state="long ended")
         self.add_to_contest(contest="june", title="June Round", label="A")
+        self.add_to_contest(contest="sept", title="September Round", label="D",
+                            state="before")
         admin_client.post("/api/auth/logout")
         register(client, "reader3")
-        assert [(c["slug"], c["label"]) for c in self.origins(client)] == [
-            ("march", "C"), ("june", "A")]
+        assert [(c["slug"], c["label"], c["state"])
+                for c in self.appearances(client)] == [
+            ("march", "C", "ended"), ("june", "A", "ended"),
+            ("sept", "D", "before")]
 
-    def test_a_round_still_to_come_does_not_join_that_list(
+    def test_only_the_live_round_drops_out_of_that_list(
             self, client, admin_client):
-        """The finished rounds still show; only the live one drops out."""
+        """The one exclusion, with the rounds on either side of it kept."""
         make_problem(admin_client)
         self.add_to_contest(contest="march", title="March Round", label="C")
         self.add_to_contest(contest="june", title="June Round", label="A",
                             state="running")
+        self.add_to_contest(contest="sept", title="September Round", label="D",
+                            state="before")
         admin_client.post("/api/auth/logout")
         register(client, "reader4")
-        assert [(c["slug"], c["label"]) for c in self.origins(client)] == [("march", "C")]
+        assert [c["slug"] for c in self.appearances(client)] == ["march", "sept"]
 
     def test_a_sealed_problem_says_nothing_about_its_past(self, client, admin_client):
         """A hidden problem pulled into a live round must not reveal that it has
@@ -2803,7 +2834,7 @@ class TestAProblemNamesTheContestItCameFrom:
                             label="B", state="running")
         admin_client.post("/api/auth/logout")
         register(client, "contestant2")
-        assert self.origins(client, "secret") == []
+        assert self.appearances(client, "secret") == []
 
     def test_an_admin_still_sees_the_history_of_a_sealed_problem(self, admin_client):
         make_problem(admin_client, slug="secret", visible=False)
@@ -2811,4 +2842,4 @@ class TestAProblemNamesTheContestItCameFrom:
                             label="C")
         self.add_to_contest(slug="secret", contest="live", title="Live Round",
                             label="B", state="running")
-        assert [c["label"] for c in self.origins(admin_client, "secret")] == ["C"]
+        assert [c["label"] for c in self.appearances(admin_client, "secret")] == ["C"]

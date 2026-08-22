@@ -12,7 +12,7 @@ from ..judge.runner import ProblemSpec
 # One loader, in the layer that owns a problem's judging inputs.
 from ..judge.worker import load_limits as problem_limits
 from .deps import (
-    contest_origins,
+    contest_appearances,
     current_user,
     get_problem,
     is_admin,
@@ -44,8 +44,9 @@ def get_problem_detail(slug: str, request: Request):
     data = problem_summary(problem, user)
     data["statement"] = problem["statement"]
     data["float_eps"] = problem["float_eps"]
-    # Which finished rounds this problem was set for, and as which letter.
-    data["contests"] = contest_origins(problem, user)
+    # Which rounds this problem is in, and as which letter. Anything but
+    # the one that is running right now.
+    data["contests"] = contest_appearances(problem, user)
 
     samples = []
     for row in db.query(

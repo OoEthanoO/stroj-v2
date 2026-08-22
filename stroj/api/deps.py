@@ -148,19 +148,28 @@ def metadata_sealed(problem: sqlite3.Row, user: sqlite3.Row | None) -> bool:
     return any(contest.is_running(c) for c in contests_with(problem["id"]))
 
 
-def contest_origins(problem: sqlite3.Row, user: sqlite3.Row | None) -> list[dict]:
-    """The finished contests this problem was set for, and its letter in each.
+def contest_appearances(problem: sqlite3.Row, user: sqlite3.Row | None) -> list[dict]:
+    """The contests this problem appears in, and its letter in each.
 
-    Where a problem came from is part of reading it: "D from the March round"
-    places it in a way no tag does, and the label is what competitors quote at
-    each other afterwards. Both are archive facts once the round is over, so
-    they belong on the problem's own page and not only on the contest's.
+    Which round a problem belongs to is part of reading it: "D from the March
+    round" places it in a way no tag does, and the label is what competitors
+    quote at each other. Neither lived anywhere but on the contest's own page.
 
-    Only ever said about a contest that has *finished*. Naming one that has not
-    started leaks its problem set, and naming one that is running tells the
-    people sitting it that this problem already has solutions and an editorial
-    somewhere — the same class of hint `metadata_sealed` withholds, so a
-    sealed problem says nothing about its origins either.
+    Every contest the problem is in, *except one that is running*. A running
+    contest is the case a competitor is reading the problem inside — the page
+    they came from says which contest this is, and repeating it tells them
+    nothing while making a live round read as an archive entry. A sealed
+    problem says nothing at all, on the `metadata_sealed` rule: a hidden
+    problem pulled into a live round must not reveal it has been set before,
+    because that says solutions and an editorial exist somewhere.
+
+    A contest that has **not started** is named, which is a deliberate hole in
+    the seal `contest_detail` puts over an unstarted problem set. It is a
+    bounded one: a problem written for that round is `visible = 0` and its page
+    404s until the clock starts, so what this can reveal is only which
+    *already-public* problems are being reused, and at which letters. Announcing
+    that is the point — a scheduled reappearance is something a member is meant
+    to be able to see from the problem itself.
     """
     if metadata_sealed(problem, user):
         return []
@@ -169,6 +178,8 @@ def contest_origins(problem: sqlite3.Row, user: sqlite3.Row | None) -> list[dict
             "slug": row["slug"],
             "title": row["title"],
             "label": row["label"],
+            "state": contest.state_of(row),
+            "starts_at": row["starts_at"],
             "ends_at": row["ends_at"],
         }
         for row in db.query(
@@ -177,7 +188,7 @@ def contest_origins(problem: sqlite3.Row, user: sqlite3.Row | None) -> list[dict
             " WHERE cp.problem_id = ? ORDER BY c.starts_at",
             (problem["id"],),
         )
-        if contest.state_of(row) == contest.ENDED
+        if contest.state_of(row) != contest.RUNNING
     ]
 
 

@@ -312,9 +312,9 @@ td.wide { white-space: normal; }
 }
 .pill.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
 
-/* Where an archived problem came from: the round it was set for, and the
-   letter it was set as. The letter is what people quote at each other, so it
-   carries the weight and the title stays quiet beside it. */
+/* Which round a problem is in, and the letter it is set as. The letter is
+   what people quote at each other, so it carries the weight and the title
+   stays quiet beside it. */
 .pill-origin { color: var(--muted); }
 .pill-origin b { color: var(--text); font-weight: 600; margin-left: 1px; }
 .pill-origin:hover {
@@ -323,6 +323,23 @@ td.wide { white-space: normal; }
   text-decoration: none;
 }
 .pill-origin:hover b { color: var(--accent); }
+
+/* A round that has not started yet. The word "upcoming" carries it — this
+   only tints what the text already says, so it still reads in monochrome. */
+.pill-upcoming { background: var(--info-bg); border-color: transparent; }
+.pill-upcoming b { color: var(--info); }
+.pill-upcoming i {
+  font-style: normal;
+  color: var(--info);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  margin-left: 2px;
+}
+.pill-upcoming:hover, .pill-upcoming:hover b, .pill-upcoming:hover i {
+  color: var(--info);
+}
+.pill-upcoming:hover { border-color: color-mix(in srgb, var(--info) 45%, transparent); }
 
 /* ---------- stream ---------- */
 

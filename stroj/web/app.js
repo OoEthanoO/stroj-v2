@@ -911,20 +911,30 @@ function keepDraft(name, fields) {
 
 const draftKey = (slug, language) => `stroj:draft:${slug}:${language}`;
 
-/* The finished contests a problem was set for, as pills beside its limits.
+/* The contests a problem is in, as pills beside its limits.
  *
- * The server has already dropped every contest that has not ended, so what
- * arrives here is settled history. One more goes: the contest being read
- * through. Inside a contest the page already carries its header link and the
- * letter you clicked, and repeating them there tells a competitor nothing
- * while making a live round look like an archive entry.
+ * The server has already dropped any contest that is running, so what arrives
+ * here is rounds that are over and rounds still to come. One more goes: the
+ * contest being read through. Inside a contest the page already carries its
+ * header link and the letter you clicked, and repeating them there says
+ * nothing.
+ *
+ * A round still to come is marked in words, not only in colour. Sitting
+ * unmarked beside a finished one it would read as history, and "this problem
+ * is in next week's round" is the opposite of that.
  */
-function originPills(problem, contestSlug) {
+function contestPills(problem, contestSlug) {
   return (problem.contests || [])
     .filter((c) => c.slug !== contestSlug)
-    .map((c) => `<a class="pill pill-origin" href="#/contest/${encodeURIComponent(c.slug)}"
-        title="Set as problem ${esc(c.label)} of ${esc(c.title)}"
-      >${esc(c.title)} <b>${esc(c.label)}</b></a>`)
+    .map((c) => {
+      const soon = c.state === 'before';
+      const title = soon
+        ? `Set as problem ${esc(c.label)} of ${esc(c.title)}, which has not started`
+        : `Set as problem ${esc(c.label)} of ${esc(c.title)}`;
+      return `<a class="pill pill-origin${soon ? ' pill-upcoming' : ''}"
+        href="#/contest/${encodeURIComponent(c.slug)}" title="${title}"
+      >${esc(c.title)} <b>${esc(c.label)}</b>${soon ? ' <i>upcoming</i>' : ''}</a>`;
+    })
     .join('');
 }
 
@@ -954,7 +964,7 @@ async function viewProblem(slug, params) {
     </div>
     <div class="row small muted" style="margin-bottom:18px">
       ${sealed ? '' : `<span class="points-pill">${problem.points} points</span>`}
-      ${originPills(problem, contestSlug)}
+      ${contestPills(problem, contestSlug)}
       ${problem.author ? `<span class="pill">by ${userLink(problem.author, problem.author_role)}</span>` : ''}
       ${(problem.types || []).map((t) => `<span class="pill">${esc(t)}</span>`).join('')}
       <span class="pill">${problem.time_limit_ms} ms</span>
