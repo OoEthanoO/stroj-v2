@@ -312,6 +312,18 @@ td.wide { white-space: normal; }
 }
 .pill.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
 
+/* Where an archived problem came from: the round it was set for, and the
+   letter it was set as. The letter is what people quote at each other, so it
+   carries the weight and the title stays quiet beside it. */
+.pill-origin { color: var(--muted); }
+.pill-origin b { color: var(--text); font-weight: 600; margin-left: 1px; }
+.pill-origin:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  text-decoration: none;
+}
+.pill-origin:hover b { color: var(--accent); }
+
 /* ---------- stream ---------- */
 
 .post h2 { font-size: 20px; margin: 0 0 2px; }

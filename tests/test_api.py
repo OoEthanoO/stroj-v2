@@ -2693,3 +2693,122 @@ def test_a_type_used_only_by_hidden_problems_reaches_no_member(client, admin_cli
     vocabulary = {t for p in problems for t in p["types"]}
     assert vocabulary == {"arrays"}
     assert "segment tree" not in vocabulary and "flows" not in vocabulary
+
+
+class TestAProblemNamesTheContestItCameFrom:
+    """An archived problem carries where it was set and as which letter, so it
+    reads as "B from the March round" rather than as an unplaced statement."""
+
+    SPANS = {
+        "long ended": (-9, -7),
+        "ended":      (-3, -1),
+        "running":    (-1, +1),
+        "before":     (+1, +3),
+    }
+
+    def add_to_contest(self, slug="a-plus-b", *, contest="march", title="March Round",
+                       label="C", state="ended"):
+        now = db.parse_time(db.utcnow())
+        before, after = self.SPANS[state]
+        iso = lambda h: (now + timedelta(hours=h)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        contest_id = db.insert(
+            "INSERT INTO contests (slug, title, description, starts_at, ends_at,"
+            " scoring, penalty_minutes, created_at) VALUES (?,?,'',?,?,'icpc',20,?)",
+            (contest, title, iso(before), iso(after), db.utcnow()),
+        )
+        problem_id = db.one("SELECT id FROM problems WHERE slug = ?", (slug,))["id"]
+        db.execute(
+            "INSERT INTO contest_problems (contest_id, problem_id, label)"
+            " VALUES (?, ?, ?)",
+            (contest_id, problem_id, label),
+        )
+
+    def origins(self, client, slug="a-plus-b"):
+        response = client.get(f"/api/problems/{slug}")
+        assert response.status_code == 200, response.text
+        return response.json()["contests"]
+
+    def test_a_finished_contest_is_named_with_the_letter_it_was_set_as(
+            self, client, admin_client):
+        make_problem(admin_client)
+        self.add_to_contest(label="C")
+        admin_client.post("/api/auth/logout")
+        register(client, "reader")
+        origins = self.origins(client)
+        assert len(origins) == 1
+        assert origins[0]["slug"] == "march"
+        assert origins[0]["title"] == "March Round"
+        assert origins[0]["label"] == "C"
+        # Carried so the page can say how long ago, without a second request.
+        assert origins[0]["ends_at"] == db.one(
+            "SELECT ends_at FROM contests WHERE slug = 'march'")["ends_at"]
+
+    def test_a_problem_set_for_nothing_names_nothing(self, client, admin_client):
+        make_problem(admin_client)
+        admin_client.post("/api/auth/logout")
+        register(client, "reader2")
+        assert self.origins(client) == []
+
+    def test_a_running_contest_is_not_named(self, client, admin_client):
+        """The case the feature is defined against: read during the contest, the
+        problem must not announce which contest it is — the page it was reached
+        from says so already, and the archive framing is a lie while it runs."""
+        make_problem(admin_client)
+        self.add_to_contest(state="running")
+        admin_client.post("/api/auth/logout")
+        register(client, "contestant")
+        assert self.origins(client) == []
+
+    def test_a_contest_that_has_not_started_is_not_named(self, client, admin_client):
+        """Naming it would publish next week's problem set from the archive."""
+        make_problem(admin_client)
+        self.add_to_contest(state="before")
+        admin_client.post("/api/auth/logout")
+        register(client, "early")
+        assert self.origins(client) == []
+
+    def test_a_reused_problem_names_every_finished_round_oldest_first(
+            self, client, admin_client):
+        """Chronological, because that is how a problem's history reads: the
+        round it was written for, then the rounds it was borrowed for."""
+        make_problem(admin_client)
+        self.add_to_contest(contest="march", title="March Round", label="C",
+                            state="long ended")
+        self.add_to_contest(contest="june", title="June Round", label="A")
+        admin_client.post("/api/auth/logout")
+        register(client, "reader3")
+        assert [(c["slug"], c["label"]) for c in self.origins(client)] == [
+            ("march", "C"), ("june", "A")]
+
+    def test_a_round_still_to_come_does_not_join_that_list(
+            self, client, admin_client):
+        """The finished rounds still show; only the live one drops out."""
+        make_problem(admin_client)
+        self.add_to_contest(contest="march", title="March Round", label="C")
+        self.add_to_contest(contest="june", title="June Round", label="A",
+                            state="running")
+        admin_client.post("/api/auth/logout")
+        register(client, "reader4")
+        assert [(c["slug"], c["label"]) for c in self.origins(client)] == [("march", "C")]
+
+    def test_a_sealed_problem_says_nothing_about_its_past(self, client, admin_client):
+        """A hidden problem pulled into a live round must not reveal that it has
+        been set before: that it has an editorial and public solutions somewhere
+        is exactly the hint the seal exists to withhold."""
+        make_problem(admin_client, slug="secret", visible=False)
+        self.add_to_contest(slug="secret", contest="march", title="March Round",
+                            label="C")
+        self.add_to_contest(slug="secret", contest="live", title="Live Round",
+                            label="B", state="running")
+        admin_client.post("/api/auth/logout")
+        register(client, "contestant2")
+        assert self.origins(client, "secret") == []
+
+    def test_an_admin_still_sees_the_history_of_a_sealed_problem(self, admin_client):
+        make_problem(admin_client, slug="secret", visible=False)
+        self.add_to_contest(slug="secret", contest="march", title="March Round",
+                            label="C")
+        self.add_to_contest(slug="secret", contest="live", title="Live Round",
+                            label="B", state="running")
+        assert [c["label"] for c in self.origins(admin_client, "secret")] == ["C"]

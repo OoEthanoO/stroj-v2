@@ -109,6 +109,16 @@ def test_problem_sort_suite():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
+def test_problem_origin_suite():
+    """Run tests/test_problem_origin.js and surface its output on failure."""
+    result = subprocess.run(
+        ["node", str(Path(__file__).parent / "test_problem_origin.js")],
+        capture_output=True, text=True, cwd=ROOT,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
 def test_every_script_parses():
     for script in sorted(WEB.glob("*.js")):
         result = subprocess.run(

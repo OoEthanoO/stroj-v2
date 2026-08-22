@@ -148,6 +148,39 @@ def metadata_sealed(problem: sqlite3.Row, user: sqlite3.Row | None) -> bool:
     return any(contest.is_running(c) for c in contests_with(problem["id"]))
 
 
+def contest_origins(problem: sqlite3.Row, user: sqlite3.Row | None) -> list[dict]:
+    """The finished contests this problem was set for, and its letter in each.
+
+    Where a problem came from is part of reading it: "D from the March round"
+    places it in a way no tag does, and the label is what competitors quote at
+    each other afterwards. Both are archive facts once the round is over, so
+    they belong on the problem's own page and not only on the contest's.
+
+    Only ever said about a contest that has *finished*. Naming one that has not
+    started leaks its problem set, and naming one that is running tells the
+    people sitting it that this problem already has solutions and an editorial
+    somewhere — the same class of hint `metadata_sealed` withholds, so a
+    sealed problem says nothing about its origins either.
+    """
+    if metadata_sealed(problem, user):
+        return []
+    return [
+        {
+            "slug": row["slug"],
+            "title": row["title"],
+            "label": row["label"],
+            "ends_at": row["ends_at"],
+        }
+        for row in db.query(
+            "SELECT c.*, cp.label FROM contest_problems cp"
+            " JOIN contests c ON c.id = cp.contest_id"
+            " WHERE cp.problem_id = ? ORDER BY c.starts_at",
+            (problem["id"],),
+        )
+        if contest.state_of(row) == contest.ENDED
+    ]
+
+
 def get_problem(slug: str, user: sqlite3.Row | None) -> sqlite3.Row:
     problem = db.one("SELECT * FROM problems WHERE slug = ?", (slug,))
     if problem is None or not problem_visible_to(problem, user):

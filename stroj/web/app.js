@@ -911,6 +911,23 @@ function keepDraft(name, fields) {
 
 const draftKey = (slug, language) => `stroj:draft:${slug}:${language}`;
 
+/* The finished contests a problem was set for, as pills beside its limits.
+ *
+ * The server has already dropped every contest that has not ended, so what
+ * arrives here is settled history. One more goes: the contest being read
+ * through. Inside a contest the page already carries its header link and the
+ * letter you clicked, and repeating them there tells a competitor nothing
+ * while making a live round look like an archive entry.
+ */
+function originPills(problem, contestSlug) {
+  return (problem.contests || [])
+    .filter((c) => c.slug !== contestSlug)
+    .map((c) => `<a class="pill pill-origin" href="#/contest/${encodeURIComponent(c.slug)}"
+        title="Set as problem ${esc(c.label)} of ${esc(c.title)}"
+      >${esc(c.title)} <b>${esc(c.label)}</b></a>`)
+    .join('');
+}
+
 async function viewProblem(slug, params) {
   const contestSlug = params.get('contest');
   const problem = await api(`/api/problems/${encodeURIComponent(slug)}`);
@@ -937,6 +954,7 @@ async function viewProblem(slug, params) {
     </div>
     <div class="row small muted" style="margin-bottom:18px">
       ${sealed ? '' : `<span class="points-pill">${problem.points} points</span>`}
+      ${originPills(problem, contestSlug)}
       ${problem.author ? `<span class="pill">by ${userLink(problem.author, problem.author_role)}</span>` : ''}
       ${(problem.types || []).map((t) => `<span class="pill">${esc(t)}</span>`).join('')}
       <span class="pill">${problem.time_limit_ms} ms</span>
