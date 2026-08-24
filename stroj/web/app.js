@@ -1158,6 +1158,26 @@ async function viewProblem(slug, params) {
 
 /* ---- submissions ---- */
 
+/* Whose submissions the list is showing: everyone's, or your own.
+ *
+ * Two views of one list rather than two actions, so they are joined into a
+ * single control with a current position. Built as .btn/.btn.primary they were
+ * the loudest thing on the page, and the loud one was the tab you were already
+ * on — the link that does nothing looked like the one to press.
+ *
+ * aria-current is the style hook as well as the announcement: one attribute
+ * that cannot drift from the other, where a separate `.on` class could be set
+ * on the wrong tab and still look deliberate.
+ */
+function scopeTabs(mine) {
+  const tab = (label, current, href) =>
+    `<a href="${href}"${current ? ' aria-current="page"' : ''}>${label}</a>`;
+  return `<nav class="segmented" aria-label="Whose submissions">
+    ${tab('Everyone', !mine, '#/submissions')}
+    ${tab('Mine', mine, '#/submissions?mine=1')}
+  </nav>`;
+}
+
 async function viewSubmissions(params) {
   const mine = params.get('mine') === '1';
   const query = new URLSearchParams({ limit: '60' });
@@ -1165,6 +1185,20 @@ async function viewSubmissions(params) {
   ['problem', 'contest', 'username'].forEach((k) => {
     if (params.get(k)) query.set(k, params.get(k));
   });
+
+  /* Painted here and not from inside `render`, which is also the four-second
+   * poll. `render` used to build the page whenever it could not find its own
+   * list and otherwise fill it in place — but a fresh route arrives with the
+   * *previous* route's list still on screen, so switching scope took the
+   * in-place path and left the head alone. The rows changed and the tab marked
+   * current did not, which is the one thing this control exists to say. */
+  setView(`
+    <div class="page-head">
+      <h1>Submissions</h1>
+      <div class="spacer"></div>
+      ${scopeTabs(mine)}
+    </div>
+    <div id="sub-list"><div class="loading">Loading…</div></div>`, { wide: true });
 
   const render = async () => {
     const { submissions } = await api(`/api/submissions?${query}`);
@@ -1188,19 +1222,10 @@ async function viewSubmissions(params) {
           <th class="num">Score</th><th class="num">Time</th><th class="num">Memory</th><th>When</th></tr></thead>
         <tbody>${rows}</tbody></table></div>`;
 
-    const body = submissions.length ? table : '<div class="empty">No submissions yet.</div>';
-    const existing = $('#sub-list');
-    if (existing) existing.innerHTML = body;
-    else setView(`
-      <div class="page-head">
-        <h1>Submissions</h1>
-        <div class="spacer"></div>
-        <div class="row">
-          <a class="btn ${mine ? '' : 'primary'}" href="#/submissions">Everyone</a>
-          <a class="btn ${mine ? 'primary' : ''}" href="#/submissions?mine=1">Mine</a>
-        </div>
-      </div>
-      <div id="sub-list">${body}</div>`, { wide: true });
+    const list = $('#sub-list');
+    if (!list) return;
+    list.innerHTML = submissions.length
+      ? table : '<div class="empty">No submissions yet.</div>';
   };
 
   await render();

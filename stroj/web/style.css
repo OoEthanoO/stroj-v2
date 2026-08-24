@@ -190,6 +190,34 @@ button.warn, .btn.warn {
 }
 button.small, .btn.small { padding: 4px 9px; font-size: 13px; }
 
+/* A segmented control: two views of one list, joined so the pair reads as a
+   choice with a current position. Deliberately quieter than .btn.primary,
+   which is for the thing you press, not for where you already are. Centred
+   against the heading rather than sitting on its baseline — .page-head aligns
+   text, and a bordered box on a baseline hangs below the line. */
+.segmented {
+  display: inline-flex;
+  align-self: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+}
+.segmented a {
+  font-size: 13px;
+  font-weight: 500;
+  padding: 5px 12px;
+  color: var(--muted);
+}
+.segmented a + a { border-left: 1px solid var(--border); }
+.segmented a:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
+/* The current view. Tinted rather than filled: it is a position, not a button
+   that has been pressed, and it sits beside a heading it must not shout over. */
+.segmented a[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 input, select, textarea {
   font: inherit;
   font-size: 14px;
