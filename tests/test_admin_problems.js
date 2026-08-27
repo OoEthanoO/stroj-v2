@@ -91,10 +91,15 @@ for (const hook of ['data-upload=', 'data-toggle=', 'data-rejudge=', 'data-delet
   contains(`the row carries ${hook}`, hidden, hook);
 }
 
-// Redrawing is one row per problem, in the order the judge served them.
-const many = adminProblemRows([problem('b', 'B', true), problem('a', 'A', false)]);
+// Redrawing is one row per problem, newest first — the reverse of the order
+// `/api/problems` serves, which is the order the problems were written.
+const served = [problem('b', 'B', true), problem('a', 'A', false)];
+const many = adminProblemRows(served);
 check('one row per problem', (many.match(/<tr>/g) || []).length, 2);
-check('served order is kept', many.indexOf('>B<') < many.indexOf('>A<'), true);
+check('the newest problem is first', many.indexOf('>A<') < many.indexOf('>B<'), true);
+// The same array is read elsewhere on the admin page, so the reversal has to
+// be on a copy.
+check('the list it was handed is left alone', served[0].slug, 'b');
 
 check('an empty list renders nothing', adminProblemRows([]), '');
 contains('the empty-table row spans the columns', NO_PROBLEMS_ROW, 'colspan="4"');

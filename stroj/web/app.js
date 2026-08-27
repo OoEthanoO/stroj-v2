@@ -2931,7 +2931,13 @@ const statePill = (on, live, hidden) => (on
  * the page — the report and the limits box belong to a run in progress, and
  * re-rendering the view would throw them away. */
 function adminProblemRows(problems) {
-  return problems.map((p) => `
+  // Newest first, which is the reverse of what `/api/problems` serves: an
+  // admin opening this page is nearly always here for what was just added,
+  // and an express problem that lands at the bottom of a term's worth of rows
+  // reads as though it was not created at all. The problems page proper keeps
+  // the served order — there, oldest first is the set in the order it was
+  // written, and sorting it is a click away.
+  return problems.slice().reverse().map((p) => `
     <tr>
       <td class="wide"><a href="#/problem/${encodeURIComponent(p.slug)}">${esc(p.title)}</a></td>
       <td class="mono small muted">${esc(p.slug)}</td>
