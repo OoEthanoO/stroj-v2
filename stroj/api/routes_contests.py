@@ -30,7 +30,9 @@ def _summary(row: sqlite3.Row) -> dict:
 
 @router.get("")
 def list_contests():
-    rows = db.query("SELECT * FROM contests ORDER BY starts_at DESC")
+    # Chronological: the soonest round to start reads first, and a contest
+    # months away sits at the bottom where it belongs.
+    rows = db.query("SELECT * FROM contests ORDER BY starts_at")
     return {"contests": [_summary(r) for r in rows], "server_time": db.utcnow()}
 
 

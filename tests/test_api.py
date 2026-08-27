@@ -368,6 +368,17 @@ class TestContestApi:
             "source": "print(1)", "contest": contest_slug})
         assert response.status_code == 400
 
+    def test_contests_are_listed_soonest_first(self, admin_client):
+        now = db.parse_time(db.utcnow())
+        for slug, hours in (("far", 48), ("soon", 2), ("done", -24)):
+            admin_client.post("/api/admin/contests", json={
+                "slug": slug, "title": slug.title(),
+                "starts_at": (now + timedelta(hours=hours)).isoformat(),
+                "ends_at": (now + timedelta(hours=hours + 1)).isoformat(),
+            }).raise_for_status()
+        listed = admin_client.get("/api/contests").json()["contests"]
+        assert [c["slug"] for c in listed] == ["done", "soon", "far"]
+
     def test_end_before_start_is_rejected(self, admin_client):
         now = db.parse_time(db.utcnow())
         response = admin_client.post("/api/admin/contests", json={
