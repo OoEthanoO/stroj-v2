@@ -332,27 +332,43 @@ CONF
 chmod 600 /etc/msmtprc
 ```
 
-Then drain the outbox on a timer:
+Then drain the outbox as messages land:
 
 ```bash
+apt install inotify-tools            # optional; without it the watcher polls
+
 install -m 755 scripts/send-outbox.sh /usr/local/bin/stroj-send-outbox
 
 cat > /etc/systemd/system/stroj-outbox.service <<'UNIT'
 [Service]
-Type=oneshot
+Environment=WATCH=1
 ExecStart=/usr/local/bin/stroj-send-outbox
-UNIT
-
-cat > /etc/systemd/system/stroj-outbox.timer <<'UNIT'
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec=1min
+Restart=always
+RestartSec=5
 [Install]
-WantedBy=timers.target
+WantedBy=multi-user.target
 UNIT
 
-systemctl enable --now stroj-outbox.timer
+systemctl enable --now stroj-outbox.service
 ```
+
+`WATCH=1` keeps the drainer up and waiting on the directory, so a member has
+the confirmation link a second or so after signing up instead of whenever the
+next minute comes round. With `inotify-tools` installed it wakes on the rename
+that finishes each message; without it, it looks every two seconds, which is
+not a difference anyone reading their inbox can perceive. `POLL_SECS` tunes
+that fallback and `RETRY_SECS` the back-off after a relay refuses.
+
+The script is copied to `/usr/local/bin`, so a deploy that changes it needs
+`install` and `systemctl restart stroj-outbox.service` run again — nothing else
+carries it across.
+
+**If you would rather it ran on a clock**, install the same script as a
+`Type=oneshot` service on a `OnUnitActiveSec=1min` timer and leave `WATCH`
+unset: it makes one pass and exits. The two are safe to have installed at once
+— both take the same lock, and a watcher holds it for as long as it runs — but
+there is no reason to, and the timer costs a minute of waiting per signup.
+Drop it with `systemctl disable --now stroj-outbox.timer` if you had one.
 
 Finally, tell the judge to spool and redeploy:
 

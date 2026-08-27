@@ -277,7 +277,7 @@ STROJ_MAIL_SPOOL     /data/outbox                # where `spool` queues mail
 
 For a deployed judge see **Mail** in DEPLOY.md: the container cannot reach a
 mail server, so it spools and `scripts/send-outbox.sh` drains the queue from
-the host on a timer.
+the host, which it does as each message arrives rather than on a timer.
 
 The first admin account is created already confirmed — it exists before any
 mail server does, and an administrator locked behind a link the judge cannot
