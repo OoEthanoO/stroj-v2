@@ -164,6 +164,12 @@ share of individual tests passed — 10 of 20 earns half.
 **Hidden problems.** `visible: false` keeps a problem off the public list. It
 becomes readable automatically once a contest containing it starts.
 
+**Finding one later.** Every list on the admin page — posts, problems, contests,
+users — has a search box and a count beside its heading, and draws fifty rows at
+a time with a button for the rest. An archive of a few hundred problems opens as
+fast as an empty one, and the row you came to edit is a search away rather than
+a scroll away.
+
 **Types.** Free-form category tags — `dp`, `graphs`, `binary search` — folded to
 lowercase and single-spaced on the way in, so one spelling is one type. Nothing
 folds two *different* spellings of the same category, though: `dp` and
@@ -365,6 +371,8 @@ GET    /api/contests/{slug}/scoreboard
 Admin routes live under `/api/admin/` — problems (`POST`/`PATCH`/`DELETE`), test
 data (`PUT .../tests`, `POST .../tests/upload`), contests, `rejudge`, user
 roles, and `POST /api/admin/types/migrate` (`{"from": ..., "to": ...}`).
+`GET /api/admin/posts` lists every post without its body, for the admin page —
+`/api/posts` is the front-page stream and caps out.
 Express authoring is `POST /api/admin/problems/express`,
 `GET /api/admin/problems/{slug}/express-report`, and
 `POST /api/admin/limits/express`. Interactive docs at `/docs`.

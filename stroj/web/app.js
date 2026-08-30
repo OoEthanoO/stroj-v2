@@ -2926,18 +2926,21 @@ const statePill = (on, live, hidden) => (on
   ? `<span class="pill">${live}</span>`
   : `<span class="pill warn">${hidden}</span>`);
 
+/* Newest first, which is the reverse of what `/api/problems` serves: an admin
+ * opening this page is nearly always here for what was just added, and an
+ * express problem that lands at the bottom of a term's worth of rows reads as
+ * though it was not created at all. The problems page proper keeps the served
+ * order — there, oldest first is the set in the order it was written, and
+ * sorting it is a click away. On a copy: the same array is read elsewhere on
+ * the admin page. */
+const problemsNewestFirst = (problems) => problems.slice().reverse();
+
 /* The problems table draws and binds on its own, away from `viewAdmin`, because
  * express creation has to add a row to it without disturbing anything else on
  * the page — the report and the limits box belong to a run in progress, and
  * re-rendering the view would throw them away. */
-function adminProblemRows(problems) {
-  // Newest first, which is the reverse of what `/api/problems` serves: an
-  // admin opening this page is nearly always here for what was just added,
-  // and an express problem that lands at the bottom of a term's worth of rows
-  // reads as though it was not created at all. The problems page proper keeps
-  // the served order — there, oldest first is the set in the order it was
-  // written, and sorting it is a click away.
-  return problems.slice().reverse().map((p) => `
+function adminProblemRow(p) {
+  return `
     <tr>
       <td class="wide"><a href="#/problem/${encodeURIComponent(p.slug)}">${esc(p.title)}</a></td>
       <td class="mono small muted">${esc(p.slug)}</td>
@@ -2951,10 +2954,8 @@ function adminProblemRows(problems) {
           <button class="small danger" data-delete="${esc(p.slug)}">Delete</button>
         </div>
       </td>
-    </tr>`).join('');
+    </tr>`;
 }
-
-const NO_PROBLEMS_ROW = '<tr><td colspan="4" class="muted">None yet.</td></tr>';
 
 function bindAdminProblemRows(guard) {
   $$('[data-upload]').forEach((input) => {
@@ -3010,6 +3011,84 @@ function bindAdminProblemRows(guard) {
       route();
     });
   });
+}
+
+/* How many rows a section draws before you ask for the rest. Big enough that
+ * a young site never sees the button, small enough that an old one opens as
+ * fast as a young one. */
+const ADMIN_PAGE = 50;
+
+/* One list on the admin page: searchable, counted, and drawn a page at a time.
+ *
+ * Every list here grows for as long as the site does — a term of problems, a
+ * year of announcements — and all of them were drawn whole with no way to
+ * search. Finding the row you came to edit meant scrolling past everything
+ * written before it, and opening the page cost a row of DOM for every problem
+ * the archive has ever held. The search box and the "N of M" count are the
+ * ones the problems and users pages already use, so the admin page counts the
+ * way the rest of the site does rather than inventing a second idiom.
+ *
+ * `bindRows` runs after every draw: the rows are replaced wholesale, so the
+ * handlers on them have to be put back or a searched-for row comes back
+ * inert — which is worse than not finding it, because the buttons are there. */
+function adminSection(spec) {
+  const { id, title, kind, columns, row, match, empty } = spec;
+  let items = spec.items;
+  let limit = ADMIN_PAGE;
+
+  const matching = () => {
+    const box = $(`#${id}-q`);
+    const q = box ? box.value.trim().toLowerCase() : '';
+    return q ? items.filter((item) => match(item, q)) : items;
+  };
+
+  const render = () => {
+    if (!$(`#${id}-rows`)) return;
+    const shown = matching();
+    const drawn = shown.slice(0, limit);
+    $(`#${id}-rows`).innerHTML = drawn.map(row).join('')
+      || `<tr><td colspan="${columns.length}" class="muted">${
+        shown.length === items.length ? esc(empty) : 'Nothing matches that.'}</td></tr>`;
+    // A plain total until something is filtered out, then "12 of 340" — the
+    // count is there to say how much is out of sight, not to be read always.
+    $(`#${id}-count`).textContent = shown.length === items.length
+      ? `${items.length}` : `${shown.length} of ${items.length}`;
+    const more = $(`#${id}-more`);
+    more.hidden = drawn.length >= shown.length;
+    more.textContent = `Show the other ${shown.length - drawn.length}`;
+    if (spec.bindRows) spec.bindRows();
+  };
+
+  return {
+    html: `
+      <div class="row section-head">
+        <h2>${esc(title)}</h2>
+        <span class="muted small" id="${id}-count"></span>
+        <div class="spacer"></div>
+        ${items.length ? `<input id="${id}-q" class="search" type="search"
+          placeholder="Search ${esc(title.toLowerCase())}" autocomplete="off">` : ''}
+        ${kind ? `<a class="btn small primary" href="#/admin/new/${kind}">+ New ${kind}</a>` : ''}
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr>${columns.map((c) => `<th>${c}</th>`).join('')}</tr></thead>
+        <tbody id="${id}-rows"></tbody></table></div>
+      <div class="row"><button class="small" id="${id}-more" hidden></button></div>`,
+
+    bind() {
+      const box = $(`#${id}-q`);
+      // A new search starts at the top: the page you had asked to see all of
+      // was a page of the old results.
+      if (box) box.oninput = () => { limit = ADMIN_PAGE; render(); };
+      $(`#${id}-more`).onclick = () => { limit = Infinity; render(); };
+      render();
+    },
+
+    /* Redraw against a fresh list, keeping whatever is typed in the box. */
+    reload(next) {
+      items = next;
+      render();
+    },
+  };
 }
 
 /* Types are free-form and typed in by hand, so the archive drifts into two
@@ -3069,17 +3148,26 @@ async function viewAdmin() {
   }
   const [{ problems }, { contests }, { users }, { posts }] = await Promise.all([
     api('/api/problems'), api('/api/contests'), api('/api/admin/users'),
-    api('/api/posts?limit=100'),
+    // Not `/api/posts`, which is the capped front-page stream: the hundredth
+    // post is not the last one worth editing.
+    api('/api/admin/posts'),
   ]);
 
-  const head = (title, kind) => `
-    <div class="row section-head">
-      <h2>${title}</h2>
-      <div class="spacer"></div>
-      <a class="btn small primary" href="#/admin/new/${kind}">+ New ${kind}</a>
-    </div>`;
+  const guard = (fn) => async (...args) => {
+    try { await fn(...args); } catch (err) { toast(err.message, 'bad'); }
+  };
 
-  const postRows = posts.map((p) => `
+  // Title or slug, on every list here: an admin arrives knowing one or the
+  // other, and which one depends on whether they came from the site or a file.
+  const named = (item, q) => item.title.toLowerCase().includes(q)
+    || item.slug.toLowerCase().includes(q);
+
+  const posted = adminSection({
+    id: 'posts', title: 'Posts', kind: 'post', items: posts, match: named,
+    columns: ['Title', 'Slug', 'State', 'Posted', 'Actions'],
+    empty: 'None yet.',
+    bindRows: () => bindAdminPostRows(guard),
+    row: (p) => `
     <tr>
       <td class="wide"><a href="#/post/${encodeURIComponent(p.slug)}">${esc(p.title)}</a></td>
       <td class="mono small muted">${esc(p.slug)}</td>
@@ -3094,9 +3182,24 @@ async function viewAdmin() {
           <button class="small danger" data-delete-post="${esc(p.slug)}">Delete</button>
         </div>
       </td>
-    </tr>`).join('');
+    </tr>`,
+  });
 
-  const contestRows = contests.map((c) => `
+  const authored = adminSection({
+    id: 'problems', title: 'Problems', kind: 'problem', match: named,
+    items: problemsNewestFirst(problems),
+    columns: ['Title', 'Slug', 'State', 'Actions'],
+    empty: 'None yet.',
+    bindRows: () => bindAdminProblemRows(guard),
+    row: adminProblemRow,
+  });
+
+  const rounds = adminSection({
+    id: 'contests', title: 'Contests', kind: 'contest', items: contests, match: named,
+    columns: ['Title', 'Slug', 'State', 'Actions'],
+    empty: 'None yet.',
+    bindRows: () => bindAdminContestRows(guard),
+    row: (c) => `
     <tr>
       <td class="wide"><a href="#/contest/${encodeURIComponent(c.slug)}">${esc(c.title)}</a></td>
       <td class="mono small muted">${esc(c.slug)}</td>
@@ -3107,21 +3210,33 @@ async function viewAdmin() {
           <button class="small danger" data-delete-contest="${esc(c.slug)}">Delete</button>
         </div>
       </td>
-    </tr>`).join('');
+    </tr>`,
+  });
 
-  const guard = (fn) => async (...args) => {
-    try { await fn(...args); } catch (err) { toast(err.message, 'bad'); }
-  };
+  const members = adminSection({
+    id: 'users', title: 'Users', items: users,
+    // Users have no title to search, only the name.
+    match: (u, q) => u.username.toLowerCase().includes(q),
+    columns: ['User', 'Role', 'Joined', ''],
+    empty: 'Nobody yet.',
+    bindRows: () => bindAdminUserRows(guard),
+    row: (u) => `
+    <tr>
+      <td class="wide">${esc(u.username)}</td>
+      <td><span class="pill">${esc(u.role)}</span></td>
+      <td class="muted small">${esc(absolute(u.created_at))}</td>
+      <td><button class="small" data-role="${esc(u.username)}" data-next="${u.role === 'admin' ? 'user' : 'admin'}">
+        Make ${u.role === 'admin' ? 'user' : 'admin'}</button></td>
+    </tr>`,
+  });
 
   /* Redraw only the problems table. `route()` — what every other action on
    * this page calls — would re-render the express panel too, taking the report
    * and the limits box with it while a run is still in flight. */
   const refreshProblems = async () => {
-    const body = $('#admin-problems');
-    if (!body) return;
+    if (!$('#problems-rows')) return;
     const fresh = await api('/api/problems');
-    body.innerHTML = adminProblemRows(fresh.problems) || NO_PROBLEMS_ROW;
-    bindAdminProblemRows(guard);
+    authored.reload(problemsNewestFirst(fresh.problems));
   };
 
   const express = expressPanel(refreshProblems);
@@ -3131,40 +3246,20 @@ async function viewAdmin() {
     <div class="page-head"><h1>Admin</h1></div>
 
     ${express.html}
-
-    ${head('Posts', 'post')}
-    <div class="table-wrap"><table>
-      <thead><tr><th>Title</th><th>Slug</th><th>State</th><th>Posted</th><th>Actions</th></tr></thead>
-      <tbody>${postRows || '<tr><td colspan="5" class="muted">None yet.</td></tr>'}</tbody></table></div>
-
-    ${head('Problems', 'problem')}
-    <div class="table-wrap"><table>
-      <thead><tr><th>Title</th><th>Slug</th><th>State</th><th>Actions</th></tr></thead>
-      <tbody id="admin-problems">${adminProblemRows(problems) || NO_PROBLEMS_ROW}</tbody></table></div>
-
+    ${posted.html}
+    ${authored.html}
     ${migrate.html}
-
-    ${head('Contests', 'contest')}
-    <div class="table-wrap"><table>
-      <thead><tr><th>Title</th><th>Slug</th><th>State</th><th>Actions</th></tr></thead>
-      <tbody>${contestRows || '<tr><td colspan="4" class="muted">None yet.</td></tr>'}</tbody></table></div>
-
-    <h2>Users</h2>
-    <div class="table-wrap"><table>
-      <thead><tr><th>User</th><th>Role</th><th>Joined</th><th></th></tr></thead>
-      <tbody>${users.map((u) => `
-        <tr>
-          <td class="wide">${esc(u.username)}</td>
-          <td><span class="pill">${esc(u.role)}</span></td>
-          <td class="muted small">${esc(absolute(u.created_at))}</td>
-          <td><button class="small" data-role="${esc(u.username)}" data-next="${u.role === 'admin' ? 'user' : 'admin'}">
-            Make ${u.role === 'admin' ? 'user' : 'admin'}</button></td>
-        </tr>`).join('')}</tbody></table></div>`, { wide: true });
+    ${rounds.html}
+    ${members.html}`, { wide: true });
 
   express.bind();
   migrate.bind();
-  bindAdminProblemRows(guard);
+  // Each of these draws its rows and binds them; nothing else may bind row
+  // handlers here, because a search redraws the rows out from under them.
+  [posted, authored, rounds, members].forEach((section) => section.bind());
+}
 
+function bindAdminPostRows(guard) {
   $$('[data-publish]').forEach((button) => {
     button.onclick = guard(async () => {
       await api(`/api/admin/posts/${encodeURIComponent(button.dataset.publish)}`, {
@@ -3192,7 +3287,9 @@ async function viewAdmin() {
       route();
     });
   });
+}
 
+function bindAdminContestRows(guard) {
   $$('[data-delete-contest]').forEach((button) => {
     button.onclick = guard(async () => {
       const slug = button.dataset.deleteContest;
@@ -3202,7 +3299,9 @@ async function viewAdmin() {
       route();
     });
   });
+}
 
+function bindAdminUserRows(guard) {
   $$('[data-role]').forEach((button) => {
     button.onclick = guard(async () => {
       await api(`/api/admin/users/${encodeURIComponent(button.dataset.role)}/role?role=${button.dataset.next}`,

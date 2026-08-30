@@ -1072,6 +1072,29 @@ def _post_or_404(slug: str) -> sqlite3.Row:
     return row
 
 
+@router.get("/posts")
+def list_all_posts():
+    """Every post, without the bodies.
+
+    `/api/posts` is the front-page stream, and it caps at 100 — right for a
+    stream, wrong for the page that edits them. Past the hundredth post the
+    older ones simply stopped appearing here: not to publish, not to pin, not
+    to delete. The bodies are left out because this draws a table of titles,
+    and a term of announcements is a lot of prose to send for columns that
+    never show it.
+    """
+    rows = db.query(
+        "SELECT slug, title, pinned, published, created_at, updated_at FROM posts"
+        " ORDER BY pinned DESC, created_at DESC"
+    )
+    return {
+        "posts": [
+            {**dict(r), "pinned": bool(r["pinned"]), "published": bool(r["published"])}
+            for r in rows
+        ]
+    }
+
+
 @router.post("/posts")
 def create_post(body: PostBody, request: Request):
     _check_slug(body.slug)

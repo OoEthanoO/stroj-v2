@@ -21,9 +21,11 @@ function extract(name) {
   }
   return src.slice(start, i + 1);
 }
+// Trimmed, because a checkout with CRLF endings leaves a carriage return
+// where the declaration's semicolon is stripped off below.
 const lineFor = (decl) => {
   const at = src.indexOf(decl);
-  return src.slice(at, src.indexOf('\n', at));
+  return src.slice(at, src.indexOf('\n', at)).trim();
 };
 const arrow = (decl) => eval(
   `(${lineFor(decl).split('=').slice(1).join('=').replace(/;$/, '')})`);
@@ -45,8 +47,12 @@ function constBlock(decl) {
 }
 const statePill = eval(
   `(${constBlock('const statePill =').split('=').slice(1).join('=')})`);
-const adminProblemRows = eval(`(${extract('adminProblemRows')})`);
-const NO_PROBLEMS_ROW = arrow('const NO_PROBLEMS_ROW =');
+const adminProblemRow = eval(`(${extract('adminProblemRow')})`);
+const problemsNewestFirst = arrow('const problemsNewestFirst =');
+// The table is paged now, so a list becomes rows through the section helper
+// rather than through one function of its own.
+const adminProblemRows = (problems) =>
+  problemsNewestFirst(problems).map(adminProblemRow).join('');
 
 let failures = 0, checks = 0;
 function check(name, got, want) {
@@ -102,7 +108,6 @@ check('the newest problem is first', many.indexOf('>A<') < many.indexOf('>B<'), 
 check('the list it was handed is left alone', served[0].slug, 'b');
 
 check('an empty list renders nothing', adminProblemRows([]), '');
-contains('the empty-table row spans the columns', NO_PROBLEMS_ROW, 'colspan="4"');
 
 // Titles and slugs are author-supplied and land in both text and attributes.
 const nasty = adminProblemRows([problem('"><script>x</script>', '<img onerror=1>', false)]);

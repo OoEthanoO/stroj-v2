@@ -1206,6 +1206,50 @@ class TestPatchIsAllOrNothing:
         assert response.json()["updated"] == 2
 
 
+class TestTheAdminPostListReachesEveryPost:
+    """`/api/posts` is the front-page stream and caps at 100. The page that
+    edits posts cannot be capped: past the hundredth, a post could not be
+    published, pinned or deleted, because it was not on the page at all."""
+
+    def make_posts(self, admin_client, n, prefix="p"):
+        for i in range(n):
+            response = admin_client.post("/api/admin/posts", json={
+                "slug": f"{prefix}-{i}", "title": f"Post {i}", "body": "words"})
+            assert response.status_code == 200, response.text
+
+    def test_it_returns_more_than_the_stream_will(self, admin_client):
+        self.make_posts(admin_client, 105)
+        assert len(admin_client.get("/api/posts?limit=100").json()["posts"]) == 100
+        assert len(admin_client.get("/api/admin/posts").json()["posts"]) == 105
+
+    def test_drafts_are_listed_too(self, admin_client):
+        admin_client.post("/api/admin/posts", json={
+            "slug": "draft", "title": "Draft", "published": False})
+        posts = admin_client.get("/api/admin/posts").json()["posts"]
+        assert [p["slug"] for p in posts] == ["draft"]
+        assert posts[0]["published"] is False
+
+    def test_pinned_posts_come_first(self, admin_client):
+        """The order the admin page has always shown them in."""
+        self.make_posts(admin_client, 3)
+        admin_client.patch("/api/admin/posts/p-0", json={"pinned": True})
+        posts = admin_client.get("/api/admin/posts").json()["posts"]
+        assert posts[0]["slug"] == "p-0"
+        assert posts[0]["pinned"] is True
+
+    def test_the_bodies_are_left_out(self, admin_client):
+        """The table shows titles. A term of announcements is a lot of prose to
+        send for a column that never draws it."""
+        self.make_posts(admin_client, 1)
+        assert "body" not in admin_client.get("/api/admin/posts").json()["posts"][0]
+
+    def test_plain_users_cannot_list_them(self, client, admin_client):
+        self.make_posts(admin_client, 1)
+        admin_client.post("/api/auth/logout")
+        register(client, "nosy")
+        assert client.get("/api/admin/posts").status_code == 403
+
+
 class TestMigratingAType:
     """Types are typed in by hand, so one category ends up spelled two ways.
     Merging them is the only way the filter goes back to naming one thing."""
