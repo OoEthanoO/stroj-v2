@@ -164,6 +164,15 @@ share of individual tests passed — 10 of 20 earns half.
 **Hidden problems.** `visible: false` keeps a problem off the public list. It
 becomes readable automatically once a contest containing it starts.
 
+**Types.** Free-form category tags — `dp`, `graphs`, `binary search` — folded to
+lowercase and single-spaced on the way in, so one spelling is one type. Nothing
+folds two *different* spellings of the same category, though: `dp` and
+`dynamic programming` are two chips on the problems filter, and picking either
+hides the problems tagged the other way. The **Types** panel on the admin page
+merges them, retyping every problem carrying one with the other in a single
+action. Migrating to a name nothing uses yet renames a type instead; a problem
+that carried both ends up with one tag rather than a duplicate.
+
 ## Express authoring
 
 One zip, one paste. The **Express** card on the admin page takes a package
@@ -354,8 +363,9 @@ GET    /api/contests/{slug}/scoreboard
 ```
 
 Admin routes live under `/api/admin/` — problems (`POST`/`PATCH`/`DELETE`), test
-data (`PUT .../tests`, `POST .../tests/upload`), contests, `rejudge`, and user
-roles. Express authoring is `POST /api/admin/problems/express`,
+data (`PUT .../tests`, `POST .../tests/upload`), contests, `rejudge`, user
+roles, and `POST /api/admin/types/migrate` (`{"from": ..., "to": ...}`).
+Express authoring is `POST /api/admin/problems/express`,
 `GET /api/admin/problems/{slug}/express-report`, and
 `POST /api/admin/limits/express`. Interactive docs at `/docs`.
 

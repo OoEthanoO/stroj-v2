@@ -3012,6 +3012,56 @@ function bindAdminProblemRows(guard) {
   });
 }
 
+/* Types are free-form and typed in by hand, so the archive drifts into two
+ * spellings of one category — 'dp' and 'dynamic programming'. The filter shows
+ * them as two chips, and picking either hides the problems tagged the other
+ * way. Merging them problem by problem is work nobody does, so it is one
+ * action here. Renaming a type is the same control with a name nothing uses. */
+function typeMigratePanel(problems, guard) {
+  const counts = new Map();
+  problems.forEach((p) => (p.types || []).forEach(
+    (t) => counts.set(t, (counts.get(t) || 0) + 1)));
+  const types = [...counts.keys()].sort();
+  if (!types.length) return { html: '', bind: () => {} };
+
+  const option = (t) => `<option value="${esc(t)}">${esc(t)} (${counts.get(t)})</option>`;
+  return {
+    html: `
+      <div class="row section-head"><h2>Types</h2></div>
+      <div class="card">
+        <div class="row">
+          <select id="type-from" style="width:240px">${types.map(option).join('')}</select>
+          <span class="muted">becomes</span>
+          <input id="type-to" list="type-names" placeholder="type" maxlength="32" style="width:200px">
+          <datalist id="type-names">${types.map((t) => `<option value="${esc(t)}">`).join('')}</datalist>
+          <button class="small primary" id="type-migrate">Migrate</button>
+        </div>
+        <p class="small muted" style="margin:0">Every problem filed under the
+          first type is filed under the second instead, and the first stops
+          existing. Name a type nothing uses yet to rename rather than merge.
+          A problem already carrying both keeps one tag, not two.</p>
+      </div>`,
+    bind() {
+      $('#type-migrate').onclick = guard(async () => {
+        const from = $('#type-from').value;
+        // The server folds case and spacing anyway; doing it here too means the
+        // confirm names the type the way it will actually be stored.
+        const to = $('#type-to').value.toLowerCase().split(/\s+/).filter(Boolean).join(' ');
+        if (!to) { toast('Name the type to migrate to.', 'bad'); return; }
+        const n = counts.get(from) || 0;
+        if (!confirm([`Retype ${n} problem${n === 1 ? '' : 's'} from "${from}" to "${to}"?`, '',
+          `"${from}" stops existing, and anyone filtering by it loses that chip.`].join('\n'))) return;
+        const result = await api('/api/admin/types/migrate', {
+          method: 'POST', body: { from, to },
+        });
+        toast(`Migrated ${result.migrated} problem` +
+          `${result.migrated === 1 ? '' : 's'} to "${result.to}".`, 'good');
+        route();
+      });
+    },
+  };
+}
+
 async function viewAdmin() {
   if (!state.user || !state.user.is_admin) {
     setView('<div class="empty">Admins only.</div>');
@@ -3075,6 +3125,7 @@ async function viewAdmin() {
   };
 
   const express = expressPanel(refreshProblems);
+  const migrate = typeMigratePanel(problems, guard);
 
   setView(`
     <div class="page-head"><h1>Admin</h1></div>
@@ -3090,6 +3141,8 @@ async function viewAdmin() {
     <div class="table-wrap"><table>
       <thead><tr><th>Title</th><th>Slug</th><th>State</th><th>Actions</th></tr></thead>
       <tbody id="admin-problems">${adminProblemRows(problems) || NO_PROBLEMS_ROW}</tbody></table></div>
+
+    ${migrate.html}
 
     ${head('Contests', 'contest')}
     <div class="table-wrap"><table>
@@ -3109,6 +3162,7 @@ async function viewAdmin() {
         </tr>`).join('')}</tbody></table></div>`, { wide: true });
 
   express.bind();
+  migrate.bind();
   bindAdminProblemRows(guard);
 
   $$('[data-publish]').forEach((button) => {

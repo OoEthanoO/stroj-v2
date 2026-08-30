@@ -133,6 +133,12 @@ class PostPatch(BaseModel):
     published: bool | None = None
 
 
+class TypeMigrateBody(BaseModel):
+    #: ``{"from": "dynamic programming", "to": "dp"}``.
+    from_type: str = Field(alias="from")
+    to_type: str = Field(alias="to")
+
+
 class ContestProblemsBody(BaseModel):
     #: ``[{"slug": "a-plus-b", "label": "A"}, ...]`` — labels are assigned in
     #: order when omitted.
@@ -236,6 +242,41 @@ def update_problem(slug: str, body: ProblemPatch, request: Request):
         (*fields.values(), problem["id"]),
     )
     return {"updated": len(fields) + (0 if cleaned_types is None else 1)}
+
+
+@router.post("/types/migrate")
+def migrate_type(body: TypeMigrateBody):
+    """Retype every problem carrying one type with another.
+
+    Types are free-form, so one category arrives spelled two ways — 'dp' on
+    the problems written in March and 'dynamic programming' on the ones
+    written in April. Nothing folds them together: they are two chips on the
+    filter, and picking either hides half the archive. Merging them by hand
+    means opening every problem and rewriting its chips, which is why nobody
+    does it. Renaming a type is the same operation with a target that no
+    problem carries yet.
+    """
+    source = _clean_types([body.from_type])
+    target = _clean_types([body.to_type])
+    if not source or not target:
+        raise HTTPException(
+            status_code=400, detail="Name a type to migrate, and one to migrate it to."
+        )
+    source, target = source[0], target[0]
+    if source == target:
+        raise HTTPException(status_code=400, detail=f"'{source}' is already that type.")
+    problems = db.query("SELECT problem_id FROM problem_types WHERE type = ?", (source,))
+    if not problems:
+        raise HTTPException(status_code=404, detail=f"No problem is typed '{source}'.")
+    with db.transaction() as conn:
+        # A problem already carrying both types has to end up with one row, not
+        # a duplicate the primary key would reject — so skip the collisions on
+        # the way past, then clear what the skip left behind.
+        conn.execute(
+            "UPDATE OR IGNORE problem_types SET type = ? WHERE type = ?", (target, source)
+        )
+        conn.execute("DELETE FROM problem_types WHERE type = ?", (source,))
+    return {"migrated": len(problems), "from": source, "to": target}
 
 
 @router.get("/problems/{slug}/impact")

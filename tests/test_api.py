@@ -1206,6 +1206,84 @@ class TestPatchIsAllOrNothing:
         assert response.json()["updated"] == 2
 
 
+class TestMigratingAType:
+    """Types are typed in by hand, so one category ends up spelled two ways.
+    Merging them is the only way the filter goes back to naming one thing."""
+
+    def types_of(self, admin_client, slug):
+        return admin_client.get(f"/api/problems/{slug}").json()["types"]
+
+    def test_every_problem_carrying_the_type_is_retyped(self, admin_client):
+        make_problem(admin_client, slug="one", types=["dynamic programming", "arrays"])
+        make_problem(admin_client, slug="two", types=["dynamic programming"])
+        make_problem(admin_client, slug="three", types=["graphs"])
+
+        response = admin_client.post(
+            "/api/admin/types/migrate", json={"from": "dynamic programming", "to": "dp"})
+        assert response.json()["migrated"] == 2
+
+        assert self.types_of(admin_client, "one") == ["arrays", "dp"]
+        assert self.types_of(admin_client, "two") == ["dp"]
+        assert self.types_of(admin_client, "three") == ["graphs"]
+
+    def test_the_old_type_stops_existing(self, admin_client):
+        make_problem(admin_client, slug="one", types=["dynamic programming"])
+        admin_client.post(
+            "/api/admin/types/migrate", json={"from": "dynamic programming", "to": "dp"})
+        assert db.query(
+            "SELECT 1 FROM problem_types WHERE type = 'dynamic programming'") == []
+
+    def test_a_problem_carrying_both_keeps_one_tag(self, admin_client):
+        """The primary key is (problem_id, type), so the collision has to be
+        folded rather than inserted — and the row it skipped has to go."""
+        make_problem(admin_client, slug="both", types=["dp", "dynamic programming"])
+        response = admin_client.post(
+            "/api/admin/types/migrate", json={"from": "dynamic programming", "to": "dp"})
+        assert response.json()["migrated"] == 1
+        assert self.types_of(admin_client, "both") == ["dp"]
+
+    def test_a_type_nothing_carries_yet_is_a_rename(self, admin_client):
+        make_problem(admin_client, slug="one", types=["dp"])
+        admin_client.post("/api/admin/types/migrate", json={"from": "dp", "to": "tabulation"})
+        assert self.types_of(admin_client, "one") == ["tabulation"]
+
+    def test_case_and_spacing_are_folded_like_everywhere_else(self, admin_client):
+        make_problem(admin_client, slug="one", types=["dynamic programming"])
+        response = admin_client.post(
+            "/api/admin/types/migrate", json={"from": "Dynamic  Programming", "to": " DP "})
+        assert response.json() == {"migrated": 1, "from": "dynamic programming", "to": "dp"}
+        assert self.types_of(admin_client, "one") == ["dp"]
+
+    def test_a_type_no_problem_carries_is_a_404(self, admin_client):
+        make_problem(admin_client, slug="one", types=["dp"])
+        response = admin_client.post(
+            "/api/admin/types/migrate", json={"from": "greedy", "to": "dp"})
+        assert response.status_code == 404
+        assert self.types_of(admin_client, "one") == ["dp"]
+
+    def test_migrating_a_type_onto_itself_is_rejected(self, admin_client):
+        make_problem(admin_client, slug="one", types=["dp"])
+        response = admin_client.post(
+            "/api/admin/types/migrate", json={"from": "dp", "to": "DP"})
+        assert response.status_code == 400
+        assert self.types_of(admin_client, "one") == ["dp"]
+
+    def test_a_target_that_is_not_a_type_is_rejected(self, admin_client):
+        make_problem(admin_client, slug="one", types=["dp"])
+        for target in ["d&p", "   ", ""]:
+            response = admin_client.post(
+                "/api/admin/types/migrate", json={"from": "dp", "to": target})
+            assert response.status_code == 400, target
+        assert self.types_of(admin_client, "one") == ["dp"]
+
+    def test_plain_users_cannot_migrate(self, client, admin_client):
+        make_problem(admin_client, slug="one", types=["dp"])
+        admin_client.post("/api/auth/logout")
+        register(client, "nosy")
+        response = client.post("/api/admin/types/migrate", json={"from": "dp", "to": "greedy"})
+        assert response.status_code == 403
+
+
 class TestSchemaReachesExistingDatabases:
     """New tables arrive through `CREATE TABLE IF NOT EXISTS` in schema.sql
     rather than the `_ADDED_COLUMNS` list, which only retrofits columns. A
