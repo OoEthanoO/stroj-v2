@@ -5,3 +5,11 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 public/
+
+# Authored problem packages: statements, test data, and the intended
+# solutions. None of it belongs in a public repository — this is the judge,
+# not the problem set, and a solution committed here is a solution published.
+# The generators count too: a generator has to compute the answers, so it is
+# a reference solution with a different name.
+contests/
+problems/
