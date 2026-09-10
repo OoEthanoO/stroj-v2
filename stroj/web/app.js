@@ -205,6 +205,23 @@ const typePills = (types) => ((types || []).length
   ? types.map((t) => `<span class="pill">${esc(t)}</span>`).join(' ')
   : '<span class="muted">—</span>');
 
+/* Problem types name the technique, which is the answer to "what should I try
+ * here" — so they stay hidden until asked for. One preference for the whole
+ * site, defaulting to hidden; either surface that reveals them flips it. */
+const TYPES_VIS_KEY = 'stroj:show-types';
+
+function typesVisible() {
+  try { return localStorage.getItem(TYPES_VIS_KEY) === '1'; }
+  catch { return false; }
+}
+
+function setTypesVisible(on) {
+  try {
+    if (on) localStorage.setItem(TYPES_VIS_KEY, '1');
+    else localStorage.removeItem(TYPES_VIS_KEY);
+  } catch { /* private mode: hiding still works for this page */ }
+}
+
 /* Multiselect of problem types, as toggleable chips. Assigning types and
  * filtering by them are the same control; only authoring passes `creatable`,
  * which adds a field for types nothing uses yet. */
@@ -723,6 +740,10 @@ async function viewProblems() {
         : 'Run <code class="mono">python -m stroj seed</code> to load the samples.'}</div>`);
     return;
   }
+  // Types name the technique, so the column and its filter stay hidden until
+  // asked for. One flag for the page; revealing anywhere reveals everywhere on
+  // it, and the choice is remembered for the next page.
+  let showTypes = typesVisible();
   const row = (p) => `
     <tr>
       <td class="wide">
@@ -730,7 +751,11 @@ async function viewProblems() {
         <a href="#/problem/${encodeURIComponent(p.slug)}">${esc(p.title)}</a>
         ${p.visible ? '' : ' <span class="pill">hidden</span>'}
       </td>
-      <td class="small">${typePills(p.types)}</td>
+      <td class="small">${showTypes
+        ? typePills(p.types)
+        : ((p.types || []).length
+          ? '<button type="button" class="btn small ghost" data-reveal-types title="Problem types name the technique">Show</button>'
+          : '<span class="muted">—</span>')}</td>
       <td class="num">${pointsPill(p.points)}</td>
       <td class="small">${userLink(p.author, p.author_role)}</td>
       <td class="num">${p.time_limit_ms} ms</td>
@@ -746,8 +771,9 @@ async function viewProblems() {
         <input id="f-q" type="search" placeholder="Search problems…" style="flex:2;min-width:180px">
         <input id="f-min" type="number" min="0" placeholder="Min points" style="width:120px">
         <input id="f-max" type="number" min="0" placeholder="Max points" style="width:120px">
+        ${types.length ? '<button type="button" class="btn small ghost" id="types-toggle" title="Problem types name the technique and give away the approach"></button>' : ''}
       </div>
-      ${types.length ? `<div class="row" style="margin-top:8px">
+      ${types.length ? `<div class="row" id="types-filter-row" style="margin-top:8px">
         <span class="muted small">Types</span>${typeChips('f-types', types)}</div>` : ''}
     </div>
     <div class="table-wrap"><table>
@@ -768,8 +794,9 @@ async function viewProblems() {
 
   const apply = () => {
     const q = $('#f-q').value.trim().toLowerCase();
-    // No type selected means no type filter; several mean any of them.
-    const chosen = types.length ? chosenTypes('f-types') : [];
+    // No type selected means no type filter; several mean any of them. Hidden
+    // means unfiltered: the chips are not on screen to pick from.
+    const chosen = (types.length && showTypes) ? chosenTypes('f-types') : [];
     const min = Number($('#f-min').value) || 0;
     const max = Number($('#f-max').value) || Infinity;
     const shown = problems.filter((p) =>
@@ -786,8 +813,23 @@ async function viewProblems() {
       $('.arrow', th).textContent = active ? (sort.dir > 0 ? '↑' : '↓') : '';
     });
   };
+  const syncTypesUI = () => {
+    setTypesVisible(showTypes);
+    const toggle = $('#types-toggle');
+    if (toggle) toggle.textContent = showTypes ? 'Hide types' : 'Show types';
+    const filterRow = $('#types-filter-row');
+    if (filterRow) filterRow.style.display = showTypes ? '' : 'none';
+  };
+  const revealTypes = () => { showTypes = true; syncTypesUI(); apply(); };
   $$('.filters input').forEach((el) => { el.oninput = apply; });
-  if (types.length) bindTypeChips('f-types', apply);
+  if (types.length) {
+    bindTypeChips('f-types', apply);
+    $('#types-toggle').onclick = () => { showTypes = !showTypes; syncTypesUI(); apply(); };
+    $('#p-rows').onclick = (event) => {
+      if (event.target.closest('[data-reveal-types]')) revealTypes();
+    };
+  }
+  syncTypesUI();
 
   $$('th.sort').forEach((th) => {
     th.onclick = () => {
@@ -966,7 +1008,7 @@ async function viewProblem(slug, params) {
       ${sealed ? '' : `<span class="points-pill">${problem.points} points</span>`}
       ${contestPills(problem, contestSlug)}
       ${problem.author ? `<span class="pill">by ${userLink(problem.author, problem.author_role)}</span>` : ''}
-      ${(problem.types || []).map((t) => `<span class="pill">${esc(t)}</span>`).join('')}
+      <span id="types-wrap"></span>
       <span class="pill">${problem.time_limit_ms} ms</span>
       <span class="pill">${problem.memory_limit_mb} MiB</span>
       <span class="pill">${esc(problem.checker)} checker</span>
@@ -1035,6 +1077,27 @@ async function viewProblem(slug, params) {
           <div class="loading">Loading…</div></div>
       </div>
     </div>`, { wide: true });
+
+  // Types name the technique, so they stay hidden until asked for. Sealed
+  // problems carry none to reveal, and an untyped problem shows nothing.
+  let showTypes = typesVisible();
+  const renderTypesWrap = () => {
+    const wrap = $('#types-wrap');
+    if (!wrap) return;
+    const tags = problem.types || [];
+    if (!tags.length) { wrap.innerHTML = ''; return; }
+    wrap.innerHTML = showTypes
+      ? `${tags.map((t) => `<span class="pill">${esc(t)}</span>`).join(' ')}
+         <button type="button" class="btn small ghost" id="types-toggle">Hide</button>`
+      : `<button type="button" class="btn small ghost" id="types-toggle"
+           title="Problem types name the technique and give away the approach">Show types</button>`;
+    $('#types-toggle').onclick = () => {
+      showTypes = !showTypes;
+      setTypesVisible(showTypes);
+      renderTypesWrap();
+    };
+  };
+  renderTypesWrap();
 
   if (!state.user) return;
 
