@@ -12,7 +12,8 @@
          <Root>\server.json
       2. clones the repo into <Root>\repo (or leaves an existing clone alone)
       3. copies tick.ps1 to <Root>\bin (the per-minute deploy poller)
-      4. adds an import of <Root>\Caddyfile to the main Caddyfile
+      4. adds an import of <Root>\Caddyfile to the main Caddyfile, checks the
+         merged config and reloads Caddy
       5. registers the scheduled task "stroj-deploy" (SYSTEM, every minute)
       6. runs the first deploy
 
@@ -106,6 +107,12 @@ if (Confirm-CaddyImport $config $paths) {
     Info "added import block to $MainCaddyfile (backup saved next to it)"
 }
 else { Info 'import block already present' }
+# Now, not after the first deploy: the deploy checks the site through Caddy,
+# and only reloads Caddy itself when the site block has changed since the
+# copy made just above.
+$err = Update-Caddy $config
+if ($err) { throw $err }
+Info 'Caddy reloaded'
 
 # ---- 5. scheduled task -------------------------------------------------------
 Step "Registering scheduled task '$($script:TaskName)'"
