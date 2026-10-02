@@ -58,7 +58,10 @@ INVITE_CODE = os.environ.get("STROJ_INVITE_CODE", "").strip()
 # an account-creation endpoint facing the whole internet.
 LOGIN_ATTEMPTS = _int("STROJ_LOGIN_ATTEMPTS", 10)
 LOGIN_WINDOW_S = _int("STROJ_LOGIN_WINDOW", 300)
-REGISTER_LIMIT = _int("STROJ_REGISTER_LIMIT", 5)
+# Sign-ups per address per hour. Sized for a classroom, not a household: a
+# whole room signing up on the first day reaches the judge from one school
+# address, and the frontend's proxy collapses every visitor into one more.
+REGISTER_LIMIT = _int("STROJ_REGISTER_LIMIT", 60)
 REGISTER_WINDOW_S = _int("STROJ_REGISTER_WINDOW", 3600)
 SUBMIT_LIMIT = _int("STROJ_SUBMIT_LIMIT", 40)
 SUBMIT_WINDOW_S = _int("STROJ_SUBMIT_WINDOW", 300)
