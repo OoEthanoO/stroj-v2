@@ -9,14 +9,19 @@ and minutes of wall time. Lambda provides none of those.
 So the deployment is split:
 
 ```
-  stroj.ethanyanxu.com          (Vercel, static)
+  stroj.ethanyanxu.com          (home server's Caddy, static)
+  oj.ethanyanxu.com               — same site, second name
      │  /                       → index.html + /static/*
-     │  /api/*  ── rewrite ──▶  https://<judge-origin>/api/*
+     │  /api/*  ── proxy ────▶  https://judge.ethanyanxu.com/api/*
                                 (container host: FastAPI + judge workers + volume)
 ```
 
-Rewrites proxy server-side, so the browser only ever sees one origin. Session
+The proxy runs server-side, so the browser only ever sees one origin. Session
 cookies keep working untouched — no CORS, no `SameSite=None`.
+
+The frontend used to be on Vercel, and Part 2 still describes that; it moved to
+the home server in October 2026 when the Vercel project was paused for going
+over the free tier. See [The frontend on the home server](#the-frontend-on-the-home-server).
 
 ---
 
@@ -247,7 +252,52 @@ Run `./run.sh` alongside it. The judge origin is `https://judge.ethanyanxu.com`.
 
 ---
 
-## Part 2 — the frontend on Vercel
+## The frontend on the home server
+
+`ssh finprint-host` — the Windows 11 laptop whose one Caddy also serves
+finprint, `ai`, `history` and the rest. Everything for stroj lives in
+`deploy/home/` and installs under `C:\Users\ethan\stroj`:
+
+```
+push to main ──► GitHub ◄── git fetch every minute ── task "stroj-deploy" (SYSTEM)
+                                                          │ new commit?
+                                                          ▼
+                       repo\  reset to the commit, run deploy\home\deploy.ps1:
+                          stroj\web\ → releases\<sha>\ (index.html stamped,
+                                       static\*, version.json)
+                          sync deploy\home\Caddyfile → validate → reload Caddy
+                          current ──junction──► releases\<sha>   ◄── Caddy serves this
+                          check http://127.0.0.1:8097 (the site, loopback only)
+```
+
+The judge redeploys on the same push, so the two halves land within a minute
+of each other. Neither waits for a contest to finish: **do not push while a
+contest is running** unless it is the fix for that contest.
+
+```powershell
+# once, elevated, on the server (it clones the repo itself)
+powershell -ExecutionPolicy Bypass -File install.ps1
+# what is live, and the deploy log
+powershell -ExecutionPolicy Bypass -File C:\Users\ethan\stroj\repo\deploy\home\status.ps1
+# back to an earlier release (the poller will not undo it)
+powershell -ExecutionPolicy Bypass -File C:\Users\ethan\stroj\repo\deploy\home\rollback.ps1 -To 1a2b3c4
+```
+
+The main Caddyfile (`C:\Users\ethan\finprint\scripts\selfhost\Caddyfile`)
+imports the site through a `# BEGIN stroj (managed)` block. If finprint's
+`setup.ps1` regenerates that file and drops it, the poller puts it back within
+a minute.
+
+**DNS** is on Cloudflare. Both names are DNS-only (grey cloud) CNAMEs to
+`ai.ethanyanxu.com`, which the server's DDNS task keeps on the home address.
+Caddy issues the certificates itself once a name resolves here. `oj` exists
+because a resolver that cached the old Vercel answer for `stroj` keeps serving
+it until it chooses to forget — a name nobody has looked up yet has no cached
+answer to be stale.
+
+---
+
+## Part 2 — the frontend on Vercel (retired)
 
 ### Shipping the static half first (optional)
 

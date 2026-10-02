@@ -1,0 +1,64 @@
+# Caddy site block for stroj's frontend on the home server (finprint-host).
+#
+# This file is the source of truth. Every deploy copies it to
+# C:\Users\ethan\stroj\Caddyfile (the copy the server's main Caddyfile
+# imports), validates the whole Caddy config, and reloads Caddy. A change Caddy
+# rejects is rolled back and reported in the deploy log.
+#
+# The frontend is static; everything under /api goes on to the judge, which is
+# its own server. Requests reach it from this one proxy, so the judge cannot
+# tell visitors apart by address unless it is told who each one is — see
+# DEPLOY.md, "The frontend on the home server".
+
+(stroj_site) {
+	encode zstd gzip
+
+	# `current` is a junction to the live release (releases\<commit>).
+	root * C:/Users/ethan/stroj/current
+
+	@judge path /api/* /healthz /docs /openapi.json
+	handle @judge {
+		reverse_proxy https://judge.ethanyanxu.com {
+			# The judge's own Caddy picks its site by Host.
+			header_up Host judge.ethanyanxu.com
+		}
+	}
+	handle {
+		file_server
+	}
+
+	# The page checks /version.json against the judge's commit to tell a
+	# half-finished deploy from a working site, so it must never be cached; the
+	# rest revalidates so a deploy shows up on the next load.
+	@version path /version.json
+	header @version Cache-Control "no-store"
+	@page path / /index.html /static/*
+	header @page Cache-Control "no-cache, must-revalidate"
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+		X-Frame-Options DENY
+		-Server
+	}
+}
+
+# Two names for the same site. `oj` is there so the site can be reached under
+# a name no resolver has ever cached, while the old Vercel answer for `stroj`
+# drains out of the caches that hold on to it.
+stroj.ethanyanxu.com, oj.ethanyanxu.com {
+	import stroj_site
+	log {
+		output file C:/Users/ethan/stroj/logs/access.log {
+			roll_size 10MB
+			roll_keep 5
+		}
+	}
+}
+
+# The same site on the loopback interface only, so a deploy can check what
+# Caddy is actually serving without depending on DNS or a certificate.
+http://127.0.0.1:8097 {
+	bind 127.0.0.1
+	import stroj_site
+}
