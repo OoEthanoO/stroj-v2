@@ -1528,9 +1528,44 @@ function updateCountdown(node) {
   else node.textContent = 'finished';
 }
 
+/* Where a rated contest asks for the code given out in the contest room. Empty
+ * for anything that does not ask: an unrated contest, one that is over, and
+ * anyone already in. An admin is never asked, so they get a pointer to where
+ * the code is kept instead — otherwise the page they check the contest from
+ * shows no sign that members are being stopped at the door. */
+function accessCard(c, user) {
+  const access = c.access || {};
+  if (!c.rated || c.state === 'ended') return '';
+  if (user && user.is_admin) {
+    return `<div class="card small muted access-card">Members need the access code to
+      enter this contest. <a href="#/admin/contest/${encodeURIComponent(c.slug)}">Show or
+      change the code</a>.</div>`;
+  }
+  if (access.entered) {
+    return '<div class="card small access-card access-in">✓ You have entered this contest.</div>';
+  }
+  if (!access.needs_code) return '';
+  const why = `This contest is rated, so it is sat in the contest room — your organiser
+    gives out the code there.${access.code_ready ? '' : ' It has not been opened yet.'}`;
+  if (!user) {
+    return `<div class="card small access-card">${why} Sign in, then type it in here.</div>`;
+  }
+  return `
+    <form class="card access-card" id="enter-form">
+      <div class="row">
+        <label class="spacer" style="margin-bottom:0">Access code
+          <input id="enter-code" class="mono" autocomplete="off" autocapitalize="characters"
+            spellcheck="false" maxlength="16" placeholder="ABC-DEF" required></label>
+        <button class="primary" type="submit" style="align-self:flex-end">Enter contest</button>
+      </div>
+      <p class="small muted" style="margin-bottom:0">${why}</p>
+    </form>`;
+}
+
 async function viewContest(slug) {
   const c = await api(`/api/contests/${encodeURIComponent(slug)}`);
   state.clockSkewMs = parseTime(c.server_time).getTime() - Date.now();
+  const access = c.access || {};
 
   const problems = c.problems.map((p) => `
     <tr>
@@ -1566,13 +1601,39 @@ async function viewContest(slug) {
       <a class="btn" href="#/submissions?contest=${encodeURIComponent(slug)}">Submissions</a>
     </div>
 
+    ${accessCard(c, state.user)}
+
     ${c.sealed
-      ? '<div class="empty">The problem set is sealed until the contest starts.</div>'
+      ? `<div class="empty">${access.needs_code && c.state === 'running'
+        ? 'Enter the access code to open the problem set.'
+        : 'The problem set is sealed until the contest starts.'}</div>`
       : (problems
         ? `<div class="table-wrap"><table>
              <thead><tr><th>#</th><th>Problem</th><th class="num">Time</th><th class="num">Memory</th></tr></thead>
              <tbody>${problems}</tbody></table></div>`
         : '<div class="empty">No problems have been added to this contest yet.</div>')}`);
+
+  const enterForm = $('#enter-form');
+  if (enterForm) {
+    enterForm.onsubmit = async (event) => {
+      event.preventDefault();
+      const button = enterForm.querySelector('button');
+      button.disabled = true;
+      try {
+        await api(`/api/contests/${encodeURIComponent(slug)}/enter`, {
+          method: 'POST', body: { code: $('#enter-code').value },
+        });
+        toast("You're in.", 'good');
+        // Through the router rather than calling this view again, so the
+        // countdown's timer is cleared instead of doubled.
+        await route();
+      } catch (err) {
+        toast(err.message, 'bad');
+        button.disabled = false;
+        $('#enter-code').select();
+      }
+    };
+  }
 
   const tick = () => $$('.countdown').forEach(updateCountdown);
   tick();
@@ -2570,6 +2631,87 @@ function contestProblemsPanel(detail) {
   };
 }
 
+/* The access code a rated contest is entered with, and who has used it. What
+ * the panel says turns on the contest as last saved — ticking "rated" in the
+ * form above does nothing until Save, and the panel should not pretend it has. */
+function accessPanelBody(access) {
+  const n = access.entrants.length;
+  const note = !access.rated
+    ? 'Only rated contests ask for a code. This one is open to everyone, so a code here'
+      + ' does nothing unless you make it rated.'
+    : access.state === 'ended'
+      ? 'This contest is over, and nobody needs a code to see it now.'
+      : access.code
+        ? 'Put this up in the contest room. Members type it on the contest page to open the'
+          + ' problem set. A new code stops this one working for anyone not in yet;'
+          + ' everyone already in stays in.'
+        : '<strong>Nobody can enter this contest yet.</strong> It is rated, so members need'
+          + ' a code — generate one and give it out in the contest room.';
+  return `
+    <div class="row">
+      <div>
+        <div class="small muted">Access code</div>
+        <div class="access-code mono" id="access-code">${access.code ? esc(access.code) : '—'}</div>
+      </div>
+      <div class="spacer"></div>
+      ${access.code ? '<button type="button" id="access-copy">Copy</button>' : ''}
+      <button type="button" id="access-generate"${access.code ? '' : ' class="primary"'}>${
+        access.code ? 'New code' : 'Generate code'}</button>
+    </div>
+    <p class="small ${access.rated && !access.code && access.state !== 'ended' ? 'access-warn' : 'muted'}">${note}</p>
+    <details class="small"${n ? '' : ' hidden'}>
+      <summary>${n} member${n === 1 ? ' has' : 's have'} entered</summary>
+      <div class="muted" style="margin-top:6px">${access.entrants
+        .map((e) => `${userLink(e.username, e.role)} <span class="mono">${esc(absolute(e.entered_at))}</span>`)
+        .join('<br>')}</div>
+    </details>`;
+}
+
+/* Acts the moment its button is pressed rather than riding along with Save:
+ * a code is something to read out to a room, not a field being drafted. */
+async function contestAccessPanel(slug) {
+  const url = `/api/admin/contests/${encodeURIComponent(slug)}`;
+  let access = await api(`${url}/access`);
+
+  const bind = () => {
+    $('#access-generate').onclick = async () => {
+      if (access.code && !confirm('Replace the access code? The old one stops working for'
+          + ' anyone who has not entered yet. Everyone already in stays in.')) return;
+      try {
+        access = await api(`${url}/access-code`, { method: 'POST' });
+        $('#access-panel').innerHTML = accessPanelBody(access);
+        bind();
+        toast(`Access code ${access.code}.`, 'good');
+      } catch (err) {
+        toast(err.message, 'bad');
+      }
+    };
+    const copy = $('#access-copy');
+    if (copy) {
+      copy.onclick = async () => {
+        const copied = await copyText(access.code);
+        toast(copied ? 'Copied.' : 'Could not copy.', copied ? 'good' : 'bad');
+      };
+    }
+  };
+
+  return {
+    html: `<div class="card" id="access-panel">${accessPanelBody(access)}</div>`,
+    bind,
+  };
+}
+
+/* An editor takes one extra panel; a contest has two. */
+function combinePanels(panels) {
+  const parts = panels.filter(Boolean);
+  return {
+    html: parts.map((p) => p.html).join(''),
+    bind: () => parts.forEach((p) => p.bind && p.bind()),
+    check: () => parts.forEach((p) => p.check && p.check()),
+    after: async (slug) => { for (const p of parts) if (p.after) await p.after(slug); },
+  };
+}
+
 /* ---- what each kind of thing is made of ---- */
 
 const ADMIN_FORMS = {
@@ -2681,7 +2823,9 @@ const ADMIN_FORMS = {
       };
     },
     load: (slug) => api(`/api/contests/${encodeURIComponent(slug)}`),
-    extra: (slug, data) => (slug ? contestProblemsPanel(data) : null),
+    extra: async (slug, data) => (slug
+      ? combinePanels([await contestAccessPanel(slug), contestProblemsPanel(data)])
+      : null),
     save: async (v, slug) => {
       const body = {
         title: v.title || v.slug, description: v.description, scoring: v.scoring,

@@ -82,6 +82,7 @@ _ADDED_COLUMNS: list[tuple[str, str, str]] = [
     # flag, which is exactly the state the app prompts them to leave.
     ("users", "email", "TEXT"),
     ("users", "email_verified", "INTEGER NOT NULL DEFAULT 0"),
+    ("contests", "access_code", "TEXT"),
 ]
 
 

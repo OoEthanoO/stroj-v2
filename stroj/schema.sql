@@ -141,7 +141,23 @@ CREATE TABLE IF NOT EXISTS contests (
     -- When the replay last covered this contest. NULL means its results have
     -- not been applied yet, which is what the judge watches for.
     rated_at    TEXT,
+    -- What a member types to enter a rated contest, given out in the contest
+    -- room so that it cannot be sat from anywhere else. NULL until an admin
+    -- generates one, and until then nobody can enter. Kept in plain text on
+    -- purpose: it is read off a whiteboard, not a secret anyone signs in with,
+    -- and the admin has to be able to put it back on the screen.
+    access_code TEXT,
     created_at  TEXT    NOT NULL
+);
+
+-- Who has typed a rated contest's access code. One row is enough to be let in
+-- for the rest of that contest — a new code stops the old one working for
+-- anyone still outside, but does not throw out the people already in the room.
+CREATE TABLE IF NOT EXISTS contest_entries (
+    contest_id INTEGER NOT NULL REFERENCES contests(id) ON DELETE CASCADE,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    entered_at TEXT    NOT NULL,
+    PRIMARY KEY (contest_id, user_id)
 );
 
 -- What one rated contest did to one competitor. Written by a full replay of

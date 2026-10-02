@@ -120,13 +120,56 @@ def contests_with(problem_id: int) -> list[sqlite3.Row]:
     )
 
 
+def locked_out(contest_row: sqlite3.Row, user: sqlite3.Row | None) -> bool:
+    """Whether this viewer is kept out of a rated contest until they enter its code.
+
+    A rated contest is sat in the contest room, and the code given out there is
+    what proves it. Until a member has typed it, a contest that is running looks
+    to them exactly like one that has not started: no problem set, no hidden
+    problem readable through it, and nothing to submit into it.
+
+    Admins are never kept out — they run the room. Nobody is once the contest
+    is over: it no longer counts, and the problems are there to upsolve. An
+    unrated contest never asks.
+    """
+    if not contest_row["rated"] or is_admin(user):
+        return False
+    if contest.state_of(contest_row) == contest.ENDED:
+        return False
+    return user is None or not contest.has_entered(contest_row["id"], user["id"])
+
+
+def access_for(contest_row: sqlite3.Row, user: sqlite3.Row | None) -> dict:
+    """What the contest page needs to know to ask for a code, or not.
+
+    Says whether a code *exists* — so the page can tell a member the room has
+    not been opened yet rather than letting them guess — and never what it is.
+    """
+    return {
+        "needs_code": locked_out(contest_row, user),
+        "entered": user is not None
+        and bool(contest_row["rated"])
+        and contest.has_entered(contest_row["id"], user["id"]),
+        "code_ready": bool(contest_row["access_code"]),
+    }
+
+
 def problem_visible_to(problem: sqlite3.Row, user: sqlite3.Row | None) -> bool:
-    """Hidden problems are readable by admins, and inside a running contest."""
+    """Hidden problems are readable by admins, and inside a running contest.
+
+    A running *rated* contest only opens them to the members who have entered
+    its code — otherwise the problem page would hand out what the contest page
+    is withholding.
+    """
     if problem["visible"] or is_admin(user):
         return True
-    return any(
-        contest.state_of(c) != contest.BEFORE for c in contests_with(problem["id"])
-    )
+    for row in contests_with(problem["id"]):
+        state = contest.state_of(row)
+        if state == contest.ENDED:
+            return True
+        if state == contest.RUNNING and not locked_out(row, user):
+            return True
+    return False
 
 
 def metadata_sealed(problem: sqlite3.Row, user: sqlite3.Row | None) -> bool:

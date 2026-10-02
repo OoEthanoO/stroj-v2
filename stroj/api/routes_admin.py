@@ -1012,6 +1012,44 @@ def update_contest(slug: str, body: ContestPatch):
     return {"updated": len(fields), "slug": slug, "ratings": rebuilt}
 
 
+def _access_view(contest: sqlite3.Row) -> dict:
+    return {
+        "code": contest_mod.format_code(contest["access_code"]),
+        "rated": bool(contest["rated"]),
+        "state": contest_mod.state_of(contest),
+        "entrants": [
+            {"username": r["username"], "role": r["role"], "entered_at": r["entered_at"]}
+            for r in contest_mod.entrants(contest["id"])
+        ],
+    }
+
+
+@router.get("/contests/{slug}/access")
+def contest_access(slug: str):
+    """The contest's access code, and who has used it so far.
+
+    The list is how a room is checked: a name on it who is not sitting in
+    front of you got the code from someone who is.
+    """
+    return _access_view(get_contest(slug))
+
+
+@router.post("/contests/{slug}/access-code")
+def new_access_code(slug: str):
+    """Put up a new access code, replacing any old one.
+
+    The old code stops working at once for anyone who has not entered yet;
+    everyone who already has stays in. That is the repair for a code that has
+    got out of the room — anyone who used it is on the entrants list.
+    """
+    contest = get_contest(slug)
+    db.execute(
+        "UPDATE contests SET access_code = ? WHERE id = ?",
+        (contest_mod.new_access_code(), contest["id"]),
+    )
+    return _access_view(get_contest(slug))
+
+
 @router.post("/ratings/recompute")
 def recompute_ratings():
     """Rebuild every rating by replaying every rated contest.

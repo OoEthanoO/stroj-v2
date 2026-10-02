@@ -21,6 +21,7 @@ from .deps import (
     current_user,
     get_problem,
     is_admin,
+    locked_out,
     require_user,
     submission_public,
 )
@@ -116,6 +117,14 @@ def submit(body: SubmitBody, request: Request):
                 detail="That contest has not started yet."
                 if state == contest_mod.BEFORE
                 else "That contest is over.",
+            )
+        # A rated contest counts only from the room it is sat in, and the
+        # code given out there is what says this member is in it.
+        if locked_out(contest_row, user):
+            raise HTTPException(
+                status_code=403,
+                detail="Enter this contest's access code first — the organisers"
+                " give it out in the contest room.",
             )
         in_contest = db.one(
             "SELECT 1 FROM contest_problems WHERE contest_id = ? AND problem_id = ?",

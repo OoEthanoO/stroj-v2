@@ -4,12 +4,30 @@ from __future__ import annotations
 
 import sqlite3
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from .. import contest as contest_mod, db, rating
-from .deps import current_user, get_contest, is_admin
+from ..ratelimit import RateLimiter
+from .deps import (
+    access_for,
+    current_user,
+    get_contest,
+    is_admin,
+    locked_out,
+    require_user,
+)
 
 router = APIRouter(prefix="/api/contests", tags=["contests"])
+
+#: Wrong codes per member, per contest. Ten tries in ten minutes is generous to
+#: anyone squinting at a whiteboard and hopeless for anyone guessing: a
+#: three-hour contest allows about 180 guesses against 887 million codes.
+_code_limiter = RateLimiter(10, 600, name="contest-code")
+
+
+class EnterBody(BaseModel):
+    code: str = Field(max_length=64)
 
 
 def _summary(row: sqlite3.Row) -> dict:
@@ -42,10 +60,12 @@ def contest_detail(slug: str, request: Request):
     user = current_user(request)
     data = _summary(row)
     data["description"] = row["description"]
+    data["access"] = access_for(row, user)
 
     state = data["state"]
-    # The problem set stays sealed until the clock starts.
-    if state == contest_mod.BEFORE and not is_admin(user):
+    # The problem set stays sealed until the clock starts — and, in a rated
+    # contest, until this member has entered the code from the room.
+    if (state == contest_mod.BEFORE and not is_admin(user)) or data["access"]["needs_code"]:
         data["problems"] = []
         data["sealed"] = True
         return data
@@ -82,9 +102,12 @@ def contest_detail(slug: str, request: Request):
 @router.get("/{slug}/scoreboard")
 def scoreboard(slug: str, request: Request):
     row = get_contest(slug)
+    user = current_user(request)
     # Organisers need the true standings during the freeze — to spot a broken
     # problem, and to know the result before announcing it.
-    data = contest_mod.scoreboard(row, reveal=is_admin(current_user(request)))
+    data = contest_mod.scoreboard(
+        row, reveal=is_admin(user), withhold_problems=locked_out(row, user)
+    )
     data["contest"] = _summary(row)
 
     # What the contest did to each competitor's rating. Only present once it
@@ -101,3 +124,45 @@ def scoreboard(slug: str, request: Request):
                 "rank": rating.rank_dict(change["rating_after"], 1),
             }
     return data
+
+
+@router.post("/{slug}/enter")
+def enter_contest(slug: str, body: EnterBody, request: Request):
+    """Type a rated contest's access code and be let in for the rest of it.
+
+    Open from before the start, so a room can settle in and enter while the
+    clock is still counting down. Entering twice is harmless; entering after a
+    new code has gone up is still entering, and a member already in stays in.
+    """
+    user = require_user(request)
+    row = get_contest(slug)
+    if not row["rated"]:
+        raise HTTPException(
+            status_code=400, detail="This contest is open to everyone — no code needed."
+        )
+    if contest_mod.state_of(row) == contest_mod.ENDED:
+        raise HTTPException(status_code=400, detail="That contest is over.")
+    if contest_mod.has_entered(row["id"], user["id"]):
+        return {"entered": True}
+    if not row["access_code"]:
+        raise HTTPException(
+            status_code=403,
+            detail="The organisers have not opened this contest yet. They will"
+            " give out the code in the contest room.",
+        )
+
+    key = f"{user['id']}:{row['id']}"
+    wait = _code_limiter.check(key)
+    if wait > 0:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many wrong codes. Try again in {int(wait) + 1}s.",
+            headers={"Retry-After": str(int(wait) + 1)},
+        )
+    if not contest_mod.code_matches(row, body.code):
+        _code_limiter.hit(key)
+        raise HTTPException(status_code=403, detail="That is not the code for this contest.")
+
+    _code_limiter.reset(key)
+    contest_mod.record_entry(row["id"], user["id"])
+    return {"entered": True}

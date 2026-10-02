@@ -724,6 +724,13 @@ tr.you { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 .pill-rated { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 
+/* A rated contest's access code. Big enough to read off the admin's screen
+ * when it is put up in front of the room. */
+.access-code { font-size: 30px; font-weight: 700; letter-spacing: 0.12em; line-height: 1.2; }
+.access-warn { color: var(--warn); }
+.access-in { color: var(--ok); }
+#enter-code { text-transform: uppercase; letter-spacing: 0.08em; }
+
 /* The ladder legend: 25 rungs, so it has to stay compact. */
 .ladder { display: flex; flex-wrap: wrap; gap: 6px; }
 .ladder .rung { display: flex; align-items: center; gap: 6px; }

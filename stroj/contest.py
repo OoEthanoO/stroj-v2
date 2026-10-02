@@ -13,6 +13,8 @@ Two scoring systems:
 
 from __future__ import annotations
 
+import hmac
+import secrets
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -47,6 +49,76 @@ def live_ids() -> list[int]:
     copy — the profile activity calendar — was written without it.
     """
     return [row["id"] for row in db.query("SELECT * FROM contests") if is_running(row)]
+
+
+# ---------------------------------------------------------------------------
+# Access codes
+#
+# A rated contest is meant to be sat in the contest room. The admin generates a
+# code, writes it up in the room, and members type it in to enter; until they
+# have, a running rated contest shows them what one that has not started shows
+# — no problem set, and nothing to submit to. Who may enter is decided in
+# `api.deps.locked_out`, which also knows about admins; this part only keeps
+# the codes and the record of who has used one.
+# ---------------------------------------------------------------------------
+
+#: No 0 or O, no 1, I or L. The code is copied off a board by a room full of
+#: people, and every character that can be read as another one is a wrong
+#: guess the rate limiter then holds against whoever made it.
+CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+CODE_LENGTH = 6
+
+
+def new_access_code() -> str:
+    """Six characters from a 31-letter alphabet: under a billion codes, which
+    is plenty against guessing at the rate `routes_contests` allows."""
+    return "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
+
+
+def normalise_code(text: str) -> str:
+    """Upper case with the spaces and dashes taken out, so `k7q-xm4` is the
+    same answer as `K7QXM4`."""
+    return "".join(ch for ch in text.upper() if ch.isalnum())
+
+
+def format_code(code: str | None) -> str | None:
+    """`K7QXM4` as `K7Q-XM4`: two halves are easier to read out and copy down."""
+    if not code:
+        return None
+    half = len(code) // 2
+    return f"{code[:half]}-{code[half:]}"
+
+
+def code_matches(contest: sqlite3.Row, attempt: str) -> bool:
+    stored = contest["access_code"]
+    if not stored:
+        return False
+    return hmac.compare_digest(normalise_code(attempt).encode(), stored.encode())
+
+
+def has_entered(contest_id: int, user_id: int) -> bool:
+    return db.one(
+        "SELECT 1 FROM contest_entries WHERE contest_id = ? AND user_id = ?",
+        (contest_id, user_id),
+    ) is not None
+
+
+def record_entry(contest_id: int, user_id: int) -> None:
+    db.execute(
+        "INSERT OR IGNORE INTO contest_entries (contest_id, user_id, entered_at)"
+        " VALUES (?, ?, ?)",
+        (contest_id, user_id, db.utcnow()),
+    )
+
+
+def entrants(contest_id: int) -> list[sqlite3.Row]:
+    """Everyone who has typed the code, earliest first."""
+    return db.query(
+        "SELECT u.username, u.role, e.entered_at FROM contest_entries e"
+        " JOIN users u ON u.id = e.user_id"
+        " WHERE e.contest_id = ? ORDER BY e.entered_at, u.username",
+        (contest_id,),
+    )
 
 
 def minutes_since_start(contest: sqlite3.Row, timestamp: str) -> int:
@@ -134,7 +206,9 @@ def freeze_at(contest: sqlite3.Row) -> str | None:
     return moment.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
-def scoreboard(contest: sqlite3.Row, reveal: bool = False) -> dict:
+def scoreboard(
+    contest: sqlite3.Row, reveal: bool = False, withhold_problems: bool = False
+) -> dict:
     """Build the scoreboard.
 
     Near the end of a contest the board conventionally freezes: submissions
@@ -144,6 +218,11 @@ def scoreboard(contest: sqlite3.Row, reveal: bool = False) -> dict:
 
     ``reveal`` bypasses the freeze — for organisers, and for anyone once the
     contest is over. It also lifts the pre-start seal described below.
+
+    ``withhold_problems`` applies that same seal to a viewer who has not
+    entered a rated contest's access code: the problem set reads to them as it
+    did before the start, so the board cannot hand out what the contest page
+    is withholding.
     """
     problems = problems_of(contest["id"])
     label_of = {p["id"]: p["label"] for p in problems}
@@ -259,7 +338,7 @@ def scoreboard(contest: sqlite3.Row, reveal: bool = False) -> dict:
         # often enough to name the technique, and the count alone tells everyone
         # how the paper is shaped. Nothing is lost by withholding it — before
         # the start there are no submissions and so no standings to explain.
-        "problems": [] if (state == BEFORE and not reveal) else [
+        "problems": [] if (state == BEFORE and not reveal) or withhold_problems else [
             {
                 "label": p["label"],
                 "slug": p["slug"],
