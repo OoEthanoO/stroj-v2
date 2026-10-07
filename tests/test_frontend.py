@@ -39,6 +39,15 @@ def test_submission_view_suite():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
+def test_scoreboard_history_suite():
+    result = subprocess.run(
+        ["node", str(Path(__file__).parent / "test_scoreboard_history.js")],
+        capture_output=True, text=True, cwd=ROOT,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
 def test_version_watch_suite():
     """Run tests/test_version_watch.js and surface its output on failure."""
     result = subprocess.run(

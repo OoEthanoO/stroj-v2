@@ -414,7 +414,20 @@ pre.source {
 
 /* Let the name column absorb the slack so the problem cells stay compact. */
 .scoreboard th:nth-child(2), .scoreboard td:nth-child(2) { width: 99%; }
-.scoreboard td.cell { text-align: center; font-family: var(--mono); font-size: 13px; padding: 6px 10px; min-width: 74px; }
+.scoreboard td.cell { text-align: center; font-family: var(--mono); font-size: 13px; padding: 0; min-width: 74px; }
+.score-cell-link {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 52px;
+  padding: 6px 10px;
+  color: inherit;
+}
+.score-cell-link:hover, .score-cell-link:focus-visible {
+  text-decoration: none;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .cell.solved { background: var(--ok-bg); color: var(--ok); font-weight: 600; }
 .cell.failed { background: var(--bad-bg); color: var(--bad); }
 .cell.pending { background: var(--info-bg); color: var(--info); }

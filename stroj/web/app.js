@@ -1243,11 +1243,23 @@ function scopeTabs(mine) {
 
 async function viewSubmissions(params) {
   const mine = params.get('mine') === '1';
+  const filters = new URLSearchParams();
   const query = new URLSearchParams({ limit: '60' });
-  if (mine) query.set('mine', 'true');
+  if (mine) { query.set('mine', 'true'); filters.set('mine', '1'); }
   ['problem', 'contest', 'username'].forEach((k) => {
-    if (params.get(k)) query.set(k, params.get(k));
+    if (params.get(k)) {
+      query.set(k, params.get(k));
+      filters.set(k, params.get(k));
+    }
   });
+  if (params.get('before')) query.set('before', params.get('before'));
+  const newestHref = `#/submissions${filters.toString() ? '?' + filters : ''}`;
+  const context = [
+    params.get('username') ? `User: ${userLink(params.get('username'))}` : '',
+    params.get('problem') ? `Problem: <a href="#/problem/${encodeURIComponent(params.get('problem'))}">${esc(params.get('problem'))}</a>` : '',
+    params.get('contest') ? `Contest: <a href="#/contest/${encodeURIComponent(params.get('contest'))}">${esc(params.get('contest'))}</a>
+      · <a href="#/contest/${encodeURIComponent(params.get('contest'))}/scoreboard">Back to scoreboard</a>` : '',
+  ].filter(Boolean).join(' · ');
 
   /* Painted here and not from inside `render`, which is also the four-second
    * poll. `render` used to build the page whenever it could not find its own
@@ -1259,12 +1271,17 @@ async function viewSubmissions(params) {
     <div class="page-head">
       <h1>Submissions</h1>
       <div class="spacer"></div>
-      ${scopeTabs(mine)}
+      ${params.get('username') ? '<a class="small" href="#/submissions">All submissions</a>' : scopeTabs(mine)}
     </div>
+    ${context ? `<p class="muted small">${context}</p>` : ''}
     <div id="sub-list"><div class="loading">Loading…</div></div>`, { wide: true });
 
+  // A poll from the previous page must not replace a newly selected user's
+  // list, or the next page of the same user's history.
+  const list = $('#sub-list');
   const render = async () => {
     const { submissions } = await api(`/api/submissions?${query}`);
+    if (!list.isConnected) return;
     const rows = submissions.map((s) => `
       <tr>
         <td><a href="#/submission/${s.id}">#${s.id}</a></td>
@@ -1285,14 +1302,19 @@ async function viewSubmissions(params) {
           <th class="num">Score</th><th class="num">Time</th><th class="num">Memory</th><th>When</th></tr></thead>
         <tbody>${rows}</tbody></table></div>`;
 
-    const list = $('#sub-list');
-    if (!list) return;
-    list.innerHTML = submissions.length
-      ? table : '<div class="empty">No submissions yet.</div>';
+    const older = new URLSearchParams(filters);
+    if (submissions.length) older.set('before', submissions[submissions.length - 1].id);
+    const paging = `<nav class="row end" aria-label="Submission pages" style="margin-top:14px">
+      ${query.has('before') ? `<a class="btn small" href="${esc(newestHref)}">Newest submissions</a>` : ''}
+      ${submissions.length === 60 ? `<a class="btn small" href="#/submissions?${esc(older)}">Older submissions →</a>` : ''}
+    </nav>`;
+    list.innerHTML = (submissions.length
+      ? table : `<div class="empty">${filters.toString()
+        ? 'No visible submissions match these filters.' : 'No submissions yet.'}</div>`) + paging;
   };
 
   await render();
-  every(4000, render);
+  if (list.isConnected) every(4000, render);
 }
 
 async function viewSubmission(id) {
@@ -1657,8 +1679,12 @@ async function viewScoreboard(slug) {
     const rows = board.rows.map((r) => {
       const cells = board.problems.map((p) => {
         const cell = r.cells[p.label];
+        const historyQuery = new URLSearchParams({ contest: slug, username: r.username, problem: p.slug });
+        const label = `View ${r.username}'s submissions for ${p.label}: ${p.title}`;
+        const historyLink = (content) => `<a class="score-cell-link" href="#/submissions?${esc(historyQuery)}"
+          aria-label="${esc(label)}" title="${esc(label)}">${content}</a>`;
         if (!cell || (!cell.attempts && !cell.pending && !cell.frozen)) {
-          return '<td class="cell"></td>';
+          return `<td class="cell">${historyLink('<span aria-hidden="true">&nbsp;</span>')}</td>`;
         }
         let cls = cell.solved ? 'solved' : (cell.pending ? 'pending' : 'failed');
         let main;
@@ -1677,7 +1703,7 @@ async function viewScoreboard(slug) {
           sub = `+${cell.frozen} hidden`;
           if (!cell.attempts) main = '?';
         }
-        return `<td class="cell ${cls}">${esc(main)}${sub ? `<span class="sub">${esc(sub)}</span>` : ''}</td>`;
+        return `<td class="cell ${cls}">${historyLink(esc(main) + (sub ? `<span class="sub">${esc(sub)}</span>` : ''))}</td>`;
       }).join('');
       const me = state.user && state.user.id === r.user_id;
       return `<tr${me ? ' style="outline:2px solid var(--accent);outline-offset:-2px"' : ''}>
