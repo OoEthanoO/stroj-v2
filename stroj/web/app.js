@@ -2147,9 +2147,12 @@ async function viewRanks() {
 async function viewUser(username) {
   // The ladder comes along so the graph can draw the tiers this rating passed
   // through. Fetched in parallel; a profile should not wait on a legend.
-  const [u, ranks] = await Promise.all([
+  const submissionsQuery = new URLSearchParams({ username, limit: '10' });
+  const [u, ranks, recent] = await Promise.all([
     api(`/api/users/${encodeURIComponent(username)}`),
     api('/api/ranks').catch(() => ({ ladder: [] })),
+    // Reuse the submission list's visibility rules for this viewer.
+    api(`/api/submissions?${submissionsQuery}`).catch(() => null),
   ]);
   const maxPoints = Math.max(1, ...u.solved.map((s) => s.earned));
 
@@ -2163,6 +2166,19 @@ async function viewUser(username) {
       <td class="num muted">×${s.weight}</td>
       <td class="num"><strong>${s.contribution}</strong>
         <span class="weight-bar" style="width:${Math.round(60 * s.contribution / maxPoints)}px"></span></td>
+    </tr>`).join('');
+
+  const recentRows = (recent?.submissions || []).map((s) => `
+    <tr>
+      <td><a href="#/submission/${s.id}">#${s.id}</a></td>
+      <td class="wide"><a href="#/problem/${encodeURIComponent(s.problem_slug)}">${esc(s.problem_title)}</a>
+        ${s.contest_slug ? `<a class="pill" href="#/contest/${encodeURIComponent(s.contest_slug)}">${esc(s.contest_slug)}</a>` : ''}</td>
+      <td class="small muted">${esc(s.language)}</td>
+      <td>${verdictBadge(s.verdict, s.verdict_name)}</td>
+      <td class="num">${s.score}/${s.max_score}</td>
+      <td class="num muted">${s.time_ms} ms</td>
+      <td class="num muted">${memory(s.memory_kb)}</td>
+      <td class="muted small" title="${esc(absolute(s.created_at))}">${esc(relative(s.created_at))}</td>
     </tr>`).join('');
 
   setView(`
@@ -2210,6 +2226,22 @@ async function viewUser(username) {
     </div>
 
     ${activityCalendar(u.activity)}
+
+    <section aria-labelledby="recent-submissions-heading">
+      <div class="row" style="justify-content:space-between;align-items:baseline">
+        <h2 id="recent-submissions-heading">Recent submissions</h2>
+        <a class="small" href="#/submissions?username=${encodeURIComponent(u.username)}">View submissions</a>
+      </div>
+      ${!recent
+        ? '<div class="empty">Could not load recent submissions. Open the submissions list to try again.</div>'
+        : recent.submissions.length
+          ? `<div class="table-wrap"><table>
+               <thead><tr><th>ID</th><th>Problem</th><th>Lang</th><th>Verdict</th>
+                 <th class="num">Score</th><th class="num">Time</th><th class="num">Memory</th><th>When</th></tr></thead>
+               <tbody>${recentRows}</tbody></table></div>`
+          : '<div class="empty">No submissions to show yet.</div>'}
+    </section>
+
     ${ratingGraph(u.rating_history, ranks.ladder)}
     ${ratingHistory(u.rating_history)}
 
