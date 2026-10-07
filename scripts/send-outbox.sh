@@ -6,17 +6,17 @@
 # itself. With STROJ_MAIL_TRANSPORT=spool it writes each message into a
 # directory on its volume instead, and this drains that directory.
 #
-# Run it with WATCH=1 and mail leaves as it is written: the drain waits on the
-# directory, not on a clock, so a member who has just signed up has the link
-# before they have finished switching windows. Without WATCH it makes one pass
-# and exits, which is what a systemd timer wants. Both are safe to run
+# Run it with WATCH=1 to send mail as it arrives. The watcher drains new
+# arrivals before sleeping and checks again within POLL_SECS if it misses an
+# event. Without WATCH it makes one pass and exits, which is what a systemd
+# timer wants. Both are safe to run
 # concurrently with each other — they take the same lock — and safe to run when
 # there is nothing to do.
 #
 #   OUTBOX      directory to drain      (default: the stroj-data volume's outbox)
 #   SENDMAIL    command to send with    (default: msmtp -t, then sendmail -t)
 #   WATCH       1 to stay up and drain on arrival, rather than exiting
-#   POLL_SECS   how often to look when inotifywait is missing  (default: 2)
+#   POLL_SECS   maximum idle wait, with or without inotifywait (default: 2)
 #   RETRY_SECS  how long to wait after a failed pass           (default: 60)
 #
 # Messages that fail are left where they are and retried on the next pass. A
@@ -88,14 +88,22 @@ drain() {
     [ "$failed" -eq 0 ]
 }
 
-# Wait for the next message to land. inotifywait returns on the rename the
-# spooler finishes each message with; without it a two-second poll is close
-# enough that nobody watching an inbox can tell the difference. Either way the
-# wait is bounded, so an event missed between passes costs a delay rather than
-# a message that never goes out.
+# A pass only sees the files present when its glob was expanded. Check again
+# before sleeping so mail that arrived during an SMTP send goes out next.
+mail_pending() {
+    local message
+    for message in "$OUTBOX"/*.eml; do
+        [ -e "$message" ] && return 0
+    done
+    return 1
+}
+
+# inotifywait wakes on the spooler's final rename. A message can still land
+# between the pending check and watch registration, so use the same short
+# timeout as the polling fallback rather than waiting a minute for a new event.
 wait_for_mail() {
     if command -v inotifywait >/dev/null 2>&1; then
-        inotifywait -qq -t 60 -e close_write -e moved_to "$OUTBOX" >/dev/null 2>&1 || true
+        inotifywait -qq -t "$POLL_SECS" -e close_write -e moved_to "$OUTBOX" >/dev/null 2>&1 || true
     else
         sleep "$POLL_SECS"
     fi
@@ -106,7 +114,11 @@ if [ "$WATCH" = 1 ]; then
     while true; do
         # A failed pass backs off rather than spinning: the relay is down, and
         # retrying as fast as the loop goes round helps nobody.
-        if drain; then wait_for_mail; else sleep "$RETRY_SECS"; fi
+        if drain; then
+            if ! mail_pending; then wait_for_mail; fi
+        else
+            sleep "$RETRY_SECS"
+        fi
     done
 fi
 

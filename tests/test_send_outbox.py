@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -70,6 +72,85 @@ def drain(box: Path, sender: str, *args: str) -> subprocess.CompletedProcess:
         env={**os.environ, "OUTBOX": str(box), "SENDMAIL": sender, "POLL_SECS": "1"},
         capture_output=True, text=True, cwd=ROOT, timeout=60,
     )
+
+
+def wait_until(predicate, timeout=5):
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, "mail watcher did not make progress"
+        time.sleep(0.02)
+
+
+@contextmanager
+def watching(box, sender, **env):
+    watcher = subprocess.Popen(
+        ["bash", str(DRAINER), "--watch"],
+        env={**os.environ, "OUTBOX": str(box), "SENDMAIL": sender,
+             "POLL_SECS": "1", **env},
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=ROOT,
+        start_new_session=True,
+    )
+    try:
+        yield watcher
+    finally:
+        # Also stop the fake inotifywait/sender if a regression leaves it asleep.
+        try:
+            os.killpg(watcher.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        watcher.wait(timeout=10)
+
+
+def missed_event_waiter(tmp_path, *, on_start=""):
+    """Model an event that arrived before inotify registered its watch."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    sendmail(
+        bin_dir, "inotifywait",
+        script='''timeout=0
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-t" ]; then timeout="$2"; shift; fi
+    shift
+done
+''' + on_start + '\nsleep "$timeout"\nexit 2\n',
+    )
+    return f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
+
+
+def test_mail_arriving_during_a_send_is_drained_without_waiting(outbox, tmp_path):
+    started = tmp_path / "started"
+    release = tmp_path / "release"
+    sender = sendmail(
+        tmp_path, "slow-sendmail",
+        script=f'''cat > /dev/null
+if [ ! -e "{started}" ]; then
+    touch "{started}"
+    while [ ! -e "{release}" ]; do sleep 0.02; done
+fi
+echo sent >> "{tmp_path / 'delivered'}"
+''',
+    )
+    spool(outbox, "first")
+    with watching(outbox, sender, POLL_SECS="8", PATH=missed_event_waiter(tmp_path)):
+        wait_until(started.exists)
+        spool(outbox, "arrived-while-sending")
+        release.touch()
+        wait_until(lambda: delivered(tmp_path) == 2, timeout=3)
+        wait_until(lambda: not list(outbox.glob("*.eml")))
+
+
+def test_mail_arriving_before_watch_registration_has_a_short_bounded_wait(outbox, tmp_path):
+    started = tmp_path / "started"
+    path = missed_event_waiter(tmp_path, on_start=f'''
+if [ ! -e "{started}" ]; then
+    touch "{started}"
+    printf 'Subject: missed arrival\\n\\nbody\\n' > "$OUTBOX/missed.eml"
+fi
+''')
+    with watching(outbox, accepting(tmp_path), PATH=path):
+        wait_until(started.exists)
+        wait_until(lambda: delivered(tmp_path) == 1, timeout=3)
+        wait_until(lambda: not list(outbox.glob("*.eml")))
 
 
 def test_a_pass_sends_everything_and_clears_it(outbox, tmp_path):

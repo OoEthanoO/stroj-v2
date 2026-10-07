@@ -443,12 +443,12 @@ UNIT
 systemctl enable --now stroj-outbox.service
 ```
 
-`WATCH=1` keeps the drainer up and waiting on the directory, so a member has
-the confirmation link a second or so after signing up instead of whenever the
-next minute comes round. With `inotify-tools` installed it wakes on the rename
-that finishes each message; without it, it looks every two seconds, which is
-not a difference anyone reading their inbox can perceive. `POLL_SECS` tunes
-that fallback and `RETRY_SECS` the back-off after a relay refuses.
+`WATCH=1` keeps the drainer running. With `inotify-tools` installed it wakes on
+the rename that finishes each message. It also drains messages that arrived
+during an earlier send before waiting again. `POLL_SECS` bounds the idle wait
+to two seconds by default, including when an event arrives before the watch is
+registered or `inotify-tools` is missing. SMTP sending and inbox delivery take
+additional time. `RETRY_SECS` controls the back-off after a relay refuses.
 
 The script is copied to `/usr/local/bin`, so a deploy that changes it needs
 `install` and `systemctl restart stroj-outbox.service` run again — nothing else
