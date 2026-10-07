@@ -3170,7 +3170,7 @@ function adminProblemRow(p) {
     </tr>`;
 }
 
-function bindAdminProblemRows(guard) {
+function bindAdminProblemRows(guard, refreshProblems) {
   $$('[data-upload]').forEach((input) => {
     input.onchange = guard(async () => {
       if (!input.files.length) return;
@@ -3189,7 +3189,7 @@ function bindAdminProblemRows(guard) {
       await api(`/api/admin/problems/${encodeURIComponent(button.dataset.toggle)}`, {
         method: 'PATCH', body: { visible: button.dataset.visible !== '1' },
       });
-      route();
+      await refreshProblems();
     });
   });
 
@@ -3403,7 +3403,7 @@ async function viewAdmin() {
     items: problemsNewestFirst(problems),
     columns: ['Title', 'Slug', 'State', 'Actions'],
     empty: 'None yet.',
-    bindRows: () => bindAdminProblemRows(guard),
+    bindRows: () => bindAdminProblemRows(guard, refreshProblems),
     row: adminProblemRow,
   });
 
@@ -3443,9 +3443,9 @@ async function viewAdmin() {
     </tr>`,
   });
 
-  /* Redraw only the problems table. `route()` — what every other action on
-   * this page calls — would re-render the express panel too, taking the report
-   * and the limits box with it while a run is still in flight. */
+  /* Reuse the same section after creation or a visibility change, keeping its
+   * search and expanded row limit. Rebuilding the page collapses the list and
+   * jumps the scroll position, and discards any express report or limits draft. */
   const refreshProblems = async () => {
     if (!$('#problems-rows')) return;
     const fresh = await api('/api/problems');
