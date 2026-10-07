@@ -13,9 +13,8 @@ from .deps import require_account, session_user, user_public
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-# Keyed by account, not by address: the forwarded header is client-supplied and
-# an attacker can rotate it freely, but they cannot rotate whose password they
-# are guessing.
+# Also key by account: an attacker can change networks, but cannot rotate
+# whose password they are guessing.
 _login_by_account = RateLimiter(config.LOGIN_ATTEMPTS, config.LOGIN_WINDOW_S)
 _login_by_client = RateLimiter(config.LOGIN_ATTEMPTS * 3, config.LOGIN_WINDOW_S)
 _register_by_client = RateLimiter(config.REGISTER_LIMIT, config.REGISTER_WINDOW_S)

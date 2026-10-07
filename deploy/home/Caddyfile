@@ -21,6 +21,10 @@
 		reverse_proxy https://judge.ethanyanxu.com {
 			# The judge's own Caddy picks its site by Host.
 			header_up Host judge.ethanyanxu.com
+			# Never forward an address supplied by a visitor. The private
+			# import authenticates this hop to the judge (see DEPLOY.md).
+			header_up X-Forwarded-For {http.request.remote.host}
+			import C:/Users/ethan/stroj/private/proxy-auth.caddy
 		}
 	}
 	handle {

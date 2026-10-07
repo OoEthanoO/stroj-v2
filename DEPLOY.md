@@ -297,6 +297,47 @@ answer to be stale.
 
 ---
 
+## Visitor addresses and sign-in limits
+
+The home Caddy replaces `X-Forwarded-For` with the visitor's socket address.
+The judge Caddy accepts that address only when the request carries the shared
+`X-Stroj-Proxy-Key`; for direct requests it replaces it with the socket address
+again. It removes the key before the request reaches the app or deploy hook.
+The app's port stays bound to loopback. Do not expose it directly or trust
+arbitrary forwarded headers.
+
+Before installing the home frontend, provision a shared, random 32-byte key
+(64 hex characters, generated with `secrets.token_hex(32)`) in these two files:
+
+- On `finprint-host`, `C:\Users\ethan\stroj\private\proxy-auth.caddy`:
+  ```caddyfile
+  header_up X-Stroj-Proxy-Key <the-shared-key>
+  ```
+- On the judge host, `/etc/caddy/stroj-frontend/home.caddy`:
+  ```caddyfile
+  import stroj_frontend <the-same-shared-key>
+  ```
+
+Keep both outside the repository and web root. Restrict the Windows directory
+to SYSTEM and Administrators; use `root:caddy` and mode `0640` for the judge's
+file (directory `0750`). Never put the key in frontend JavaScript or the judge
+container's environment. No public IP allowlist is needed, so changing the
+home connection's address does not break this trust relationship.
+
+The judge's template is `deploy/judge/Caddyfile`. Bootstrap substitutes its
+hostname and validates it before installation; the private import survives
+every rebuild. Install/reload this configuration on the judge before enabling
+the home import. Validate and reload both Caddy instances after changing the
+key. A missing home key file deliberately fails validation instead of silently
+putting all visitors back into the same rate-limit bucket.
+
+`tests/test_proxy_forwarding.py` runs both actual Caddy configurations against
+an isolated app: it checks independent visitor limits, forged headers, direct
+access, and removal of the proxy key. Put `caddy` on PATH to run these tests.
+They use only loopback listeners and a temporary database.
+
+---
+
 ## Part 2 — the frontend on Vercel (retired)
 
 ### Shipping the static half first (optional)

@@ -14,6 +14,11 @@ if [ -z "$DOMAIN" ]; then
     exit 2
 fi
 
+if [[ ! "$DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]]; then
+    echo "invalid judge hostname: $DOMAIN" >&2
+    exit 2
+fi
+
 CONTAINER=stroj-judge
 IMAGE=stroj-judge
 VOLUME=stroj-data
@@ -159,15 +164,16 @@ say "Configuring Caddy for $DOMAIN"
 # /_deploy/* goes to the webhook receiver on the host, everything else to the
 # judge container. The receiver is a separate process precisely so the
 # container never gains the ability to make the host run anything.
-echo "$DOMAIN {
-    handle /_deploy/* {
-        reverse_proxy 127.0.0.1:8787
-    }
-    handle {
-        reverse_proxy 127.0.0.1:$PORT
-    }
-}" | sudo tee /etc/caddy/Caddyfile >/dev/null
-sudo systemctl restart caddy
+# Keep the proxy's private authentication import across rebuilds. Substitute
+# the domain before installing, so systemd does not need an environment file.
+caddy_candidate="$(mktemp /tmp/stroj-caddy.XXXXXX)"
+trap 'rm -f "$caddy_candidate"' EXIT
+sed 's/{$STROJ_JUDGE_DOMAIN}/'"$DOMAIN"'/g' deploy/judge/Caddyfile > "$caddy_candidate"
+sudo caddy validate --config "$caddy_candidate" --adapter caddyfile
+sudo install -m 644 "$caddy_candidate" /etc/caddy/Caddyfile
+rm -f "$caddy_candidate"
+trap - EXIT
+sudo systemctl reload caddy
 
 # ------------------------------------------------------------ verification
 say "Waiting for the judge to come up"

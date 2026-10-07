@@ -1,0 +1,34 @@
+# The private import contains: import stroj_frontend <shared random key>
+# It lives on the host, outside the repository and the judge container.
+(stroj_frontend) {
+	# The judge runs Caddy 2.6, whose import arguments use the dotted form.
+	@frontend header X-Stroj-Proxy-Key {args.0}
+	handle @frontend {
+		# Capture before reverse_proxy applies its own forwarded-header defaults.
+		vars stroj_client_ip {http.request.header.X-Forwarded-For}
+		reverse_proxy 127.0.0.1:8000 {
+			# The authenticated home proxy replaces this with the socket IP.
+			header_up X-Forwarded-For {http.vars.stroj_client_ip}
+			header_up -X-Stroj-Proxy-Key
+		}
+	}
+}
+
+{$STROJ_JUDGE_DOMAIN} {
+	handle /_deploy/* {
+		reverse_proxy 127.0.0.1:8787 {
+			header_up -X-Stroj-Proxy-Key
+		}
+	}
+	handle {
+		# With no configured frontend, direct access still works safely.
+		import /etc/caddy/stroj-frontend/*.caddy
+		handle {
+			reverse_proxy 127.0.0.1:8000 {
+				# Direct visitors cannot choose their rate-limit bucket.
+				header_up X-Forwarded-For {http.request.remote.host}
+				header_up -X-Stroj-Proxy-Key
+			}
+		}
+	}
+}

@@ -80,13 +80,13 @@ class RateLimiter:
 
 
 def client_key(request) -> str:
-    """Best-effort client identity.
+    """Client identity from the deployment's sanitised forwarding header.
 
-    Behind Vercel's rewrite every request arrives from a proxy, so the direct
-    peer address is useless and the forwarded header is what distinguishes
-    clients. That header is client-supplied and therefore spoofable — it raises
-    the cost of a brute-force attempt without being a security boundary, which
-    is why the per-account limiter below does not rely on it.
+    The judge port is bound to loopback. Its Caddy overwrites X-Forwarded-For
+    for direct visitors and accepts the home proxy's address only with the
+    private proxy key. The home proxy always replaces it with the socket IP.
+    Any other deployment must enforce the same contract before using this
+    header; exposing the app port directly makes it client-controlled.
     """
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:

@@ -88,6 +88,10 @@ Copy-Item (Join-Path $here 'tick.ps1') (Join-Path $paths.Bin 'tick.ps1') -Force
 Info "copied tick.ps1 to $($paths.Bin)"
 
 # ---- 4. Caddy import ---------------------------------------------------------
+# Provision this on both proxies before changing the shared Caddy config.
+if (-not (Test-Path (Join-Path $Root 'private\proxy-auth.caddy'))) {
+    throw 'Missing private\proxy-auth.caddy. Configure authenticated visitor-address forwarding on both hosts first; see DEPLOY.md.'
+}
 # The site file must exist before the main Caddyfile imports it, or the next
 # reload of the shared config - for any site - fails.
 Step 'Connecting Caddy'
