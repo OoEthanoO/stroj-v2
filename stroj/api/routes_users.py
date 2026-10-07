@@ -1,4 +1,4 @@
-"""Public profiles and the leaderboard."""
+"""Public user directory, profiles, and the leaderboard."""
 
 from __future__ import annotations
 
@@ -67,6 +67,29 @@ def rank_ladder():
     """The whole ladder, so the site can draw a legend without reimplementing
     any of the thresholds."""
     return {"ladder": rating.ladder(), **rating.explain()}
+
+
+@router.get("/users")
+def user_directory():
+    """Every account, including users who have not earned any public points."""
+    standings = {entry["user_id"]: entry for entry in scoring.leaderboard()}
+    users = []
+    for user in db.query(
+        "SELECT id, username, role, rating, rated_contests FROM users ORDER BY username"
+    ):
+        entry = standings.get(user["id"], {
+            "user_id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+            "rank": None,
+            "score": 0.0,
+            "solved": 0,
+            "hardest": 0,
+        })
+        entry["rating"] = user["rating"]
+        entry["rating_rank"] = rating.rank_dict(user["rating"], user["rated_contests"])
+        users.append(entry)
+    return {"decay": scoring.DECAY, "users": users}
 
 
 def submission_activity(

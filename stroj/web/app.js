@@ -1743,8 +1743,8 @@ async function viewScoreboard(slug) {
 /* ---- users ---- */
 
 async function viewUsers() {
-  const board = await api('/api/leaderboard');
-  const total = board.standings.length;
+  const directory = await api('/api/users');
+  const total = directory.users.length;
   const columns = [['rank', '#', ''], ['username', 'Who', ''], ['score', 'Score', 'num'],
                    ['solved', 'Solved', 'num'], ['hardest', 'Hardest', 'num'],
                    // Rating measures placing against other people; score
@@ -1758,7 +1758,7 @@ async function viewUsers() {
   const row = (s) => {
     const me = state.user && state.user.username === s.username;
     return `<tr${me ? ' style="outline:2px solid var(--accent);outline-offset:-2px"' : ''}>
-      <td class="rank">${s.rank}</td>
+      <td class="rank">${s.rank ?? '—'}</td>
       <td class="wide">${userLink(s.username, s.role)}</td>
       <td class="num"><strong>${s.score}</strong></td>
       <td class="num muted">${s.solved}</td>
@@ -1772,18 +1772,18 @@ async function viewUsers() {
       <span class="info" tabindex="0" role="note" aria-label="How the score works">i
         <span class="info-pop">
           <p>Solved problems are sorted hardest first, and the <em>k</em>-th one counts
-            for <code>points × ${board.decay}<sup>k</sup></code> — so the hardest solve
-            counts in full, the tenth about ${Math.round(Math.pow(board.decay, 9) * 100)}%,
-            and the fiftieth about ${Math.round(Math.pow(board.decay, 49) * 100)}%.</p>
+            for <code>points × ${directory.decay}<sup>k</sup></code> — so the hardest solve
+            counts in full, the tenth about ${Math.round(Math.pow(directory.decay, 9) * 100)}%,
+            and the fiftieth about ${Math.round(Math.pow(directory.decay, 49) * 100)}%.</p>
           <p>Grinding a difficulty tier has a ceiling: repeating <code>p</code>-point
-            problems forever converges to <code>${Math.round(1 / (1 - board.decay))} × p</code>.
+            problems forever converges to <code>${Math.round(1 / (1 - directory.decay))} × p</code>.
             The only way past it is a harder problem, which lands near the front and
             counts nearly in full.</p>
         </span></span>
       <div class="spacer"></div>
       ${total ? '<input id="user-search" class="search" type="search" placeholder="Search users" autocomplete="off">' : ''}
       <a class="btn small" href="#/ranks">Ranks &amp; rating</a>
-      <span class="muted small" id="user-count">${total} ranked</span></div>
+      <span class="muted small" id="user-count">${total} users</span></div>
 
     ${total
       ? `<div class="table-wrap"><table>
@@ -1791,21 +1791,27 @@ async function viewUsers() {
              `<th class="${cls} sort" data-key="${key}">${label}<span class="arrow"></span></th>`).join('')}</tr></thead>
            <tbody id="user-rows"></tbody></table></div>
          <div class="empty" id="user-nomatch" hidden style="margin-top:18px">No user matches that.</div>`
-      : '<div class="empty">Nobody has solved anything yet.</div>'}`);
+      : '<div class="empty">No users yet.</div>'}`);
 
   if (!total) return;
   const search = $('#user-search');
 
   const render = () => {
     const q = search.value.trim().toLowerCase();
-    const shown = board.standings
+    const shown = directory.users
       .filter((s) => s.username.toLowerCase().includes(q))
-      .sort((a, b) => sort.dir * (sort.key === 'username'
-        ? a.username.localeCompare(b.username)
-        : a[sort.key] - b[sort.key] || a.username.localeCompare(b.username)));
+      .sort((a, b) => {
+        // Unranked accounts stay below ranked accounts in either rank order.
+        if (sort.key === 'rank' && (a.rank == null) !== (b.rank == null)) {
+          return a.rank == null ? 1 : -1;
+        }
+        return sort.dir * (sort.key === 'username'
+          ? a.username.localeCompare(b.username)
+          : a[sort.key] - b[sort.key] || a.username.localeCompare(b.username));
+      });
 
     $('#user-rows').innerHTML = shown.map(row).join('');
-    $('#user-count').textContent = q ? `${shown.length} of ${total}` : `${total} ranked`;
+    $('#user-count').textContent = q ? `${shown.length} of ${total}` : `${total} users`;
     $('#user-nomatch').hidden = shown.length > 0;
     $$('th.sort').forEach((th) => {
       const active = th.dataset.key === sort.key;
