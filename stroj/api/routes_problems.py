@@ -30,11 +30,25 @@ def list_languages():
 @router.get("/problems")
 def list_problems(request: Request):
     user = current_user(request)
-    if is_admin(user):
+    admin = is_admin(user)
+    if admin:
         rows = db.query("SELECT * FROM problems ORDER BY id")
     else:
         rows = db.query("SELECT * FROM problems WHERE visible = 1 ORDER BY id")
-    return {"problems": [problem_summary(p, user) for p in rows]}
+    problems = [problem_summary(p, user) for p in rows]
+    if admin:
+        # For the admin page, which reads this list: a problem with no test
+        # data judges every submission as IE, and nothing else on the list
+        # says which ones those are. One grouped count, not one per row.
+        counts = {
+            r["problem_id"]: r["n"]
+            for r in db.query(
+                "SELECT problem_id, COUNT(*) AS n FROM testcases GROUP BY problem_id"
+            )
+        }
+        for row, data in zip(rows, problems):
+            data["test_count"] = counts.get(row["id"], 0)
+    return {"problems": problems}
 
 
 @router.get("/problems/{slug}")

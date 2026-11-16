@@ -118,5 +118,17 @@ absent('slugs are escaped in attributes', nasty, '<script>');
 const spaced = adminProblemRows([problem('a b', 'A B', true)]);
 contains('slugs are percent-encoded in links', spaced, '#/problem/a%20b');
 
+// The Data column: how many tests a problem has, so the ones nobody has
+// uploaded tests for stand out — they judge every submission as IE.
+const withTests = (n) => adminProblemRows([{ ...problem('p', 'P', true), test_count: n }]);
+contains('a problem with tests shows the count', withTests(12), 'pill">12 tests<');
+contains('one test is singular', withTests(1), 'pill">1 test<');
+contains('a problem without tests reads no data', withTests(0), 'pill warn">no data<');
+absent('and shows no count', withTests(0), ' tests<');
+// A backend older than this page sends no count, which is not the same as none.
+absent('a missing count is not "no data"', adminProblemRows([problem('p', 'P', true)]), 'no data');
+// One cell per heading: Title, Slug, State, Data, Actions.
+check('a row has five cells', (withTests(3).match(/<td/g) || []).length, 5);
+
 console.log(`${checks - failures}/${checks} checks passed`);
 process.exit(failures ? 1 : 0);

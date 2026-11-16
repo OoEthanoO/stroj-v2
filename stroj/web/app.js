@@ -3211,11 +3211,19 @@ const problemsNewestFirst = (problems) => problems.slice().reverse();
  * the page — the report and the limits box belong to a run in progress, and
  * re-rendering the view would throw them away. */
 function adminProblemRow(p) {
+  // Whether the problem has test data yet: one without any judges every
+  // submission as IE, so it is the row an admin needs to find. Blank when the
+  // count is missing — a backend older than this page — rather than a false
+  // "no data" on every row.
+  const tests = p.test_count;
+  const data = tests == null ? ''
+    : statePill(tests > 0, `${tests} test${tests === 1 ? '' : 's'}`, 'no data');
   return `
     <tr>
       <td class="wide"><a href="#/problem/${encodeURIComponent(p.slug)}">${esc(p.title)}</a></td>
       <td class="mono small muted">${esc(p.slug)}</td>
       <td>${statePill(p.visible, 'visible', 'hidden')}</td>
+      <td>${data}</td>
       <td>
         <div class="row">
           <a class="btn small" href="#/admin/problem/${encodeURIComponent(p.slug)}">Edit</a>
@@ -3239,6 +3247,8 @@ function bindAdminProblemRows(guard, refreshProblems) {
         { method: 'POST', form });
       toast(`Loaded ${result.tests} test case(s).`, 'good');
       input.value = '';
+      // Redraw so the row's Data column shows the new count.
+      await refreshProblems();
     });
   });
 
@@ -3459,7 +3469,7 @@ async function viewAdmin() {
   const authored = adminSection({
     id: 'problems', title: 'Problems', kind: 'problem', match: named,
     items: problemsNewestFirst(problems),
-    columns: ['Title', 'Slug', 'State', 'Actions'],
+    columns: ['Title', 'Slug', 'State', 'Data', 'Actions'],
     empty: 'None yet.',
     bindRows: () => bindAdminProblemRows(guard, refreshProblems),
     row: adminProblemRow,

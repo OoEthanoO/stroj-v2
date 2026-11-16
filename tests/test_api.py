@@ -161,6 +161,23 @@ class TestProblems:
         assert len(detail["samples"]) == 1
         assert detail["samples"][0]["input"] == "2 3\n"
 
+    def test_admins_see_how_many_tests_each_problem_has(self, admin_client):
+        make_problem(admin_client)  # two tests
+        admin_client.post(
+            "/api/admin/problems", json={"slug": "empty", "title": "Empty", "statement": "x"}
+        ).raise_for_status()
+        problems = admin_client.get("/api/problems").json()["problems"]
+        assert {p["slug"]: p["test_count"] for p in problems} == {"a-plus-b": 2, "empty": 0}
+
+    def test_test_counts_are_for_admins_only(self, client, admin_client):
+        make_problem(admin_client)
+        admin_client.post("/api/auth/logout")
+        anonymous = client.get("/api/problems").json()["problems"]
+        register(client, "plain")
+        member = client.get("/api/problems").json()["problems"]
+        for problems in (anonymous, member):
+            assert problems and all("test_count" not in p for p in problems)
+
     def test_non_sample_tests_are_not_leaked(self, client, admin_client):
         make_problem(admin_client)
         detail = client.get("/api/problems/a-plus-b").json()
