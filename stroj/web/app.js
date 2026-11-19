@@ -2498,7 +2498,7 @@ function testDataPanel() {
   return {
     html: `
       <div class="card">
-        <label>Test data — a zip of <code>1.in</code> / <code>1.out</code> pairs (optional)
+        <label>Test data — a zip of <code>1.in</code> / <code>1.out</code> pairs, or a DMOJ zip with <code>init.yml</code> (optional)
           <input type="file" id="p-tests" accept=".zip" style="max-width:340px"></label>
         <p class="small muted" id="p-tests-status" style="margin:0">Checked as soon as you pick it,
           before anything is created. Files whose name contains <code>sample</code> become visible

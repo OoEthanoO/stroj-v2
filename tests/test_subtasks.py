@@ -80,6 +80,93 @@ class TestParsingSubtasks:
         assert all(t["subtask"] == 0 for t in parsed.tests)
 
 
+def init_yml(text):
+    return [("init.yml", text)]
+
+
+class TestDmojArchives:
+    """A DMOJ export: its init.yml, not the file names, decides the tests and batches."""
+
+    def test_batches_become_subtasks_worth_their_points(self):
+        manifest = init_yml(
+            "test_cases:\n"
+            "- batched:\n"
+            "  - {in: 1.1.in, out: 1.1.out}\n"
+            "  - {in: 1.2.in, out: 1.2.out}\n"
+            "  points: 20\n"
+            "- batched:\n"
+            "  - {in: 2.1.in, out: 2.1.out}\n"
+            "  points: 30\n"
+            "- {batched: [{in: 3.1.in, out: 3.1.out}], points: 50}\n"
+        )
+        parsed = testdata.parse_zip(archive(
+            manifest + pair("1.1") + pair("1.2") + pair("2.1") + pair("3.1")))
+        assert parsed.subtasks == {1: 20, 2: 30, 3: 50}
+        assert [t["subtask"] for t in parsed.tests] == [1, 1, 2, 3]
+
+    def test_points_that_do_not_total_one_hundred_are_scaled(self):
+        manifest = init_yml(
+            "test_cases:\n"
+            "- {batched: [{in: a.in, out: a.out}], points: 1}\n"
+            "- {batched: [{in: b.in, out: b.out}], points: 2}\n"
+        )
+        parsed = testdata.parse_zip(archive(manifest + pair("a") + pair("b")))
+        assert parsed.subtasks == {1: 33, 2: 67}
+
+    def test_equal_unbatched_cases_stay_ungrouped(self):
+        manifest = init_yml(
+            "test_cases:\n- {in: 1.in, out: 1.out, points: 5}\n- {in: 2.in, out: 2.out, points: 5}\n")
+        parsed = testdata.parse_zip(archive(manifest + pair("1") + pair("2")))
+        assert parsed.subtasks == {}
+        assert len(parsed.tests) == 2
+
+    def test_unequal_unbatched_cases_each_become_a_subtask(self):
+        """Without subtasks every test counts the same, which would change the scoring."""
+        manifest = init_yml(
+            "test_cases:\n- {in: 1.in, out: 1.out, points: 10}\n- {in: 2.in, out: 2.out, points: 30}\n")
+        parsed = testdata.parse_zip(archive(manifest + pair("1") + pair("2")))
+        assert parsed.subtasks == {1: 25, 2: 75}
+
+    def test_a_pointless_sample_stays_a_visible_sample(self):
+        manifest = init_yml(
+            "test_cases:\n"
+            "- {in: sample1.in, out: sample1.out, points: 0}\n"
+            "- {batched: [{in: 1.in, out: 1.out}], points: 100}\n"
+        )
+        parsed = testdata.parse_zip(archive(manifest + pair("sample1") + pair("1")))
+        assert parsed.subtasks == {1: 100}
+        assert parsed.tests[0]["is_sample"] and parsed.tests[0]["subtask"] == 0
+
+    def test_the_files_it_names_must_be_there(self):
+        manifest = init_yml("test_cases:\n- {in: 1.in, out: 1.out}\n- {in: 2.in, out: 2.out}\n")
+        with pytest.raises(testdata.TestDataError, match="not in the zip: 2.in, 2.out"):
+            testdata.parse_zip(archive(manifest + pair("1")))
+
+    def test_files_it_does_not_name_are_ignored(self):
+        manifest = init_yml("test_cases:\n- {in: 1.in, out: 1.out}\n")
+        parsed = testdata.parse_zip(archive(manifest + pair("1") + pair("spare")))
+        assert len(parsed.tests) == 1
+
+    def test_a_zipped_folder_is_read_relative_to_its_init_yml(self):
+        manifest = [("tests/init.yml", "test_cases:\n- {batched: [{in: 1.1.in, out: 1.1.out}], points: 9}\n")]
+        parsed = testdata.parse_zip(archive(manifest + pair("tests/1.1")))
+        assert parsed.subtasks == {1: 100}
+
+    def test_the_archive_it_names_is_opened(self):
+        manifest = init_yml("archive: data.zip\ntest_cases:\n- {in: 1.in, out: 1.out}\n- {in: 2.in, out: 2.out}\n")
+        inner = archive(pair("1") + pair("2"))
+        parsed = testdata.parse_zip(archive(manifest + [("data.zip", inner)]))
+        assert len(parsed.tests) == 2
+
+    def test_broken_yaml_is_reported(self):
+        with pytest.raises(testdata.TestDataError, match="not valid YAML"):
+            testdata.parse_zip(archive(init_yml("test_cases: [\n") + pair("1")))
+
+    def test_without_test_cases_files_pair_by_name(self):
+        parsed = testdata.parse_zip(archive(init_yml("checker: standard\n") + pair("1") + pair("2")))
+        assert len(parsed.tests) == 2 and parsed.subtasks == {}
+
+
 class TestEarnedPercent:
     def specs(self, layout):
         return [Spec(i, "", "", 1, subtask=s) for i, s in enumerate(layout, 1)]

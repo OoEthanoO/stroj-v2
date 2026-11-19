@@ -161,6 +161,17 @@ small cases still earns 20% of its points toward the leaderboard, rather than
 nothing. A `partial` problem with no subtask directories falls back to the
 share of individual tests passed — 10 of 20 earns half.
 
+**DMOJ archives.** A zip with DMOJ's `init.yml` (at its root, or in the folder
+the zip holds) is read through that file instead of the names: its
+`test_cases` decide which files are tests, and each `batched` group becomes a
+subtask worth its `points` as a share of the total, so batches of 20, 30 and 50
+points become `subtask1-20`, `subtask2-30` and `subtask3-50`. Unbatched cases
+that are all worth the same stay ungrouped; worth different amounts, each
+becomes its own subtask. A zero-point case named `sample` stays a visible
+sample, files `init.yml` doesn't mention are ignored, and an `archive:` key is
+followed into the zip it names. An `init.yml` without `test_cases` changes
+nothing.
+
 **Hidden problems.** `visible: false` keeps a problem off the public list. It
 becomes readable automatically once a contest containing it starts.
 
