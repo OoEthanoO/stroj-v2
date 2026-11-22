@@ -1,4 +1,4 @@
-"""Registration, login, logout, whoami."""
+"""Registration, login, logout, whoami, email confirmation and password resets."""
 
 from __future__ import annotations
 
@@ -22,6 +22,11 @@ _register_by_client = RateLimiter(config.REGISTER_LIMIT, config.REGISTER_WINDOW_
 # reputation — an unlimited resend button is a way to mailbomb an address
 # through us. Keyed by account, since that is what the sender has to own.
 _verify_by_account = RateLimiter(config.VERIFY_SEND_LIMIT, config.VERIFY_SEND_WINDOW_S)
+# Reset mail, for the same reason. The per-account limit is applied silently
+# (no mail, same answer), since a 429 would tell the asker the account exists.
+_reset_mail_by_account = RateLimiter(config.RESET_SEND_LIMIT, config.RESET_SEND_WINDOW_S)
+_reset_requests_by_client = RateLimiter(config.RESET_SEND_LIMIT * 4, config.RESET_SEND_WINDOW_S)
+_reset_failures_by_client = RateLimiter(config.LOGIN_ATTEMPTS, config.LOGIN_WINDOW_S)
 
 
 def _enforce(limiter: RateLimiter, key: str, what: str) -> None:
@@ -50,6 +55,16 @@ class EmailBody(BaseModel):
 
 class TokenBody(BaseModel):
     token: str = Field(min_length=1, max_length=256)
+
+
+class ForgotBody(BaseModel):
+    #: A username or an email address.
+    login: str = Field(min_length=1, max_length=254)
+
+
+class ResetBody(BaseModel):
+    token: str = Field(min_length=1, max_length=256)
+    password: str = Field(min_length=1, max_length=256)
 
 
 def _send_confirmation(user_id: int, username: str, email: str) -> str:
@@ -216,4 +231,47 @@ def verify(body: TokenBody, request: Request, response: Response):
     current = session_user(request)
     if current is None or current["id"] != user["id"]:
         _set_session_cookie(response, auth.create_session(user["id"]))
+    return {"user": user_public(user)}
+
+
+@router.post("/password/forgot")
+def forgot_password(body: ForgotBody, request: Request):
+    """Mail a link for choosing a new password to the account's confirmed address.
+
+    The answer is the same whether or not the name matches an account, and
+    whether or not that account has a confirmed address: anything else would
+    let a stranger test which usernames and addresses are registered. All it
+    says is whether this judge can send mail at all, which is true or false
+    for everyone alike.
+    """
+    client = client_key(request)
+    _enforce(_reset_requests_by_client, client, "password reset requests")
+    _reset_requests_by_client.hit(client)
+
+    user = auth.account_for_reset(body.login)
+    if user is not None:
+        key = str(user["id"])
+        if _reset_mail_by_account.check(key) <= 0:
+            _reset_mail_by_account.hit(key)
+            token = auth.issue_reset_token(user["id"], user["email"])
+            mailer.send_password_reset(user["email"], user["username"], token)
+    return {"mail": mailer.configured()}
+
+
+@router.post("/password/reset")
+def reset_password(body: ResetBody, request: Request, response: Response):
+    """Set a new password with the link from the reset email.
+
+    A POST that the page makes, not a GET, for the reason `verify` gives: link
+    scanners would otherwise spend the link. A successful reset ends every
+    session the account had and signs this browser in.
+    """
+    client = client_key(request)
+    _enforce(_reset_failures_by_client, client, "failed password resets")
+    try:
+        user = auth.reset_password(body.token.strip(), body.password)
+    except auth.AuthError as exc:
+        _reset_failures_by_client.hit(client)
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    _set_session_cookie(response, auth.create_session(user["id"]))
     return {"user": user_public(user)}

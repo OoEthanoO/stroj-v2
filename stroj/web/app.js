@@ -466,6 +466,15 @@ function openAuth(mode) {
   // that predate this.
   $('#email-field').hidden = isLogin;
   form.email.required = !isLogin;
+  // Signing in only. Carries the typed username over, so it need not be typed twice.
+  const forgot = $('#auth-forgot');
+  forgot.hidden = !isLogin;
+  forgot.querySelector('a').onclick = (e) => {
+    e.preventDefault();
+    const login = form.username.value.trim();
+    dialog.close();
+    location.hash = login ? `#/forgot?login=${encodeURIComponent(login)}` : '#/forgot';
+  };
   const closed = state.config.registration === 'closed';
   $('#auth-switch').innerHTML = isLogin
     ? (closed
@@ -551,6 +560,107 @@ async function viewVerify(params) {
   setView(`<div class="page-head"><h1>Confirm your email</h1></div>
     <div id="verify-body"></div>`);
   renderVerifyBody();
+}
+
+/* ---- forgotten passwords ----
+ *
+ * Asking for a link, then choosing a new password from it. The link goes only
+ * to a confirmed address, and the server answers the request the same way
+ * whether or not the account exists, so this page cannot say which it was. */
+async function viewForgot(params) {
+  setView(`<div class="page-head"><h1>Forgot your password?</h1></div>
+    <form class="card statement" id="forgot-form" style="max-width:60ch">
+      <p>Enter your username or your confirmed email address, and we will email
+        you a link for choosing a new password.</p>
+      <label>Username or email
+        <input name="login" autocomplete="username" maxlength="254" required
+          value="${esc(params.get('login') || '')}"></label>
+      <p class="small" id="forgot-status" style="margin:0"></p>
+      <div class="row end" style="margin-top:10px">
+        <button class="small primary" id="forgot-send">Send me a link</button>
+      </div>
+      <p class="muted small" style="margin-bottom:0">No confirmed email address on
+        your account? Ask an organiser to reset your password.</p>
+    </form>`);
+
+  const form = $('#forgot-form');
+  const status = $('#forgot-status');
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const button = $('#forgot-send');
+    button.disabled = true;
+    try {
+      const result = await api('/api/auth/password/forgot', {
+        method: 'POST', body: { login: form.login.value.trim() },
+      });
+      status.className = 'small';
+      status.style.color = 'var(--ok)';
+      status.textContent = result.mail
+        ? 'If that account has a confirmed email address, a link is on its way there. '
+          + 'It works for an hour. Not there in a few minutes? Check spam.'
+        : 'This judge has no mail server set up — ask an organiser to reset your password.';
+    } catch (err) {
+      status.className = 'small error';
+      status.style.color = '';
+      status.textContent = err.message;
+    } finally {
+      button.disabled = false;
+    }
+  };
+}
+
+async function viewReset(params) {
+  const token = params.get('token');
+  if (!token) {
+    setView(`<div class="page-head"><h1>Reset your password</h1></div>
+      <div class="card"><p style="margin:0">This page needs the link from the
+        reset email. <a href="#/forgot">Ask for one</a>.</p></div>`);
+    return;
+  }
+  setView(`<div class="page-head"><h1>Choose a new password</h1></div>
+    <form class="card statement" id="reset-form" style="max-width:60ch">
+      <label>New password <input name="password" type="password"
+        autocomplete="new-password" required minlength="8" maxlength="256"></label>
+      <label>New password again <input name="again" type="password"
+        autocomplete="new-password" required minlength="8" maxlength="256"></label>
+      <p class="small error" id="reset-status" hidden></p>
+      <p class="muted small">At least 8 characters. Saving it signs your account
+        out everywhere else.</p>
+      <div class="row end">
+        <button class="small primary" id="reset-save">Save new password</button>
+      </div>
+    </form>`);
+
+  const form = $('#reset-form');
+  const status = $('#reset-status');
+  const fail = (html) => {
+    status.innerHTML = html;
+    status.hidden = false;
+  };
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    if (form.password.value !== form.again.value) {
+      fail('The two passwords are not the same.');
+      return;
+    }
+    const button = $('#reset-save');
+    button.disabled = true;
+    try {
+      const result = await api('/api/auth/password/reset', {
+        method: 'POST', body: { token, password: form.password.value },
+      });
+      state.user = result.user;
+      renderAccount();
+      toast('Password changed — you are signed in.', 'good');
+      location.hash = '#/home';
+    } catch (err) {
+      // A spent or expired link has one remedy, which the message names: make
+      // that a link to it.
+      fail(esc(err.message).replace('Ask for a new one.', '<a href="#/forgot">Ask for a new one</a>.'));
+    } finally {
+      button.disabled = false;
+    }
+  };
 }
 
 function renderVerifyBody() {
@@ -3613,7 +3723,7 @@ async function route() {
   // signed out, so leaving them on the problem list would show a page that
   // silently disagrees with the badge in the corner. Signing out is the way to
   // browse without finishing.
-  if (state.user && !state.user.email_verified && parts[0] !== 'verify') {
+  if (state.user && !state.user.email_verified && !['verify', 'forgot', 'reset'].includes(parts[0])) {
     location.hash = '#/verify';
     return;
   }
@@ -3621,6 +3731,8 @@ async function route() {
   try {
     switch (parts[0]) {
       case 'verify': await viewVerify(params); break;
+      case 'forgot': await viewForgot(params); break;
+      case 'reset': await viewReset(params); break;
       case 'home': await viewHome(); break;
       case 'post': await viewPost(decodeURIComponent(parts[1] || '')); break;
       case 'problems': await viewProblems(); break;

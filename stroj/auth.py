@@ -1,4 +1,4 @@
-"""Users, password hashing, cookie sessions and email confirmation."""
+"""Users, password hashing, cookie sessions, email confirmation and password resets."""
 
 from __future__ import annotations
 
@@ -49,6 +49,10 @@ def validate_credentials(username: str, password: str) -> None:
         raise AuthError(
             "Username must be 3-32 characters, letters/digits/._- only."
         )
+    validate_password(password)
+
+
+def validate_password(password: str) -> None:
     if len(password) < 8:
         raise AuthError("Password must be at least 8 characters.")
 
@@ -226,6 +230,105 @@ def confirm_email_token(token: str) -> sqlite3.Row:
             "UPDATE email_tokens SET used_at = ? WHERE token_hash = ?",
             (db.utcnow(), row["token_hash"]),
         )
+    return db.one("SELECT * FROM users WHERE id = ?", (user["id"],))
+
+
+# ---------------------------------------------------------- password resets
+
+
+def account_for_reset(login: str) -> sqlite3.Row | None:
+    """The account a "forgot my password" request names, if it can be reset.
+
+    `login` is a username or an email address. Only an account with a confirmed
+    address qualifies: the link goes to that address, and an unconfirmed one
+    may be a typo that belongs to somebody else. Usernames match exactly first,
+    then ignoring case when that finds exactly one account.
+    """
+    login = (login or "").strip()
+    if not login:
+        return None
+    if "@" in login:
+        try:
+            address = clean_email(login)
+        except AuthError:
+            return None
+        return db.one(
+            "SELECT * FROM users WHERE email = ? COLLATE NOCASE AND email_verified = 1",
+            (address,),
+        )
+    user = db.one("SELECT * FROM users WHERE username = ?", (login,))
+    if user is None:
+        matches = db.query(
+            "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (login,)
+        )
+        user = matches[0] if len(matches) == 1 else None
+    if user is None or not is_verified(user) or not user["email"]:
+        return None
+    return user
+
+
+def issue_reset_token(user_id: int, email: str) -> str:
+    """Mint a reset link for the account, mailed to `email`. Only the digest is stored."""
+    token = secrets.token_urlsafe(32)
+    expires = db.parse_time(db.utcnow()) + timedelta(minutes=config.RESET_TOKEN_MINUTES)
+    with db.transaction() as conn:
+        # One live link per account, as with confirmation links.
+        conn.execute("DELETE FROM password_resets WHERE user_id = ?", (user_id,))
+        conn.execute(
+            "INSERT INTO password_resets (token_hash, user_id, email, created_at,"
+            " expires_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                _token_hash(token),
+                user_id,
+                email,
+                db.utcnow(),
+                expires.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+            ),
+        )
+    return token
+
+
+def reset_password(token: str, password: str) -> sqlite3.Row:
+    """Use a reset link to set a new password. Returns the account.
+
+    The new password is checked before the link is spent, so a password that
+    is too short can be fixed and sent again with the same link. On success
+    every session the account had is ended: whoever forgot the password may
+    not be the only one who knew it.
+    """
+    row = db.one(
+        "SELECT * FROM password_resets WHERE token_hash = ?", (_token_hash(token or ""),)
+    )
+    stale = "That reset link is no longer valid. Ask for a new one."
+    if row is None or row["used_at"] is not None:
+        raise AuthError(stale)
+    if db.parse_time(row["expires_at"]) <= db.parse_time(db.utcnow()):
+        raise AuthError(stale)
+    user = db.one("SELECT * FROM users WHERE id = ?", (row["user_id"],))
+    # The link went to the confirmed address of the moment; if that has
+    # changed since, the link no longer speaks for the account.
+    if (
+        user is None
+        or not is_verified(user)
+        or (user["email"] or "").lower() != row["email"].lower()
+    ):
+        raise AuthError(stale)
+    validate_password(password)
+
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (hash_password(password), user["id"]),
+        )
+        conn.execute(
+            "UPDATE password_resets SET used_at = ? WHERE token_hash = ?",
+            (db.utcnow(), row["token_hash"]),
+        )
+        conn.execute(
+            "DELETE FROM password_resets WHERE user_id = ? AND token_hash != ?",
+            (user["id"], row["token_hash"]),
+        )
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
     return db.one("SELECT * FROM users WHERE id = ?", (user["id"],))
 
 

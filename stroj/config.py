@@ -104,6 +104,13 @@ MAIL_SPOOL = Path(
 #: Confirmation mails one account may ask for, and over what window.
 VERIFY_SEND_LIMIT = _int("STROJ_VERIFY_SEND_LIMIT", 5)
 VERIFY_SEND_WINDOW_S = _int("STROJ_VERIFY_SEND_WINDOW", 900)
+#: How long a "reset your password" link stays good. Short, because whoever
+#: holds it can take the account.
+RESET_TOKEN_MINUTES = _int("STROJ_RESET_TOKEN_MINUTES", 60)
+#: Reset mails one account is sent, and over what window. Requests past the
+#: limit get the same answer but no mail, so the limit reveals nothing.
+RESET_SEND_LIMIT = _int("STROJ_RESET_SEND_LIMIT", 3)
+RESET_SEND_WINDOW_S = _int("STROJ_RESET_SEND_WINDOW", 900)
 
 SESSION_TTL_DAYS = _int("STROJ_SESSION_TTL_DAYS", 14)
 # Mark session cookies `Secure`. Turn this on for any HTTPS deployment; it is

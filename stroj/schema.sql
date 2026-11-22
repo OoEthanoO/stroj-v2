@@ -51,6 +51,21 @@ CREATE TABLE IF NOT EXISTS email_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_email_tokens_user ON email_tokens(user_id);
 
+-- Outstanding "reset your password" links, kept apart from email_tokens
+-- because each kind replaces only its own: asking for a reset must not kill a
+-- confirmation link in flight, or the other way round. Stored as a digest for
+-- the same reason, and tied to the address the link was mailed to, so a link
+-- stops working if the account's confirmed address changes after it was sent.
+CREATE TABLE IF NOT EXISTS password_resets (
+    token_hash TEXT    PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    email      TEXT    NOT NULL,
+    created_at TEXT    NOT NULL,
+    expires_at TEXT    NOT NULL,
+    used_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id);
+
 -- Front-page announcements, written by admins.
 CREATE TABLE IF NOT EXISTS posts (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

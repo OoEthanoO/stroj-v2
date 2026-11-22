@@ -1,4 +1,5 @@
-"""Sending the one kind of mail this judge sends: "confirm your address".
+"""Sending the two kinds of mail this judge sends: "confirm your address" and
+"reset your password".
 
 Three ways out, because the recommended deployment makes the obvious one
 impossible. A judge set up by `bootstrap-judge.sh` runs with no DNS and a
@@ -68,14 +69,23 @@ def verification_link(token: str) -> str:
     return f"{config.BASE_URL.rstrip('/')}/#/verify?token={quote(token)}"
 
 
-def _message(to: str, username: str, token: str) -> EmailMessage:
-    link = verification_link(token)
+def reset_link(token: str) -> str:
+    return f"{config.BASE_URL.rstrip('/')}/#/reset?token={quote(token)}"
+
+
+def _envelope(to: str, subject: str) -> EmailMessage:
     message = EmailMessage()
     message["From"] = config.MAIL_FROM
     message["To"] = to
-    message["Subject"] = f"Confirm your email for {config.SITE_NAME}"
+    message["Subject"] = subject
     message["Date"] = formatdate(localtime=True)
     message["Message-ID"] = make_msgid(domain=config.MAIL_FROM.split("@")[-1])
+    return message
+
+
+def _message(to: str, username: str, token: str) -> EmailMessage:
+    link = verification_link(token)
+    message = _envelope(to, f"Confirm your email for {config.SITE_NAME}")
     message.set_content(
         f"Hi {username},\n\n"
         f"Confirm this address to finish setting up your {config.SITE_NAME} "
@@ -95,23 +105,54 @@ def send_verification(to: str, username: str, token: str) -> str:
     caller passes that back to the page, which says something different for
     each — "check your inbox" is a lie if nothing left the building.
     """
+    return _send(
+        _message(to, username, token), to, username, verification_link(token),
+        "confirmation",
+    )
+
+
+def _reset_message(to: str, username: str, token: str) -> EmailMessage:
+    link = reset_link(token)
+    message = _envelope(to, f"Reset your {config.SITE_NAME} password")
+    message.set_content(
+        f"Hi {username},\n\n"
+        f"Someone asked to reset the password of your {config.SITE_NAME} "
+        "account. To choose a new one, open this link:\n\n"
+        f"    {link}\n\n"
+        f"The link is good for {config.RESET_TOKEN_MINUTES} minutes and works "
+        "once. Setting a new password signs the account out everywhere else.\n\n"
+        "If you did not ask for this, ignore this email: your password stays "
+        "as it is.\n"
+    )
+    return message
+
+
+def send_password_reset(to: str, username: str, token: str) -> str:
+    """Hand a reset link over for delivery. Returns how it went, as
+    `send_verification` does; the caller does not pass it on to the page,
+    which must not learn whether the account exists."""
+    return _send(
+        _reset_message(to, username, token), to, username, reset_link(token),
+        "password reset",
+    )
+
+
+def _send(message: EmailMessage, to: str, username: str, link: str, kind: str) -> str:
     route = transport()
     if route == "log":
         log.warning(
-            "no mail transport configured — verification link for %s (%s):\n    %s",
-            username, to, verification_link(token),
+            "no mail transport configured — %s link for %s (%s):\n    %s",
+            kind, username, to, link,
         )
         return "logged"
-
-    message = _message(to, username, token)
     try:
         if route == "spool":
             path = _spool(message)
-            log.info("queued confirmation mail for %s at %s", to, path.name)
+            log.info("queued %s mail for %s at %s", kind, to, path.name)
             return "spooled"
         _deliver(message)
     except (OSError, smtplib.SMTPException) as exc:
-        log.error("could not send verification mail to %s: %s", to, exc)
+        log.error("could not send %s mail to %s: %s", kind, to, exc)
         return "failed"
     return "sent"
 

@@ -317,6 +317,22 @@ python -m stroj adduser alice --email alice@example.org   # created confirmed
 python -m stroj verify bob --email bob@example.org        # confirm by hand
 ```
 
+**Forgotten passwords.** "Forgot your password?" in the sign-in dialog asks for
+a username or email address and mails a link to the account's *confirmed*
+address, through the same route as confirmation mail. The answer is the same
+whether or not the account exists or has a confirmed address, so the page
+cannot be used to find out who is registered. The link lasts an hour, works
+once, and only while the account's confirmed address is the one it was sent
+to. Setting a new password signs the account out everywhere and signs this
+browser in. An account with no confirmed address needs an organiser:
+`python -m stroj passwd bob`.
+
+```
+STROJ_RESET_TOKEN_MINUTES  60    # how long a reset link lasts
+STROJ_RESET_SEND_LIMIT     3     # reset mails per account per window (silently)
+STROJ_RESET_SEND_WINDOW    900   # that window, in seconds
+```
+
 ## Contests
 
 A contest has a window, a scoring system, and a labelled problem set that stays
