@@ -485,7 +485,12 @@ docker logs stroj-judge | grep -A1 'verification link'
 
 Whatever you choose, set `STROJ_BASE_URL` to the public site — it is what goes
 in the link, and an unset one sends every member to `127.0.0.1`.
-`bootstrap-judge.sh` defaults it to the domain you pass in.
+`bootstrap-judge.sh` defaults it to the domain you pass in. This deployment sets
+it in `deploy/judge/site.env` to `https://stroj.ethanyanxu.com`, so confirmation
+and password-reset links open on the site members use rather than on the judge's
+hostname. Bootstrap reads that file on every deploy, after the values carried
+over from the running container, so editing it and pushing is all a change
+takes.
 
 ## Verifying
 

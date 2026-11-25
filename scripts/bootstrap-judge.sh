@@ -28,6 +28,16 @@ PORT=8000
 
 cd "$(dirname "$0")/.."
 
+# Settings kept in the repository for this deployment (see the file). They win
+# over the environment, including what auto-update.sh carries over from the
+# running container, so that changing one and pushing is enough.
+if [ -f deploy/judge/site.env ]; then
+    set -a
+    # shellcheck source=../deploy/judge/site.env
+    . deploy/judge/site.env
+    set +a
+fi
+
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
 # ---------------------------------------------------------------- packages
